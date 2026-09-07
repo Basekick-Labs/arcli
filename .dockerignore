@@ -1,0 +1,9 @@
+# The Dockerfile copies a prebuilt binary staged by GoReleaser under
+# linux/<arch>/; keep local build output out of the context so a legacy
+# (non-BuildKit) build cannot pick up a host binary by accident.
+/arcli
+/arcli.exe
+/dist/
+/.gen/
+/.git/
+/docs/progress/

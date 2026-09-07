@@ -2,7 +2,7 @@
 
 CLI for [Arc](https://github.com/Basekick-Labs/arc) — operator-facing client for Arc time-series databases.
 
-> **Status:** v0.8.0-dev (PR8). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, deletes rows by predicate, takes and restores backups, checks connectivity with `ping`, and inspects clusters, compaction and schedulers. Release tooling ships in follow-up PRs.
+> **Status:** 26.9.0-dev (PR10). Manages connection profiles, runs SQL queries, writes line protocol / MessagePack / JSON, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, deletes rows by predicate, takes and restores backups, checks connectivity with `ping`, reads server logs, and inspects clusters, compaction and schedulers. Release tooling (packages, Homebrew, Docker) lands with the first tag.
 
 ## Why
 
@@ -10,7 +10,7 @@ Today operating Arc means hand-crafting `curl` calls: copying the bootstrap toke
 
 ## Install
 
-Pre-built binaries + Docker images + Homebrew formula land in v1.0.
+Pre-built binaries, deb / rpm / Arch packages, a Homebrew formula and a Docker image land with the first tag (26.9.0).
 
 For now, build from source:
 
@@ -327,6 +327,26 @@ arcli import stats                                # process-wide import counters
 
 Arc keeps the last 10 000 log entries in memory per process, so behind a load balancer each call may reach a different node. On ctrl-C (or SIGTERM) arcli cancels the in-flight request and exits 130 (143 for SIGTERM) with a reminder that anything the server already accepted continues there.
 
+## Shell completion
+
+`arcli completion bash|zsh|fish|powershell` prints the script for your shell. Completion knows arcli: `-c <TAB>` lists the connections in your config file (endpoint shown, active one marked), `--output`, `--format`, `--level`, `--precision`, `--permission` and `--time-format` complete to their valid values, `-f` and `--query-file` complete file paths, and everything else stays quiet instead of listing the current directory. Connection names come from the config file only; nothing talks to a server during completion.
+
+```bash
+# bash (needs bash-completion 2; macOS users: brew install bash bash-completion@2)
+arcli completion bash > /etc/bash_completion.d/arcli          # or ~/.local/share/bash-completion/completions/arcli
+
+# zsh
+arcli completion zsh > "${fpath[1]}/_arcli"                    # then: rm -f ~/.zcompdump; compinit
+
+# fish
+arcli completion fish > ~/.config/fish/completions/arcli.fish
+
+# powershell
+arcli completion powershell | Out-String | Invoke-Expression
+```
+
+The Homebrew formula and the deb / rpm / Arch packages install the completions (and man pages: `man arcli`, `man arcli-query`) for you.
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
@@ -349,10 +369,11 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions), `arcli scheduler status`~~ ✅ shipped
 - ~~**PR8** — `arcli delete` (predicate delete), `arcli backup {create,list,show,status,delete,restore}`~~ ✅ shipped
 - ~~**PR9** — `arcli write --format msgpack|json`, `arcli query --estimate`, `arcli logs`, `arcli import stats`, signal-aware root, `--token-stdin`~~ ✅ shipped
-- **PR10** — release workflow + Homebrew tap + multi-arch Docker + shell completion, cut v1.0.0
-- **Post-1.0** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
+- **PR10a** — shell completion, build metadata in `--version`, distroless image, man pages (this PR)
+- **PR10b** — GoReleaser: archives, deb / rpm / Arch packages, Homebrew tap, multi-arch GHCR image, SBOMs, cosign; cut the first CalVer tag (`v26.9.0`)
+- **Later** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
 
-Target: arcli 1.x speaks to Arc 26.06+.
+Versioning is CalVer like Arc: `YY.M.PATCH`, tagged `v26.9.0` (no zero padding; GoReleaser normalises `26.09` to `26.9` anyway). arcli 26.x speaks to Arc 26.06+. One consequence: Go only accepts `v0`/`v1` tags for this module path, so `go install …@v26.9.0` is not possible; `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` instead, and the packages, Homebrew and Docker are the release channels.
 
 ## Development
 
@@ -360,9 +381,12 @@ Target: arcli 1.x speaks to Arc 26.06+.
 go test -race ./...
 go vet ./...
 gofmt -l .
+go run ./internal/tools/gendocs .gen     # man pages + completion scripts (what the packages ship)
 ```
 
-CI runs all three on every PR.
+CI runs the first three on every PR. `arcli --version` reports the module version, commit and commit date: injected by the release build, or read from Go's embedded build info for a plain `go build` / `go install` (`+dirty` when the tree had uncommitted changes).
+
+The `Dockerfile` packages a prebuilt binary the way the release pipeline stages it (`linux/<arch>/arcli` in the build context, distroless static, non-root); it is not a from-source build.
 
 ## License
 

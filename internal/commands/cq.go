@@ -172,6 +172,7 @@ func (cf *cqFlags) add(c *cobra.Command, forUpdate bool) {
 	c.Flags().StringVar(&cf.destination, "destination", "", "destination measurement (letter first; letters, digits, _ -)")
 	c.Flags().StringVar(&cf.query, "query", "", "aggregation SQL with {start_time} and {end_time} placeholders")
 	c.Flags().StringVar(&cf.queryFile, "query-file", "", "read the SQL from a file instead of --query")
+	_ = c.MarkFlagFilename("query-file") // file completion (see completion.go)
 	c.Flags().StringVar(&cf.interval, "interval", "", "run interval as a Go duration (30s, 5m, 1h); minimum 10s")
 	c.Flags().StringSliceVar(&cf.tagColumns, "tag-column", nil, "tag column(s) in the result; repeat or comma-join")
 	c.Flags().StringVar(&cf.description, "description", "", "free-text description (\"\" clears on update)")

@@ -1,8 +1,11 @@
 // Command arcli is the Arc command-line client.
 //
-// Version is injected at build time via:
+// The release pipeline injects build metadata via:
 //
-//	go build -ldflags "-X main.version=1.0.0" ./cmd/arcli
+//	go build -ldflags "-X main.version=26.9.0 -X main.commit=<sha> -X main.date=<rfc3339>" ./cmd/arcli
+//
+// A plain `go build` or `go install` falls back to the toolchain's own
+// build info (module version, VCS revision and time).
 package main
 
 import (
@@ -11,15 +14,20 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/basekick-labs/arcli/internal/commands"
 )
 
-// version is injected by the release-build workflow via -ldflags. The
-// default 'dev' is what `go build` produces for local development.
-var version = "dev"
+// Injected by the release-build workflow via -ldflags. The defaults are
+// what `go build` produces for local development.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
 
 func main() {
 	// A SIGINT/SIGTERM cancels the root context, which every command
@@ -46,7 +54,8 @@ func main() {
 		signal.Stop(sigs)
 	}()
 
-	root := commands.NewRoot(version)
+	bi, _ := debug.ReadBuildInfo()
+	root := commands.NewRoot(resolveBuild(version, commit, date, bi))
 	root.SilenceErrors = true
 	err := root.ExecuteContext(ctx)
 	if err == nil {
