@@ -30,10 +30,10 @@ sudo pacman -U arcli-26.9.1-1-x86_64.pkg.tar.zst   # or -aarch64
 docker run --rm -e ARC_ENDPOINT=http://arc:8000 -e ARC_TOKEN=... ghcr.io/basekick-labs/arcli ping
 
 # Archive
-tar xzf arcli_26.9.1_linux_amd64.tar.gz && sudo install arcli /usr/local/bin/
+tar xzf arcli_26.09.1_linux_amd64.tar.gz && sudo install arcli /usr/local/bin/
 ```
 
-Image tags: `26.9.1` (immutable), `26.9`, `26`, `latest` (move on final releases only). Git tags are zero-padded like Arc (`v26.09.1`); GoReleaser normalises the version in every artifact name, image tag and `--version` to `26.9.1`.
+Image tags: `26.09.1` (immutable), `26.9`, `26`, `latest` (move on final releases only). Git tags are zero-padded like Arc (`v26.09.1`); archives, image tags and `arcli --version` carry `26.09.1` verbatim, while the deb / rpm / Arch packagers normalise their version field to `26.9.1`.
 
 Verify a download: `checksums.txt` covers every archive, package and SBOM and is signed keylessly with cosign from the release workflow (the packages themselves carry no GPG signature; the container image is not signed yet):
 
@@ -398,7 +398,7 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR10b** — GoReleaser: archives, deb / rpm / Arch packages, Homebrew tap, multi-arch GHCR image, SBOMs, cosign; cut the first CalVer tag (`v26.09.1`)~~ ✅ shipped
 - **Later** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
 
-Versioning is CalVer like Arc: `YY.0M.PATCH`, tagged `v26.09.1`; artifact names and `--version` carry the normalised `26.9.1`. arcli 26.x speaks to Arc 26.06+. One consequence: Go only accepts `v0`/`v1` tags for this module path, so `go install …@v26.09.1` is not possible; `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` instead, and the packages, Homebrew and Docker are the release channels.
+Versioning is CalVer like Arc: `YY.0M.PATCH`, tagged `v26.09.1`; only the deb / rpm / Arch package versions are normalised to `26.9.1` by their packagers. arcli 26.x speaks to Arc 26.06+. One consequence: Go only accepts `v0`/`v1` tags for this module path, so `go install …@v26.09.1` is not possible; `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` instead, and the packages, Homebrew and Docker are the release channels.
 
 ## Development
 

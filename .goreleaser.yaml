@@ -200,8 +200,8 @@ dockers_v2:
       org.opencontainers.image.licenses: Apache-2.0
 
 # Homebrew formula pushed to Basekick-Labs/homebrew-tap. Needs the
-# HOMEBREW_TAP_TOKEN secret (fine-grained PAT, contents:write on the tap);
-# release.yml refuses to start without it. `brews` is deprecated in
+# HOMEBREW_TAP_TOKEN secret (PAT with contents:write on the tap);
+# release.yml refuses to start unless it is set and can read the tap. `brews` is deprecated in
 # favour of casks, which are macOS-only and expect signed binaries; a
 # formula serves Linuxbrew too and needs no signing.
 brews:
@@ -211,7 +211,9 @@ brews:
       owner: Basekick-Labs
       name: homebrew-tap
       branch: main
-      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+      # Evaluated only at publish time; release.yml guarantees the
+      # variable is set (and works) before GoReleaser starts.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     commit_author:
       name: github-actions[bot]
