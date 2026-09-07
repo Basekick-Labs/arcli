@@ -40,7 +40,7 @@ type Config struct {
 
 // ConfigPath returns the path arcli reads/writes its config from.
 // Honors ARCLI_CONFIG env var (for tests + CI); otherwise
-// ~/.arcli/config.toml. Creates the parent directory on demand.
+// ~/.arcli/config.toml. Does not create anything; Save() makes the directory.
 func ConfigPath() (string, error) {
 	if p := os.Getenv("ARCLI_CONFIG"); p != "" {
 		return p, nil

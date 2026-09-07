@@ -4,14 +4,46 @@
 // `config`; PR2 added `query` + `write`; PR3 added `db` + `measurement`;
 // PR4 added `import`; PR5 added `auth` + `ping`; PR6 added `cluster` +
 // `compaction`; PR7 added `retention`, `cq`, `scheduler`; PR8 added
-// `delete` and `backup`; PR9 added `logs` and `import stats`.
+// `delete` and `backup`; PR9 added `logs` and `import stats`; PR10a added
+// build metadata in --version and shell completion (completion.go).
 package commands
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"runtime"
+	"strings"
 
-// NewRoot returns the arcli root command with all subcommands attached.
-// The version string is injected by main() from a -ldflags-built var.
-func NewRoot(version string) *cobra.Command {
+	"github.com/spf13/cobra"
+)
+
+// BuildInfo is what `arcli --version` reports. main() fills it from
+// -ldflags or the toolchain's embedded build info.
+type BuildInfo struct {
+	Version string // "26.9.0", "dev"
+	Commit  string // short SHA, "+dirty" suffix when the tree was modified
+	Date    string // commit date, UTC RFC3339
+}
+
+// String renders "26.9.0 (commit 1a2b3c4 at 2026-09-07T12:00:00Z, go1.25 darwin/arm64)".
+// Cobra prefixes it with "arcli version ".
+func (b BuildInfo) String() string {
+	var parts []string
+	if b.Commit != "" {
+		if b.Date != "" {
+			parts = append(parts, "commit "+b.Commit+" at "+b.Date)
+		} else {
+			parts = append(parts, "commit "+b.Commit)
+		}
+	} else if b.Date != "" {
+		parts = append(parts, b.Date)
+	}
+	parts = append(parts, fmt.Sprintf("%s %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH))
+	return b.Version + " (" + strings.Join(parts, ", ") + ")"
+}
+
+// NewRoot returns the arcli root command with all subcommands attached
+// and shell completion wired.
+func NewRoot(build BuildInfo) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "arcli",
 		Short: "Arc CLI — operator-facing client for Arc time-series databases",
@@ -25,11 +57,15 @@ First-time setup:
     arcli config create --name local --endpoint http://localhost:8000 --token <T> --activate
     arcli config current
 `,
-		Version: version,
+		Version: build.String(),
 		// Don't print usage on every error — most errors are runtime
 		// (network, auth, server) where the usage text is noise.
 		SilenceUsage: true,
 	}
+	// Declare --version ourselves, without a shorthand: cobra would
+	// otherwise bind -v to it, and -v is reserved for a future verbose
+	// mode (see the security checklist in .claude/CLAUDE.md).
+	root.Flags().Bool("version", false, "version for arcli")
 
 	root.AddCommand(
 		newConfigCmd(),
@@ -49,5 +85,6 @@ First-time setup:
 		newBackupCmd(),
 		newLogsCmd(),
 	)
+	installCompletions(root)
 	return root
 }

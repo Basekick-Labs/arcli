@@ -25,3 +25,6 @@ coverage.html
 
 # Local implementation plans (see .claude/CLAUDE.md)
 /docs/progress/
+
+# GoReleaser before-hook output (man pages + completions); see .goreleaser.yaml
+/.gen/
