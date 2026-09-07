@@ -3,7 +3,9 @@
 package commands
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"sort"
@@ -46,6 +48,7 @@ func newConfigCreateCmd() *cobra.Command {
 		defaultDatabase string
 		insecure        bool
 		activate        bool
+		tokenStdin      bool
 	)
 	c := &cobra.Command{
 		Use:   "create",
@@ -53,8 +56,11 @@ func newConfigCreateCmd() *cobra.Command {
 		Example: `  arcli config create --name local --endpoint http://localhost:8000 --token ABC --activate
   arcli config create --name prod  --endpoint https://arc.prod.example.com --token XYZ --default-database metrics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if name == "" || endpoint == "" || token == "" {
-				return fmt.Errorf("--name, --endpoint, and --token are required")
+			// --token / --token-stdin exclusivity is enforced by cobra
+			// before RunE. Validate the other flags before draining stdin
+			// so a typo does not consume (and discard) the piped secret.
+			if name == "" || endpoint == "" || (token == "" && !tokenStdin) {
+				return fmt.Errorf("--name, --endpoint, and --token (or --token-stdin) are required")
 			}
 			if err := validateEndpoint(endpoint); err != nil {
 				return err
@@ -62,6 +68,13 @@ func newConfigCreateCmd() *cobra.Command {
 			if strings.HasPrefix(name, "(") {
 				// "(flags)" / "(env)" are Resolve's ad-hoc sentinels.
 				return fmt.Errorf("connection name must not start with \"(\"")
+			}
+			if tokenStdin {
+				t, err := readTokenFromStdin(cmd)
+				if err != nil {
+					return err
+				}
+				token = t
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -98,7 +111,41 @@ func newConfigCreateCmd() *cobra.Command {
 	c.Flags().StringVar(&defaultDatabase, "default-database", "", "default database for query/write commands (optional)")
 	c.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification for this connection")
 	c.Flags().BoolVar(&activate, "activate", false, "make this the active connection")
+	c.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the token from the first line of stdin (keeps it out of shell history and ps)")
+	c.MarkFlagsMutuallyExclusive("token", "token-stdin")
 	return c
+}
+
+// readTokenFromStdin reads one line from stdin as the token. It is for
+// pipes and files (`pass show arc | arcli config create --token-stdin
+// ...`); a terminal is refused because the token would be echoed into
+// the scrollback, which defeats the point of the flag. CR/LF and
+// surrounding whitespace are trimmed; an empty line is an error.
+func readTokenFromStdin(cmd *cobra.Command) (string, error) {
+	if f, ok := cmd.InOrStdin().(*os.File); ok && !isPipe(f) && !isDevNull(f) {
+		return "", fmt.Errorf("--token-stdin: stdin is a terminal; pipe the token in (e.g. `pass show arc | arcli config create --token-stdin ...`)")
+	}
+	line, err := bufio.NewReader(io.LimitReader(cmd.InOrStdin(), 4096)).ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("--token-stdin: no token on stdin")
+	}
+	if len(line) >= 4096 && !strings.HasSuffix(line, "\n") {
+		return "", fmt.Errorf("--token-stdin: line exceeds 4096 bytes; not a token")
+	}
+	t := strings.TrimSpace(line)
+	if t == "" {
+		return "", fmt.Errorf("--token-stdin: empty token on stdin")
+	}
+	// Arc tokens are URL-safe base64, so anything outside visible ASCII
+	// is a paste error. Refusing it here also keeps C1/bidi runes out of
+	// the config file, where RedactToken would print the first and last
+	// characters unscrubbed.
+	for i := 0; i < len(t); i++ {
+		if t[i] < 0x21 || t[i] > 0x7e {
+			return "", fmt.Errorf("--token-stdin: token must be printable ASCII without spaces")
+		}
+	}
+	return t, nil
 }
 
 // ---- update ----------------------------------------------------------------
@@ -109,6 +156,7 @@ func newConfigUpdateCmd() *cobra.Command {
 		token           string
 		defaultDatabase string
 		insecure        bool
+		tokenStdin      bool
 	)
 	c := &cobra.Command{
 		Use:   "update <name>",
@@ -123,8 +171,8 @@ Typical use is refreshing a stored token after "arcli auth token rotate".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			fl := cmd.Flags()
-			if !fl.Changed("endpoint") && !fl.Changed("token") && !fl.Changed("default-database") && !fl.Changed("insecure") {
-				return fmt.Errorf("nothing to update (pass at least one of --endpoint, --token, --default-database, --insecure)")
+			if !fl.Changed("endpoint") && !fl.Changed("token") && !tokenStdin && !fl.Changed("default-database") && !fl.Changed("insecure") {
+				return fmt.Errorf("nothing to update (pass at least one of --endpoint, --token, --token-stdin, --default-database, --insecure)")
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -134,6 +182,14 @@ Typical use is refreshing a stored token after "arcli auth token rotate".`,
 			if !ok {
 				return fmt.Errorf("connection %q not found (run `arcli config list`)", name)
 			}
+			if tokenStdin {
+				// Exclusivity with --token is enforced by cobra before RunE.
+				t, err := readTokenFromStdin(cmd)
+				if err != nil {
+					return err
+				}
+				token = t
+			}
 			var changed []string
 			if fl.Changed("endpoint") {
 				if err := validateEndpoint(endpoint); err != nil {
@@ -142,7 +198,7 @@ Typical use is refreshing a stored token after "arcli auth token rotate".`,
 				conn.Endpoint = endpoint
 				changed = append(changed, "endpoint")
 			}
-			if fl.Changed("token") {
+			if fl.Changed("token") || tokenStdin {
 				if token == "" {
 					return fmt.Errorf("--token must not be empty")
 				}
@@ -169,6 +225,8 @@ Typical use is refreshing a stored token after "arcli auth token rotate".`,
 	c.Flags().StringVar(&token, "token", "", "new API token")
 	c.Flags().StringVar(&defaultDatabase, "default-database", "", "new default database (\"\" clears)")
 	c.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification for this connection (use --insecure=false to re-enable)")
+	c.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the new token from the first line of stdin")
+	c.MarkFlagsMutuallyExclusive("token", "token-stdin")
 	return c
 }
 

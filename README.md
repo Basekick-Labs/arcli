@@ -68,6 +68,12 @@ arcli config current
 arcli config delete staging --yes
 ```
 
+`arcli config create` and `update` accept `--token-stdin` to read the token from a pipe or file instead of the command line (a terminal is refused, since the token would be echoed into the scrollback):
+
+```bash
+pass show arc/prod | arcli config create --name prod --endpoint https://arc.prod.example.com --token-stdin
+```
+
 ### Precedence
 
 1. `--connection NAME` flag
@@ -103,6 +109,9 @@ arcli query "SELECT * FROM cpu" -o csv > out.csv
 
 # Arrow IPC stream — feed it to pyarrow / duckdb / polars
 arcli query "SELECT * FROM cpu" -o arrow | duckdb -c "SELECT * FROM read_arrow('/dev/stdin')"
+
+# Size a query before running it: the server runs SELECT COUNT(*) over it (a real scan)
+arcli query --estimate "SELECT * FROM cpu WHERE time > now() - INTERVAL 30 DAY" --database metrics
 ```
 
 The output formats:
@@ -126,6 +135,15 @@ echo "cpu v=1 1700000000" | arcli write --precision s
 ```
 
 `--precision` accepts `ns`, `us`, `ms`, or `s` (anything else is rejected client-side before the request goes out). The body is streamed end-to-end — `cat huge.lp | arcli write` never buffers the whole payload in memory.
+
+Two more input formats target Arc's MessagePack endpoint:
+
+```bash
+arcli write --format msgpack -f cpu.msgpack.zst --database metrics   # a prepared document, passed through as-is (gzip/zstd OK)
+arcli write --format json -f cpu.json --database metrics             # same document as JSON, validated and encoded client-side
+```
+
+The JSON/msgpack document is Arc's columnar shape `{"m":"cpu","columns":{"time":[...],"host":[...],"usage":[...]}}`, its row shape `{"m":"cpu","t":...,"h":"srv1","fields":{...},"tags":{...}}`, or `{"batch":[...]}`. The row shape keeps tags as tag columns (so compaction can de-duplicate; `h` defaults to `unknown`); the columnar shape is fastest but carries no tag metadata. `--format json` rejects up front what the server would fail on later or drop silently (ragged columns, mixed types, integers beyond int64, a `time` column mixing units, nested values), and is capped at 64 MiB (the conversion holds several copies in memory); `--format msgpack` streams up to the server's 1 GiB limit. Timestamps carry their own unit (inferred from each value's magnitude; a columnar `time` column from its first value), so `--precision` is line-protocol only.
 
 ## Database & measurement admin
 
@@ -300,6 +318,15 @@ arcli backup delete backup-20260907-201105-a0f5e600 --yes
 
 Restore overwrites existing files at the same paths and is meant for a quiescent server (stop writers and compaction first; in cluster mode restored files are not registered in the cluster manifest). Metadata and config restores are staged and applied at the next server start; arcli says so after every restore that includes them.
 
+## Server logs & counters
+
+```bash
+arcli logs --level warn --since 6h --limit 200    # admin; newest first; --level is a minimum
+arcli import stats                                # process-wide import counters
+```
+
+Arc keeps the last 10 000 log entries in memory per process, so behind a load balancer each call may reach a different node. On ctrl-C (or SIGTERM) arcli cancels the in-flight request and exits 130 (143 for SIGTERM) with a reminder that anything the server already accepted continues there.
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
@@ -321,7 +348,7 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR6** — `arcli cluster {status,nodes,node show,node remove,health}`, `arcli compaction {status,stats,candidates,history,trigger}`~~ ✅ shipped
 - ~~**PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions), `arcli scheduler status`~~ ✅ shipped
 - ~~**PR8** — `arcli delete` (predicate delete), `arcli backup {create,list,show,status,delete,restore}`~~ ✅ shipped
-- **PR9** — `arcli write --format msgpack`, `arcli import stats`, `arcli query --estimate`, `arcli logs`
+- ~~**PR9** — `arcli write --format msgpack|json`, `arcli query --estimate`, `arcli logs`, `arcli import stats`, signal-aware root, `--token-stdin`~~ ✅ shipped
 - **PR10** — release workflow + Homebrew tap + multi-arch Docker + shell completion, cut v1.0.0
 - **Post-1.0** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
 

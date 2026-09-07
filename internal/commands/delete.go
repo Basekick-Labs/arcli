@@ -133,8 +133,8 @@ node accepts --dry-run and the preflight but refuses the real call.`,
 				return err
 			}
 			if err != nil {
-				if isDeadline(err) && !dryRun {
-					fmt.Fprintf(stderr, "timed out after %s; the server continues rewriting — re-run with --dry-run to see what remains\n", f.timeout)
+				if clientGaveUp(err) && !dryRun {
+					fmt.Fprintf(stderr, "arcli stopped waiting (timeout %s or interrupt); the server continues rewriting — re-run with --dry-run to see what remains\n", f.timeout)
 				}
 				return err
 			}

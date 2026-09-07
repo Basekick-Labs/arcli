@@ -604,3 +604,73 @@ func TestConfigCreate_RejectsSentinelNameAndUserinfo(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestConfigTokenStdin(t *testing.T) {
+	writeTestConfig(t, "http://a", "tok")
+	c := newConfigCreateCmd()
+	c.SetIn(strings.NewReader("  secret-from-pipe\r\n"))
+	out, _, err := execCmd(t, c, "--name", "piped", "--endpoint", "http://x", "--token-stdin")
+	if err != nil || !strings.Contains(out, `Created connection "piped"`) {
+		t.Fatalf("err=%v out=%q", err, out)
+	}
+	cfg, _ := config.Load()
+	if cfg.Connections["piped"].Token != "secret-from-pipe" {
+		t.Errorf("token = %q", cfg.Connections["piped"].Token)
+	}
+	c = newConfigCreateCmd()
+	c.SetIn(strings.NewReader(""))
+	_, _, err = execCmd(t, c, "--name", "empty", "--endpoint", "http://x", "--token-stdin")
+	if err == nil || !strings.Contains(err.Error(), "no token on stdin") {
+		t.Errorf("err = %v", err)
+	}
+	_, _, err = execCmd(t, newConfigCreateCmd(), "--name", "both", "--endpoint", "http://x", "--token", "t", "--token-stdin")
+	if err == nil || !(strings.Contains(err.Error(), "mutually exclusive") || strings.Contains(err.Error(), "none of the others can be")) {
+		t.Errorf("err = %v", err)
+	}
+	for _, bad := range []string{"has space in it\n", "nbsp\u00a0tok\n", "zw\u200btok\n", "bidi\u202etok\n", "c1\u0085tok\n", "raw\xfftok\n"} {
+		c = newConfigCreateCmd()
+		c.SetIn(strings.NewReader(bad))
+		_, _, err = execCmd(t, c, "--name", "ws", "--endpoint", "http://x", "--token-stdin")
+		if err == nil || !strings.Contains(err.Error(), "printable ASCII") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
+	// A typo in the other flags must not drain the piped secret.
+	c = newConfigCreateCmd()
+	in := strings.NewReader("untouched\n")
+	c.SetIn(in)
+	_, _, err = execCmd(t, c, "--name", "noep", "--token-stdin")
+	if err == nil || !strings.Contains(err.Error(), "are required") || in.Len() != len("untouched\n") {
+		t.Errorf("err = %v, remaining = %d", err, in.Len())
+	}
+	// A terminal on stdin is refused (the token would be echoed).
+	if tty, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
+		c = newConfigCreateCmd()
+		c.SetIn(tty)
+		_, _, err = execCmd(t, c, "--name", "tty", "--endpoint", "http://x", "--token-stdin")
+		tty.Close()
+		if err == nil || !strings.Contains(err.Error(), "stdin is a terminal") {
+			t.Errorf("tty: err = %v", err)
+		}
+	}
+	// /dev/null is a character device but not a terminal: read, then "no token".
+	if null, err := os.Open(os.DevNull); err == nil {
+		c = newConfigCreateCmd()
+		c.SetIn(null)
+		_, _, err = execCmd(t, c, "--name", "null", "--endpoint", "http://x", "--token-stdin")
+		null.Close()
+		if err == nil || !strings.Contains(err.Error(), "no token on stdin") {
+			t.Errorf("devnull: err = %v", err)
+		}
+	}
+	c = newConfigUpdateCmd()
+	c.SetIn(strings.NewReader("rotated\n"))
+	out, _, err = execCmd(t, c, "local", "--token-stdin")
+	if err != nil || !strings.Contains(out, `Updated connection "local" (token)`) {
+		t.Errorf("err=%v out=%q", err, out)
+	}
+	cfg, _ = config.Load()
+	if cfg.Connections["local"].Token != "rotated" {
+		t.Errorf("token = %q", cfg.Connections["local"].Token)
+	}
+}

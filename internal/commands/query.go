@@ -38,6 +38,7 @@ func newQueryCmd() *cobra.Command {
 		limit          int
 		timeout        time.Duration
 	)
+	var estimate bool
 	c := &cobra.Command{
 		Use:   "query [SQL]",
 		Short: "Run a SQL query against an Arc cluster",
@@ -46,11 +47,16 @@ func newQueryCmd() *cobra.Command {
 SQL input precedence: positional argument > --file > stdin (only when
 neither is supplied). Output defaults to a pretty table; -o json|csv
 emit machine-parseable formats; -o arrow streams binary Arrow IPC to
-stdout for piping into pyarrow / duckdb / etc.`,
+stdout for piping into pyarrow / duckdb / etc.
+
+--estimate does not run the query; the server runs SELECT COUNT(*) over
+it (a real scan) and reports the row count with a size class
+(none / low / medium / high). Exit status is 1 when the estimate fails.`,
 		Example: `  arcli query "SELECT count(*) FROM cpu"
   arcli query --database metrics "SELECT * FROM cpu LIMIT 10"
   arcli query -f long_query.sql -o csv > out.csv
   echo "SELECT 1" | arcli query
+  arcli query --estimate "SELECT * FROM cpu WHERE time > now() - INTERVAL 30 DAY" --database metrics
   arcli query "SELECT * FROM cpu" -o arrow | python -c 'import pyarrow.ipc as ipc, sys; print(ipc.open_stream(sys.stdin.buffer).read_all())'`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -77,6 +83,15 @@ stdout for piping into pyarrow / duckdb / etc.`,
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 
+			if estimate {
+				if outputFormat == output.FormatArrow || outputFormat == output.FormatCSV {
+					return fmt.Errorf("--estimate supports -o table or json")
+				}
+				if limit != 0 {
+					return fmt.Errorf("--limit does not apply to --estimate")
+				}
+				return runEstimate(ctx, cmd, cli, sql, database, outputFormat)
+			}
 			if outputFormat == output.FormatArrow {
 				return runArrowQuery(ctx, cli, sql, database, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
@@ -98,7 +113,38 @@ stdout for piping into pyarrow / duckdb / etc.`,
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().IntVar(&limit, "limit", 0, "cap output rows client-side (0 = no cap; server result is already bounded by the SQL)")
 	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "per-request HTTP timeout")
+	c.Flags().BoolVar(&estimate, "estimate", false, "estimate the result size (server-side COUNT(*)) instead of running the query")
 	return c
+}
+
+// runEstimate calls the estimate endpoint and renders the size class.
+// A server-reported failure arrives as an error carrying the decoded
+// result; in JSON mode the raw body is still printed before exiting 1.
+func runEstimate(ctx context.Context, cmd *cobra.Command, cli *client.Client, sql, database, format string) error {
+	res, err := cli.EstimateQuery(ctx, sql, database)
+	if format == output.FormatJSON && res != nil {
+		if werr := writeRawJSON(cmd.OutOrStdout(), res.Raw); werr != nil {
+			return werr
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if format == output.FormatJSON {
+		return nil
+	}
+	w := cmd.OutOrStdout()
+	rows := "unknown"
+	if res.EstimatedRows != nil {
+		rows = fmt.Sprintf("%d", *res.EstimatedRows)
+	}
+	fmt.Fprintf(w, "estimated rows: %s\n", rows)
+	fmt.Fprintf(w, "size class:     %s\n", clean(res.WarningLevel))
+	if res.WarningMessage != "" {
+		fmt.Fprintf(w, "note:           %s\n", clean(res.WarningMessage))
+	}
+	fmt.Fprintf(w, "estimate took:  %s\n", (time.Duration(res.ExecutionTimeMs * float64(time.Millisecond))).Round(time.Millisecond))
+	return nil
 }
 
 // readSQL resolves the SQL string from the three input modes. Order:

@@ -87,6 +87,13 @@ func isDeadline(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "Client.Timeout exceeded")
 }
 
+// clientGaveUp is isDeadline plus an interrupt (ctrl-C cancels the root
+// context): either way the client stopped waiting and the server keeps
+// working, which is what the caller needs to tell the operator.
+func clientGaveUp(err error) bool {
+	return isDeadline(err) || errors.Is(err, context.Canceled)
+}
+
 func newRetentionCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "retention",
@@ -533,8 +540,8 @@ but refuses the real call (HTTP 503).`,
 			defer cancel()
 			res, err := cli.ExecuteRetentionPolicy(ctx, p.ID, dryRun)
 			if err != nil {
-				if isDeadline(err) && !dryRun {
-					fmt.Fprintf(stderr, "timed out after %s waiting for the server; the deletion continues server-side — check `arcli retention executions %d`\n", f.timeout, p.ID)
+				if clientGaveUp(err) && !dryRun {
+					fmt.Fprintf(stderr, "arcli stopped waiting (timeout %s or interrupt); the deletion continues server-side — check `arcli retention executions %d`\n", f.timeout, p.ID)
 				}
 				return err
 			}

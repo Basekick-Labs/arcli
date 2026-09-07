@@ -4,7 +4,7 @@
 // `config`; PR2 added `query` + `write`; PR3 added `db` + `measurement`;
 // PR4 added `import`; PR5 added `auth` + `ping`; PR6 added `cluster` +
 // `compaction`; PR7 added `retention`, `cq`, `scheduler`; PR8 added
-// `delete` and `backup`.
+// `delete` and `backup`; PR9 added `logs` and `import stats`.
 package commands
 
 import "github.com/spf13/cobra"
@@ -47,6 +47,7 @@ First-time setup:
 		newSchedulerCmd(),
 		newDeleteCmd(),
 		newBackupCmd(),
+		newLogsCmd(),
 	)
 	return root
 }
