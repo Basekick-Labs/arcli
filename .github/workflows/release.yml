@@ -58,8 +58,14 @@ jobs:
             echo "::error::HOMEBREW_TAP_TOKEN cannot read Basekick-Labs/homebrew-tap (expired or wrong repository access?)"
             exit 1
           fi
-          exp=$(grep -i '^github-authentication-token-expiration:' "$hdr" | cut -d' ' -f2- | tr -d '\r')
-          [ -n "$exp" ] && echo "::notice::HOMEBREW_TAP_TOKEN expires $exp"
+          # Fine-grained PATs carry an expiration header; classic ones do
+          # not. Never let this informational line decide the exit status.
+          exp=$(grep -i '^github-authentication-token-expiration:' "$hdr" | cut -d' ' -f2- | tr -d '\r' || true)
+          if [ -n "$exp" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN expires $exp"
+          else
+            echo "::notice::HOMEBREW_TAP_TOKEN has no expiration header (classic PAT?)"
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
