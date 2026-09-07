@@ -42,6 +42,17 @@ var CompactionTiers = []string{"hourly", "daily"}
 // at most 64 characters.
 var databaseNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 
+// ValidateDatabaseName applies the server's database-name grammar
+// (letter first, then letters/digits/_/-, max 64) client-side. Routes
+// that store a database name without checking it (retention, CQ) rely
+// on this so a typo does not create a policy that scans nothing.
+func ValidateDatabaseName(name string) error {
+	if !databaseNameRe.MatchString(name) {
+		return fmt.Errorf("invalid database name %q (letter first, then letters, digits, _ or -, max 64)", name)
+	}
+	return nil
+}
+
 // SchedulerStatus is one entry of /api/v1/compaction/status "schedulers".
 // NextRun is only present while the scheduler is running; RoleGated and
 // GateRole only in cluster mode.
@@ -156,7 +167,7 @@ func (c *Client) classifyRouteMissing(ctx context.Context, err error) error {
 		return err
 	}
 	if _, herr := c.Health(ctx); herr != nil {
-		return fmt.Errorf("%w (and %s does not answer like an Arc server: %v; check the endpoint path)", err, c.cfg.Endpoint, herr)
+		return fmt.Errorf("%w (and %s does not answer like an Arc server: %v; check the endpoint path)", err, redactedEndpoint(c.cfg.Endpoint), herr)
 	}
 	return &CompactionDisabledError{}
 }

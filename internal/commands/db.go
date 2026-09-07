@@ -305,7 +305,7 @@ func addCommonConnectionFlags(c *cobra.Command, connectionName, endpoint, token 
 // the project-wide default (60s). Factored so the flag's wording and
 // default stay consistent across every command.
 func addTimeoutFlag(c *cobra.Command, timeout *time.Duration) {
-	c.Flags().DurationVar(timeout, "timeout", 60*time.Second, "per-request HTTP timeout")
+	addTimeoutFlagDefault(c, timeout, 60*time.Second)
 }
 
 // validListFormat reports whether the format is one of the three

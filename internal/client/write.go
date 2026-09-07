@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Precision is the timestamp precision sent on a line-protocol write
@@ -90,14 +91,30 @@ func decodeWriteError(status int, body []byte) error {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &er); err == nil && er.Error != "" {
-		return &HTTPError{Status: status, Message: er.Error}
+		return &HTTPError{Status: status, Message: scrubControls(er.Error)}
 	}
 	const maxRawLen = 512
 	raw := string(body)
 	if len(raw) > maxRawLen {
 		raw = raw[:maxRawLen] + "...[truncated]"
 	}
-	return &HTTPError{Status: status, Raw: raw}
+	return &HTTPError{Status: status, Raw: scrubControls(raw)}
+}
+
+// scrubControls strips C0/C1 control characters and Unicode bidi
+// overrides from server-supplied text before it can reach a terminal
+// through an error message. Server error strings can echo request
+// content (a CQ's SQL, a name chosen by another admin).
+func scrubControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20 && r != '\n' && r != '\t', r == 0x7f, r >= 0x80 && r <= 0x9f:
+			return -1
+		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // HTTPError is a non-2xx response from Arc. Message is the server's
