@@ -49,6 +49,7 @@ filter). TLE defaults to "satellite_tle".`,
 		newImportLPCmd(),
 		newImportParquetCmd(),
 		newImportTLECmd(),
+		newImportStatsCmd(),
 	)
 	return c
 }
@@ -434,4 +435,47 @@ func renderTLEImportResult(cmd *cobra.Command, r *client.TLEImportResult, format
 		}
 	}
 	return nil
+}
+
+// ---- stats -----------------------------------------------------------------
+
+func newImportStatsCmd() *cobra.Command {
+	var (
+		f            connFlags
+		outputFormat string
+	)
+	c := &cobra.Command{
+		Use:   "stats",
+		Short: "Show the server's import counters",
+		Long: `Show the server's import counters (GET /api/v1/import/stats): requests,
+records, and errors across every import format since the server
+started. Process-wide and per node; reset on restart.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validObjectFormat(outputFormat) {
+				return fmt.Errorf("invalid --output %q (valid: table, json)", outputFormat)
+			}
+			cli, _, err := f.client(cmd)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := f.ctx(cmd)
+			defer cancel()
+			st, raw, err := cli.GetImportStats(ctx)
+			if err != nil {
+				return err
+			}
+			if outputFormat == output.FormatJSON {
+				return writeRawJSON(cmd.OutOrStdout(), raw)
+			}
+			w := cmd.OutOrStdout()
+			fmt.Fprintf(w, "requests: %d\n", st.TotalRequests)
+			fmt.Fprintf(w, "records:  %d\n", st.TotalRecords)
+			fmt.Fprintf(w, "errors:   %d\n", st.TotalErrors)
+			return nil
+		},
+	}
+	f.add(c)
+	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	return c
 }

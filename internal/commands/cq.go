@@ -531,8 +531,8 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 			defer cancel()
 			res, err := cli.ExecuteContinuousQuery(ctx, q.ID, opts)
 			if err != nil {
-				if isDeadline(err) && !dryRun {
-					fmt.Fprintf(stderr, "timed out after %s; the server may still be running the query — check `arcli cq executions %d`\n", f.timeout, q.ID)
+				if clientGaveUp(err) && !dryRun {
+					fmt.Fprintf(stderr, "arcli stopped waiting (timeout %s or interrupt); the server may still be running the query — check `arcli cq executions %d`\n", f.timeout, q.ID)
 				}
 				return err
 			}
