@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
+	"github.com/basekick-labs/arcli/internal/client"
 )
 
 func TestValidListFormat(t *testing.T) {

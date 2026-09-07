@@ -1,7 +1,7 @@
 // measurement subcommand: list measurements inside a database.
 //
 // Thin wrapper over GET /api/v1/databases/:name/measurements. The same
-// data is also available via `arcctl db show <name>`; this exposes it
+// data is also available via `arcli db show <name>`; this exposes it
 // in a measurement-first flow that mirrors `kubectl get pods -n ns`
 // rather than `kubectl describe namespace`.
 package commands
@@ -18,8 +18,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
-	"github.com/basekick-labs/arcctl/internal/output"
+	"github.com/basekick-labs/arcli/internal/client"
+	"github.com/basekick-labs/arcli/internal/output"
 )
 
 func newMeasurementCmd() *cobra.Command {
@@ -50,8 +50,8 @@ func newMeasurementListCmd() *cobra.Command {
 The database name comes from --database, or (when --database is omitted)
 from the active connection's default_database. If neither is set the
 command errors before any network call.`,
-		Example: `  arcctl measurement list --database metrics
-  arcctl measurement list -c prod --database logs -o json`,
+		Example: `  arcli measurement list --database metrics
+  arcli measurement list -c prod --database logs -o json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if timeout <= 0 {
 				return fmt.Errorf("--timeout must be > 0 (got %s)", timeout)

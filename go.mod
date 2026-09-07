@@ -1,4 +1,4 @@
-module github.com/basekick-labs/arcctl
+module github.com/basekick-labs/arcli
 
 go 1.25.6
 

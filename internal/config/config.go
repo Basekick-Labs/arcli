@@ -1,7 +1,7 @@
-// Package config manages arcctl's persistent client configuration.
+// Package config manages arcli's persistent client configuration.
 //
-// arcctl stores named connections (endpoint + token + default database)
-// in a TOML file at ~/.arcctl/config.toml, with one connection marked
+// arcli stores named connections (endpoint + token + default database)
+// in a TOML file at ~/.arcli/config.toml, with one connection marked
 // "active". This mirrors the InfluxDB v2 CLI's `influx config` model so
 // operators coming from InfluxDB get the UX without thinking.
 //
@@ -10,7 +10,7 @@
 //  2. --endpoint + --token flags (full ad-hoc override)
 //  3. ARC_CONNECTION env var
 //  4. ARC_ENDPOINT + ARC_TOKEN env vars (full ad-hoc override)
-//  5. active connection in ~/.arcctl/config.toml
+//  5. active connection in ~/.arcli/config.toml
 //
 // If nothing is set the resolver returns an error rather than guessing.
 package config
@@ -32,24 +32,24 @@ type Connection struct {
 	InsecureTLS     bool   `mapstructure:"insecure_tls,omitempty" toml:"insecure_tls,omitempty"`
 }
 
-// Config is the whole arcctl config file's contents.
+// Config is the whole arcli config file's contents.
 type Config struct {
 	Active      string                `mapstructure:"active" toml:"active"`
 	Connections map[string]Connection `mapstructure:"connections" toml:"connections"`
 }
 
-// ConfigPath returns the path arcctl reads/writes its config from.
-// Honors ARCCTL_CONFIG env var (for tests + CI); otherwise
-// ~/.arcctl/config.toml. Creates the parent directory on demand.
+// ConfigPath returns the path arcli reads/writes its config from.
+// Honors ARCLI_CONFIG env var (for tests + CI); otherwise
+// ~/.arcli/config.toml. Creates the parent directory on demand.
 func ConfigPath() (string, error) {
-	if p := os.Getenv("ARCCTL_CONFIG"); p != "" {
+	if p := os.Getenv("ARCLI_CONFIG"); p != "" {
 		return p, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("locate home directory: %w", err)
 	}
-	return filepath.Join(home, ".arcctl", "config.toml"), nil
+	return filepath.Join(home, ".arcli", "config.toml"), nil
 }
 
 // Load reads the config file. Returns an empty (no-connections) Config
@@ -151,7 +151,7 @@ func (c *Config) Resolve(opts ResolveOptions) (Connection, string, error) {
 	if opts.ConnectionName != "" {
 		conn, ok := c.Connections[opts.ConnectionName]
 		if !ok {
-			return Connection{}, "", fmt.Errorf("connection %q not found in config (use `arcctl config list`)", opts.ConnectionName)
+			return Connection{}, "", fmt.Errorf("connection %q not found in config (use `arcli config list`)", opts.ConnectionName)
 		}
 		return conn, opts.ConnectionName, nil
 	}
@@ -185,7 +185,7 @@ func (c *Config) Resolve(opts ResolveOptions) (Connection, string, error) {
 
 	// 5. Active connection in file.
 	if c.Active == "" {
-		return Connection{}, "", errors.New("no active connection configured (run `arcctl config create --name NAME --endpoint URL --token TOKEN --activate`)")
+		return Connection{}, "", errors.New("no active connection configured (run `arcli config create --name NAME --endpoint URL --token TOKEN --activate`)")
 	}
 	conn, ok := c.Connections[c.Active]
 	if !ok {

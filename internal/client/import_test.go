@@ -469,7 +469,7 @@ func TestImportTLE_MeasurementGoesViaHeader(t *testing.T) {
 }
 
 func TestImportTLE_NoMeasurementHeaderWhenOmitted(t *testing.T) {
-	// When user doesn't pass --measurement, arcctl must NOT send the
+	// When user doesn't pass --measurement, arcli must NOT send the
 	// header so the server can apply its default ("satellite_tle").
 	hdrPresent := true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

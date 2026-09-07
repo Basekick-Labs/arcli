@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
+	"github.com/basekick-labs/arcli/internal/client"
 )
 
 func newImportTestCmd() *cobra.Command {
@@ -72,7 +72,7 @@ func TestImportLP_MarkFlagRequired_File(t *testing.T) {
 }
 
 // TestImportCSV_RejectsNegativeSkipRows pins the client-side validation
-// Gemini flagged in arcctl PR #3: a negative --skip-rows used to pass
+// Gemini flagged in arcli PR #3: a negative --skip-rows used to pass
 // silently into the client (which drops it via `> 0`), so the user got
 // no error AND no skip. The RunE-level guard now fails fast.
 //
@@ -154,7 +154,7 @@ func TestRenderImportResult_TableNoTimeRangeNoColumns(t *testing.T) {
 
 // Regression for the PR3-style nil-slice JSON encoding issue.
 // `ImportResult.Columns` is a []string without `omitempty`; if the
-// server returns null (or arcctl decodes the field as nil for any
+// server returns null (or arcli decodes the field as nil for any
 // reason), JSON output must STILL emit `"columns": []` so downstream
 // consumers don't see `null`.
 func TestRenderImportResult_JSONEmptyColumns_IsArrayNotNull(t *testing.T) {

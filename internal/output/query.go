@@ -13,7 +13,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/basekick-labs/arcctl/internal/client"
+	"github.com/basekick-labs/arcli/internal/client"
 )
 
 // Format names; the value of `-o/--output`.
@@ -52,7 +52,7 @@ func RenderQueryResult(w io.Writer, qr *client.QueryResult, format string, noHea
 	case FormatCSV:
 		return renderCSV(w, qr, noHeader, limit)
 	case FormatArrow:
-		return fmt.Errorf("arrow format is streamed directly from the server; pass --output arrow to `arcctl query` for binary IPC on stdout")
+		return fmt.Errorf("arrow format is streamed directly from the server; pass --output arrow to `arcli query` for binary IPC on stdout")
 	}
 	return fmt.Errorf("unknown output format %q (valid: table, json, csv, arrow)", format)
 }

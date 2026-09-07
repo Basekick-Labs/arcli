@@ -1,8 +1,8 @@
-# arcctl - Claude Code Instructions
+# arcli - Claude Code Instructions
 
 ## Project Overview
 
-`arcctl` is the operator-facing CLI for [Arc](https://github.com/Basekick-Labs/arc) — a high-performance columnar analytical database. arcctl is a **client only**: it talks to one or more Arc clusters over the existing HTTP API (`/api/v1/query`, `/api/v1/write`, `/api/v1/import/*`, etc.). No embedded query engine, no Arc server code is shipped here.
+`arcli` is the operator-facing CLI for [Arc](https://github.com/Basekick-Labs/arc) — a high-performance columnar analytical database. arcli is a **client only**: it talks to one or more Arc clusters over the existing HTTP API (`/api/v1/query`, `/api/v1/write`, `/api/v1/import/*`, etc.). No embedded query engine, no Arc server code is shipped here.
 
 The model for connection management is the InfluxDB v2 CLI (`influx config create/list/set-active/...`) — multiple named connections, one marked active, overridable per-command via flags or env vars.
 
@@ -10,7 +10,7 @@ The model for connection management is the InfluxDB v2 CLI (`influx config creat
 
 ## Architecture
 
-- **Config file:** `~/.arcctl/config.toml` (mode 0600), honored override `ARCCTL_CONFIG` env var (for tests + CI)
+- **Config file:** `~/.arcli/config.toml` (mode 0600), honored override `ARCLI_CONFIG` env var (for tests + CI)
 - **Connection precedence (highest first):**
   1. `--connection NAME` / `-c NAME` flag
   2. `--endpoint URL --token T` flags (full ad-hoc)
@@ -18,8 +18,8 @@ The model for connection management is the InfluxDB v2 CLI (`influx config creat
   4. `ARC_ENDPOINT` + `ARC_TOKEN` env vars (full ad-hoc)
   5. `active` connection in config file
   → No fallback past 5; commands error with a clear "no active connection" message
-- **No state on disk besides the config file.** No history file, no cache, no telemetry — `arcctl` never phones home.
-- **Targeted server version:** arcctl 1.x talks to Arc 26.06+ (pre-26.06 lacks Phase A cluster auth replication, so token admin would behave inconsistently across nodes).
+- **No state on disk besides the config file.** No history file, no cache, no telemetry — `arcli` never phones home.
+- **Targeted server version:** arcli 1.x talks to Arc 26.06+ (pre-26.06 lacks Phase A cluster auth replication, so token admin would behave inconsistently across nodes).
 
 ## Build & Test
 
@@ -30,7 +30,7 @@ gofmt -l .                  # must return empty
 go vet ./...                # must return empty
 ```
 
-**Before opening a PR** that touches `cmd/arcctl/main.go`, command wiring, or anything the user types as a flag: actually run the built binary against a local `arc serve` (or — for `config`-only PRs — against a temp `ARCCTL_CONFIG`) and exercise the changed code path end-to-end. Unit tests and reviewer agents have a blind spot for flag wiring, help-text drift, and config-resolution edge cases; the binary running for 30 seconds catches the loudest of them for free. This is the [integration-test-the-binary discipline](../README.md#development) — non-negotiable.
+**Before opening a PR** that touches `cmd/arcli/main.go`, command wiring, or anything the user types as a flag: actually run the built binary against a local `arc serve` (or — for `config`-only PRs — against a temp `ARCLI_CONFIG`) and exercise the changed code path end-to-end. Unit tests and reviewer agents have a blind spot for flag wiring, help-text drift, and config-resolution edge cases; the binary running for 30 seconds catches the loudest of them for free. This is the [integration-test-the-binary discipline](../README.md#development) — non-negotiable.
 
 ## Conventions
 
@@ -107,7 +107,7 @@ The fix is a two-step process. Both steps are mandatory; **the configuration mat
 
 #### Step 1: Configuration matrix (written by the implementer, not an agent)
 
-Before invoking any reviewer, write down — in the conversation, not a file — a small table. For arcctl, the relevant axis is **how the connection was resolved** plus **what's in the config file**:
+Before invoking any reviewer, write down — in the conversation, not a file — a small table. For arcli, the relevant axis is **how the connection was resolved** plus **what's in the config file**:
 
 | Configuration | Reaches new code? | Preconditions established? |
 |---|---|---|
@@ -133,7 +133,7 @@ If a row is "yes, but I don't know if precondition X holds in this mode" — tha
 - "config file missing vs. config file present but empty" — both are valid first-run states; `Load()` must distinguish IO errors from "file does not exist"
 - "`Resolve()` returns an unnamed Connection (ad-hoc)" — code that prints `"using connection: %s"` must handle the `(flags)` / `(env)` sentinel display name, not assume a real name
 - "output format is `arrow` but the server doesn't support arrow" — graceful fallback, not a panic on nil response body
-- "`ARCCTL_CONFIG` points at a path the user can't write" — `Save()` must error cleanly, not partially-write
+- "`ARCLI_CONFIG` points at a path the user can't write" — `Save()` must error cleanly, not partially-write
 - "Token contains characters that need escaping in shell history" — never log tokens; redact via `RedactToken` for any human-facing output
 - "TLS verification: `--insecure` flag set vs. `insecure_tls = true` in config vs. neither" — three independent paths, must converge to one decision before client construction
 
@@ -145,7 +145,7 @@ Spawn **one** general-purpose agent. The prompt MUST include:
 2. **The diff to review** (paste or reference `git diff main..HEAD`).
 3. **Five specific things to check, in order**:
    - **(a) Precondition trace** — for every new map lookup, pointer deref, type assertion, or file read, what guarantees safety under the configurations in the matrix? Flag any operation that doesn't have a cited establishment line. Highest-yield check; do it FIRST.
-   - **(b) First-run smoke test** — does a brand-new user (no `~/.arcctl/config.toml`, no env vars) get a useful error from every command, or does something panic / produce an empty success?
+   - **(b) First-run smoke test** — does a brand-new user (no `~/.arcli/config.toml`, no env vars) get a useful error from every command, or does something panic / produce an empty success?
    - **(c) Failure modes from the matrix** — for each "yes" row, what does a partial failure look like? If `Resolve()` succeeds but the HTTP call fails, what does the user see? If `Save()` partially writes, what's left on disk?
    - **(d) Doc-vs-code drift** — README claims, help text on cobra commands (`Short`/`Long`), comments above exported helpers. Does every prose claim match the code that just shipped? Did flag names/aliases change without the README being updated?
    - **(e) Hot-path nits** — token leakage in error messages, `fmt.Sprintf` where `strings.Builder` matters in a streaming write path, missing `defer file.Close()`, missing `resp.Body.Close()`. Brief pass; cheap section.
@@ -163,7 +163,7 @@ Spawn **one** general-purpose agent. The prompt MUST include:
 #### When to use additional reviewers
 
 - **Security-relevant changes (token handling, TLS, file I/O, shell-out, input that becomes a URL or filename)**: add a second agent focused on the [Security Checklist](#security-checklist) below. Its job is token-leak surfaces, file mode, TLS skip-verify wiring, and any place a user-supplied string could escape its lane.
-- **Skip the additional reviewer** for changes that don't touch those domains. Most arcctl PRs need just the single deep reviewer + the matrix.
+- **Skip the additional reviewer** for changes that don't touch those domains. Most arcli PRs need just the single deep reviewer + the matrix.
 
 #### Release hygiene
 
@@ -195,30 +195,30 @@ When adding or modifying any command, verify ALL of the following:
 3. **Config file mode is 0600** — verified by `internal/config/config.go#Save()`; if you add a new persisted file (history, cache), it gets the same treatment.
 4. **Config directory mode is 0700** — `os.MkdirAll(dir, 0o700)` before any file create.
 5. **TLS skip-verify is opt-in and loud** — `--insecure` flag (or `insecure_tls = true` in config) must log a `WARNING: TLS verification disabled` line to stderr before the request goes out. Never default-on.
-6. **No `os/exec` to a user-supplied string** — arcctl should not shell out at all in v1. If a future feature needs it, the arg must be in an `exec.Command` slice, never `sh -c "..."`.
+6. **No `os/exec` to a user-supplied string** — arcli should not shell out at all in v1. If a future feature needs it, the arg must be in an `exec.Command` slice, never `sh -c "..."`.
 7. **File paths from `-f` flags are read by the process, not interpolated into anything** — `os.Open(path)` is fine; constructing `cat $path | curl` is not (and we don't shell out anyway).
-8. **HTTP responses are bounded** — if a future command reads a response body fully into memory (e.g. `arcctl query` to JSON), document the size ceiling; for stream-y paths (`-o arrow`, `arcctl import`), use `io.Copy` not `io.ReadAll`.
+8. **HTTP responses are bounded** — if a future command reads a response body fully into memory (e.g. `arcli query` to JSON), document the size ceiling; for stream-y paths (`-o arrow`, `arcli import`), use `io.Copy` not `io.ReadAll`.
 
 ## Common Pitfalls
 
 - **Cobra `RunE` vs `Run`**: always use `RunE` and return an `error`. `Run` swallows errors silently.
 - **`SilenceUsage: true` on root** — without this, every flag error prints the full help text under it. Set on the root cobra.Command and child commands inherit it.
 - **Viper config format inferred from extension** — `viper.WriteConfigAs` rejects a `.tmp` suffix on the temp file. Atomic-write temp paths must end in `.toml` (use `os.CreateTemp(dir, "config.*.toml")`).
-- **`os.UserHomeDir()` returns an error on weird CI environments** — handle it, don't `panic`. Tests should set `ARCCTL_CONFIG` via `t.Setenv` to avoid hitting `$HOME` at all.
+- **`os.UserHomeDir()` returns an error on weird CI environments** — handle it, don't `panic`. Tests should set `ARCLI_CONFIG` via `t.Setenv` to avoid hitting `$HOME` at all.
 - **`http.DefaultClient` has no timeout** — use a constructed `http.Client{Timeout: ...}` for every request. A hung connection should not freeze the CLI forever.
 - **Don't close `resp.Body` before reading it; don't forget to close it after** — `defer resp.Body.Close()` immediately after the error check on `client.Do(req)`.
-- **Cobra completion is free but not on by default** — `arcctl completion bash|zsh|fish` is a generated command and worth enabling once the command tree stabilizes (PR8).
+- **Cobra completion is free but not on by default** — `arcli completion bash|zsh|fish` is a generated command and worth enabling once the command tree stabilizes (PR8).
 - **The user's terminal may not be a TTY** — do not detect TTY to switch output format; default `-o table` always and let the user pipe `-o json` when scripting. Surprising behaviour is worse than a flag.
 - **Don't add telemetry, ever** — `feedback_smoke_telemetry_disabled.md` is for Arc server, but the spirit applies harder here: a CLI that phones home is a trust violation, and we have no need.
 - **Don't add `-y` / `--yes` to destructive ops with a default-yes prompt** — destructive ops (`db drop`, `config delete`) prompt `y/N` and require `--yes` to skip. Default is always no.
 
 ## Carry-overs from Arc work (user-level conventions)
 
-These come from the user's auto-memory and apply across all Basekick repos, including arcctl:
+These come from the user's auto-memory and apply across all Basekick repos, including arcli:
 
 - **UTC always** — every timestamp/date/duration in code, logs, release notes, PR threads, commit messages.
 - **Pause for confirmation before `git commit`** — even after reviews pass, surface staged changes and wait for user OK.
-- **Split deployment artifacts from code PRs** — if a PR mixes `cmd/arcctl/` changes with `.github/workflows/` or `Dockerfile` changes that need separate iteration, split it. Past Arc PR #464 burned 6 Gemini rounds where only 1 finding hit product code.
+- **Split deployment artifacts from code PRs** — if a PR mixes `cmd/arcli/` changes with `.github/workflows/` or `Dockerfile` changes that need separate iteration, split it. Past Arc PR #464 burned 6 Gemini rounds where only 1 finding hit product code.
 - **Verify before declining a Gemini finding** — trace the data flow end-to-end before pushing back. Confidently-wrong "declined" replies cost follow-up PRs.
 - **Bench before *accepting* a Gemini perf suggestion** — symmetric. Don't take "make this parallel" or "switch to a different library" on vibes.
-- **Drive the entire smoke harness yourself** — if a PR's verification requires `arc serve` + a sequence of `arcctl` calls, run the whole thing rather than splitting "you run the server, I run the CLI" with the user.
+- **Drive the entire smoke harness yourself** — if a PR's verification requires `arc serve` + a sequence of `arcli` calls, run the whole thing rather than splitting "you run the server, I run the CLI" with the user.

@@ -10,19 +10,19 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/config"
-	"github.com/basekick-labs/arcctl/internal/output"
+	"github.com/basekick-labs/arcli/internal/config"
+	"github.com/basekick-labs/arcli/internal/output"
 )
 
 func newConfigCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "config",
-		Short: "Manage arcctl connection profiles (~/.arcctl/config.toml)",
+		Short: "Manage arcli connection profiles (~/.arcli/config.toml)",
 		Long: `Connections are named Arc endpoints + credentials. One is marked active and used
 by default; override per-command with -c/--connection.
 
-Stored in ~/.arcctl/config.toml (mode 0600, plaintext tokens — same posture as
-~/.aws/credentials). Honors ARCCTL_CONFIG env var for CI/test overrides.`,
+Stored in ~/.arcli/config.toml (mode 0600, plaintext tokens — same posture as
+~/.aws/credentials). Honors ARCLI_CONFIG env var for CI/test overrides.`,
 	}
 	c.AddCommand(
 		newConfigCreateCmd(),
@@ -48,8 +48,8 @@ func newConfigCreateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Add a new connection profile",
-		Example: `  arcctl config create --name local --endpoint http://localhost:8000 --token ABC --activate
-  arcctl config create --name prod  --endpoint https://arc.prod.example.com --token XYZ --default-database metrics`,
+		Example: `  arcli config create --name local --endpoint http://localhost:8000 --token ABC --activate
+  arcli config create --name prod  --endpoint https://arc.prod.example.com --token XYZ --default-database metrics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" || endpoint == "" || token == "" {
 				return fmt.Errorf("--name, --endpoint, and --token are required")
@@ -59,7 +59,7 @@ func newConfigCreateCmd() *cobra.Command {
 				return err
 			}
 			if _, exists := cfg.Connections[name]; exists {
-				return fmt.Errorf("connection %q already exists (use `arcctl config delete %s` first, or pick a different name)", name, name)
+				return fmt.Errorf("connection %q already exists (use `arcli config delete %s` first, or pick a different name)", name, name)
 			}
 			cfg.Connections[name] = config.Connection{
 				Endpoint:        endpoint,
@@ -104,7 +104,7 @@ func newConfigListCmd() *cobra.Command {
 				return err
 			}
 			if len(cfg.Connections) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No connections configured. Run `arcctl config create --help`.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No connections configured. Run `arcli config create --help`.")
 				return nil
 			}
 
@@ -150,7 +150,7 @@ func newConfigSetActiveCmd() *cobra.Command {
 				return err
 			}
 			if _, ok := cfg.Connections[name]; !ok {
-				return fmt.Errorf("connection %q not found (run `arcctl config list`)", name)
+				return fmt.Errorf("connection %q not found (run `arcli config list`)", name)
 			}
 			if cfg.Active == name {
 				fmt.Fprintf(cmd.OutOrStdout(), "Already active: %q\n", name)
@@ -225,7 +225,7 @@ func newConfigCurrentCmd() *cobra.Command {
 				return err
 			}
 			if cfg.Active == "" {
-				return fmt.Errorf("no active connection (run `arcctl config create --name NAME --endpoint URL --token TOKEN --activate`)")
+				return fmt.Errorf("no active connection (run `arcli config create --name NAME --endpoint URL --token TOKEN --activate`)")
 			}
 			c, ok := cfg.Connections[cfg.Active]
 			if !ok {
