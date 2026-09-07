@@ -2,7 +2,7 @@
 
 CLI for [Arc](https://github.com/Basekick-Labs/arc) — operator-facing client for Arc time-series databases.
 
-> **Status:** v0.5.0-dev (PR5). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, and API tokens, bulk-imports CSV / LP / Parquet / TLE files, and checks connectivity with `ping`. `cluster` / `compaction` / `retention` ship in follow-up PRs.
+> **Status:** v0.6.0-dev (PR6). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, and API tokens, bulk-imports CSV / LP / Parquet / TLE files, checks connectivity with `ping`, and inspects clusters and compaction. `retention` / `cq` ship in follow-up PRs.
 
 ## Why
 
@@ -218,6 +218,32 @@ arcli auth token rotate admin --save
 
 Interactive confirmations go to stderr and answering anything but `y`/`yes` exits 1. When stdin is not a terminal the prompt is refused outright, so scripts must pass `--yes`.
 
+## Cluster & compaction
+
+`arcli cluster` talks to Arc Enterprise clustering. On a standalone server `cluster status` reports that clustering is disabled (with the server's reason) and exits 0; every other cluster subcommand exits 1 so scripts never mistake "no cluster" for an empty cluster.
+
+```bash
+arcli cluster status                    # name, local node, raft leader, node table; -o json is the raw server body
+arcli cluster nodes --state unhealthy   # -o table|json|csv; --role writer|reader|compactor|standalone
+arcli cluster node show n2
+arcli cluster node show --local         # the node this connection talks to, with its capabilities
+arcli cluster health
+arcli cluster node remove n2 --yes      # admin; must be sent to the raft leader (arcli names the leader's API address if not)
+```
+
+`arcli compaction` observes and triggers Arc's background Parquet compaction. `trigger` needs an admin token; the rest work with any token. When `compaction.enabled=false` on the server every subcommand reports that compaction is disabled.
+
+```bash
+arcli compaction status                 # manager counters + per-tier schedulers (next run in UTC)
+arcli compaction stats                  # lifetime totals, tier settings, recent jobs
+arcli compaction candidates --database metrics
+arcli compaction history --limit 10     # the server keeps only the 10 most recent jobs; entries carry no timestamp
+arcli compaction trigger --tier hourly --database metrics
+arcli compaction trigger --wait         # poll until the cycle finishes (--wait-timeout, default 30m)
+```
+
+Trigger is asynchronous on the server: the reported cycle id is the one the server expects to assign, and it can be off by one or belong to a scheduled cycle that raced the trigger; `--wait` detects both and stops early instead of sleeping to the timeout. A tier that is disabled or not configured server-side is skipped silently by Arc, so arcli warns before sending. Arc's `/compaction/jobs` endpoint is a stub that always reports zero jobs and is deliberately not exposed.
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
@@ -236,7 +262,7 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR3** — `arcli db {list,show,create,drop}`, `arcli measurement list`~~ ✅ shipped
 - ~~**PR4** — `arcli import {csv,lp,parquet,tle}`~~ ✅ shipped
 - ~~**PR5** — `arcli auth {whoami,token ...}`, `arcli ping`, `arcli config update`~~ ✅ shipped
-- **PR6** — `arcli cluster {status,nodes,node show,health,node remove}`, `arcli compaction {status,stats,candidates,jobs,history,trigger}`
+- ~~**PR6** — `arcli cluster {status,nodes,node show,node remove,health}`, `arcli compaction {status,stats,candidates,history,trigger}`~~ ✅ shipped
 - **PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions)
 - **PR8** — `arcli delete` (predicate delete), `arcli backup {...}`, `arcli restore`
 - **PR9** — `arcli write --format msgpack`, `arcli import stats`, `arcli query --estimate`, `arcli logs`
