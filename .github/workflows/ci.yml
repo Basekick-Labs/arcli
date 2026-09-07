@@ -65,7 +65,7 @@ jobs:
           cache: true
 
       - name: GoReleaser snapshot
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2.18"
           args: release --snapshot --clean --skip=publish,sign,sbom,docker
