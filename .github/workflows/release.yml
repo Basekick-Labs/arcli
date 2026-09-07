@@ -1,7 +1,7 @@
 name: Release
 
-# Fires on every v* tag (CalVer like Arc: v26.09.1, v26.09.2, …; artifact
-# versions are normalised to 26.9.1 by GoReleaser). GoReleaser builds
+# Fires on every v* tag (CalVer like Arc: v26.09.1, v26.09.2, …; the
+# deb/rpm/Arch packagers normalise their version field to 26.9.1). GoReleaser builds
 # the archives, deb/rpm/Arch packages, SBOMs, the multi-arch GHCR image
 # and the Homebrew formula, and creates the GitHub release. GoReleaser
 # publishes images → GitHub release → formula, so a formula failure
