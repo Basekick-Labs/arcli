@@ -131,7 +131,7 @@ func (c *Client) setCommonHeaders(req *http.Request, database string) {
 	if db := c.resolveDatabase(database); db != "" {
 		req.Header.Set(HeaderDatabase, db)
 	}
-	req.Header.Set("User-Agent", "arcctl")
+	req.Header.Set("User-Agent", "arcli")
 }
 
 // setCrossDBHeaders writes Authorization + User-Agent but NEVER sends
@@ -144,5 +144,5 @@ func (c *Client) setCommonHeaders(req *http.Request, database string) {
 // non-empty default Database would silently include the wrong header.
 func (c *Client) setCrossDBHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
-	req.Header.Set("User-Agent", "arcctl")
+	req.Header.Set("User-Agent", "arcli")
 }

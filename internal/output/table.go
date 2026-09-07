@@ -1,6 +1,6 @@
 // Package output renders command output in operator-friendly forms.
 //
-// PR1 only needs a table renderer good enough for `arcctl config list`
+// PR1 only needs a table renderer good enough for `arcli config list`
 // (a 5-column connection table). Later PRs add JSON / CSV / Arrow
 // renderers that share the same column abstraction.
 package output

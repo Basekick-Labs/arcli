@@ -115,7 +115,7 @@ func (c *Client) GetDatabase(ctx context.Context, name string) (*DatabaseInfo, e
 // CreateDatabase creates a new empty database. Returns the server's
 // freshly-created metadata on HTTP 201. The server enforces name
 // validation (alphanumeric + `_-`, ≤ 64 chars, not a reserved name like
-// "system" / "internal"); arcctl forwards whatever the user typed and
+// "system" / "internal"); arcli forwards whatever the user typed and
 // lets the server produce the canonical error.
 func (c *Client) CreateDatabase(ctx context.Context, name string) (*DatabaseInfo, error) {
 	if name == "" {

@@ -1,6 +1,6 @@
 # Local build output
-/arcctl
-/arcctl.exe
+/arcli
+/arcli.exe
 /dist/
 
 # Test binaries

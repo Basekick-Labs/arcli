@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/basekick-labs/arcctl/internal/client"
+	"github.com/basekick-labs/arcli/internal/client"
 )
 
 func sampleQR() *client.QueryResult {

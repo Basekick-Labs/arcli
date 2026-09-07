@@ -2,7 +2,7 @@
 //
 // Input: either `-f file.lp` (file path) or stdin (when -f is not
 // supplied). Body is streamed — we never buffer the full payload — so
-// piping `cat huge.lp | arcctl write` works at line-rate.
+// piping `cat huge.lp | arcli write` works at line-rate.
 package commands
 
 import (
@@ -14,7 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
+	"github.com/basekick-labs/arcli/internal/client"
 )
 
 func newWriteCmd() *cobra.Command {
@@ -38,9 +38,9 @@ The body is streamed — large files / pipes do NOT buffer in memory.
 
 Precision must be one of ns, us, ms, s. The server treats an unset
 precision as nanoseconds.`,
-		Example: `  echo "cpu,host=a value=42 1234567890000000000" | arcctl write --database metrics
-  arcctl write -f payload.lp --database metrics --precision ms
-  cat /var/log/lp/*.lp | arcctl write -c prod --database metrics`,
+		Example: `  echo "cpu,host=a value=42 1234567890000000000" | arcli write --database metrics
+  arcli write -f payload.lp --database metrics --precision ms
+  cat /var/log/lp/*.lp | arcli write -c prod --database metrics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !client.ValidPrecision(precision) {
 				return fmt.Errorf("invalid --precision %q (must be one of ns, us, ms, s)", precision)
@@ -89,7 +89,7 @@ precision as nanoseconds.`,
 // MUST NOT close (no closer is returned for that path).
 //
 // We deliberately do NOT block on a TTY stdin like `query` does: an
-// operator who runs `arcctl write` interactively and types lines is a
+// operator who runs `arcli write` interactively and types lines is a
 // supported (if rare) workflow. The hang-on-empty-TTY foot-gun
 // matters for query because empty-SQL would error anyway; for write
 // the server accepts an empty body as a no-op.

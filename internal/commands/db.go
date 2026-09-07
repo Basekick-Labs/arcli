@@ -21,8 +21,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
-	"github.com/basekick-labs/arcctl/internal/output"
+	"github.com/basekick-labs/arcli/internal/client"
+	"github.com/basekick-labs/arcli/internal/output"
 )
 
 func newDBCmd() *cobra.Command {
@@ -226,7 +226,7 @@ The server enforces its own layered safety:
   - Requires delete.enabled=true in arc.toml (server returns 403 if not)
   - Requires an admin-permission token
   - Reserved names ("system", "internal", "_internal") are blocked
-  - Server enforces ?confirm=true on the request URL; arcctl always sends it
+  - Server enforces ?confirm=true on the request URL; arcli always sends it
 
 When the server refuses, its error message surfaces verbatim — including
 the "Set delete.enabled=true in arc.toml to enable" hint when the server

@@ -1,9 +1,9 @@
 // Query subcommand: runs SQL against an Arc cluster.
 //
 // Three input modes:
-//  1. `arcctl query "SELECT ..."` (positional arg)
-//  2. `arcctl query -f file.sql` (file containing the SQL)
-//  3. `arcctl query` reading SQL from stdin (when neither arg nor -f
+//  1. `arcli query "SELECT ..."` (positional arg)
+//  2. `arcli query -f file.sql` (file containing the SQL)
+//  3. `arcli query` reading SQL from stdin (when neither arg nor -f
 //     is given and stdin is a pipe)
 //
 // Four output formats: table (default), json, csv, arrow. Arrow streams
@@ -20,9 +20,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
-	"github.com/basekick-labs/arcctl/internal/config"
-	"github.com/basekick-labs/arcctl/internal/output"
+	"github.com/basekick-labs/arcli/internal/client"
+	"github.com/basekick-labs/arcli/internal/config"
+	"github.com/basekick-labs/arcli/internal/output"
 )
 
 func newQueryCmd() *cobra.Command {
@@ -47,11 +47,11 @@ SQL input precedence: positional argument > --file > stdin (only when
 neither is supplied). Output defaults to a pretty table; -o json|csv
 emit machine-parseable formats; -o arrow streams binary Arrow IPC to
 stdout for piping into pyarrow / duckdb / etc.`,
-		Example: `  arcctl query "SELECT count(*) FROM cpu"
-  arcctl query --database metrics "SELECT * FROM cpu LIMIT 10"
-  arcctl query -f long_query.sql -o csv > out.csv
-  echo "SELECT 1" | arcctl query
-  arcctl query "SELECT * FROM cpu" -o arrow | python -c 'import pyarrow.ipc as ipc, sys; print(ipc.open_stream(sys.stdin.buffer).read_all())'`,
+		Example: `  arcli query "SELECT count(*) FROM cpu"
+  arcli query --database metrics "SELECT * FROM cpu LIMIT 10"
+  arcli query -f long_query.sql -o csv > out.csv
+  echo "SELECT 1" | arcli query
+  arcli query "SELECT * FROM cpu" -o arrow | python -c 'import pyarrow.ipc as ipc, sys; print(ipc.open_stream(sys.stdin.buffer).read_all())'`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !output.ValidFormat(outputFormat) {

@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-// withTempConfig runs fn with ARCCTL_CONFIG pointed at a fresh tempdir-
-// scoped path so tests don't touch the real ~/.arcctl/config.toml.
+// withTempConfig runs fn with ARCLI_CONFIG pointed at a fresh tempdir-
+// scoped path so tests don't touch the real ~/.arcli/config.toml.
 func withTempConfig(t *testing.T, fn func()) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	t.Setenv("ARCCTL_CONFIG", path)
+	t.Setenv("ARCLI_CONFIG", path)
 	fn()
 }
 

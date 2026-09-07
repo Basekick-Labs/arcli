@@ -3,7 +3,7 @@
 // All four formats use POST /api/v1/import/{csv,parquet,lp,tle} on the
 // server, all are multipart uploads with field name "file", and all
 // require an admin token (the server's adminAuth middleware). The body
-// is streamed via io.Pipe — `arcctl import csv -f huge.csv` does NOT
+// is streamed via io.Pipe — `arcli import csv -f huge.csv` does NOT
 // buffer the whole file in memory.
 //
 // CSV and Parquet require --measurement (file has no notion of one).
@@ -21,8 +21,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/basekick-labs/arcctl/internal/client"
-	"github.com/basekick-labs/arcctl/internal/output"
+	"github.com/basekick-labs/arcli/internal/client"
+	"github.com/basekick-labs/arcli/internal/output"
 )
 
 func newImportCmd() *cobra.Command {
@@ -123,8 +123,8 @@ func newImportCSVCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "csv",
 		Short: "Import a CSV file into a measurement",
-		Example: `  arcctl import csv -f data.csv --database metrics --measurement cpu
-  arcctl import csv -f data.csv --database metrics --measurement cpu \
+		Example: `  arcli import csv -f data.csv --database metrics --measurement cpu
+  arcli import csv -f data.csv --database metrics --measurement cpu \
       --time-column ts --time-format epoch_ms --delimiter ';' --skip-rows 1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if common.timeout <= 0 {
@@ -190,9 +190,9 @@ as a server-side filter rather than a destination. The server auto-
 detects gzip via magic bytes — pass either a .lp or a .lp.gz file.
 
 Server-side cap: 500 MB decompressed.`,
-		Example: `  arcctl import lp -f telegraf-snapshot.lp --database metrics
-  arcctl import lp -f data.lp.gz --database metrics --precision ms
-  arcctl import lp -f data.lp --database metrics --measurement cpu  # filter to cpu`,
+		Example: `  arcli import lp -f telegraf-snapshot.lp --database metrics
+  arcli import lp -f data.lp.gz --database metrics --precision ms
+  arcli import lp -f data.lp --database metrics --measurement cpu  # filter to cpu`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if common.timeout <= 0 {
 				return fmt.Errorf("--timeout must be > 0 (got %s)", common.timeout)
@@ -248,8 +248,8 @@ func newImportParquetCmd() *cobra.Command {
 
 Parquet preserves column types end-to-end — faster + lossless compared
 to CSV for the same data.`,
-		Example: `  arcctl import parquet -f data.parquet --database metrics --measurement cpu
-  arcctl import parquet -f data.parquet --database metrics --measurement cpu --time-column ts`,
+		Example: `  arcli import parquet -f data.parquet --database metrics --measurement cpu
+  arcli import parquet -f data.parquet --database metrics --measurement cpu --time-column ts`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if common.timeout <= 0 {
 				return fmt.Errorf("--timeout must be > 0 (got %s)", common.timeout)
@@ -305,8 +305,8 @@ one row per satellite into the target measurement.
 
 --measurement defaults to "satellite_tle" if omitted (matches the
 server's default behavior).`,
-		Example: `  arcctl import tle -f starlink.tle --database satellites
-  arcctl import tle -f starlink.tle --database satellites --measurement starlink`,
+		Example: `  arcli import tle -f starlink.tle --database satellites
+  arcli import tle -f starlink.tle --database satellites --measurement starlink`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if common.timeout <= 0 {
 				return fmt.Errorf("--timeout must be > 0 (got %s)", common.timeout)
