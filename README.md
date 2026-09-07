@@ -2,7 +2,7 @@
 
 CLI for [Arc](https://github.com/Basekick-Labs/arc) — operator-facing client for Arc time-series databases.
 
-> **Status:** v0.7.0-dev (PR7). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, checks connectivity with `ping`, and inspects clusters, compaction and schedulers. `delete` / `backup` ship in follow-up PRs.
+> **Status:** v0.8.0-dev (PR8). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, deletes rows by predicate, takes and restores backups, checks connectivity with `ping`, and inspects clusters, compaction and schedulers. Release tooling ships in follow-up PRs.
 
 ## Why
 
@@ -275,6 +275,31 @@ arcli cq delete cpu-1m --yes
 
 On Arc OSS neither the retention nor the CQ scheduler runs (Enterprise feature), so nothing fires automatically; `arcli scheduler status` shows both schedulers' state and the reason, and `create` prints a hint when the relevant scheduler is not running. Follow-ups: chunked `cq execute --backfill`, `scheduler` reload/trigger commands (Enterprise).
 
+## Deleting rows & backups
+
+`arcli delete` removes rows matching a SQL predicate by rewriting the affected Parquet files (a file is removed when every row matches). It needs an admin token and `delete.enabled=true` on the server; `arcli db drop` removes a whole database.
+
+```bash
+arcli delete --database metrics --measurement cpu --where "host = 'old-01'" --dry-run
+arcli delete --database metrics --measurement cpu --where "time < '2025-01-01'"     # server dry-run, then a prompt with its counts
+arcli delete --database metrics --measurement cpu --where "1=1" --yes               # every row of the measurement
+```
+
+The predicate is sent as `(<where>) IS TRUE`, so rows where it is NULL are kept and the preview matches the real run exactly (Arc's own rewrite would otherwise drop NULL rows it never counted). A predicate that does not evaluate is reported as an error instead of "0 rows". The call is synchronous with a 30-minute default `--timeout`. Composed `--before`/`--after` flags are a follow-up; put time bounds in the predicate for now.
+
+`arcli backup` takes full backups of every database into the server's `backup.local_path` and restores them. Create and restore run in the background on the server and share one slot.
+
+```bash
+arcli backup create --wait                 # prints the id; --wait polls to completion (default 2h)
+arcli backup list                          # newest first; only `show` can flag an incomplete backup
+arcli backup show backup-20260907-201105-a0f5e600
+arcli backup status                        # running or most recent operation
+arcli backup restore backup-20260907-201105-a0f5e600 --data-only --wait
+arcli backup delete backup-20260907-201105-a0f5e600 --yes
+```
+
+Restore overwrites existing files at the same paths and is meant for a quiescent server (stop writers and compaction first; in cluster mode restored files are not registered in the cluster manifest). Metadata and config restores are staged and applied at the next server start; arcli says so after every restore that includes them.
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
@@ -295,7 +320,7 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR5** — `arcli auth {whoami,token ...}`, `arcli ping`, `arcli config update`~~ ✅ shipped
 - ~~**PR6** — `arcli cluster {status,nodes,node show,node remove,health}`, `arcli compaction {status,stats,candidates,history,trigger}`~~ ✅ shipped
 - ~~**PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions), `arcli scheduler status`~~ ✅ shipped
-- **PR8** — `arcli delete` (predicate delete), `arcli backup {...}`, `arcli restore`
+- ~~**PR8** — `arcli delete` (predicate delete), `arcli backup {create,list,show,status,delete,restore}`~~ ✅ shipped
 - **PR9** — `arcli write --format msgpack`, `arcli import stats`, `arcli query --estimate`, `arcli logs`
 - **PR10** — release workflow + Homebrew tap + multi-arch Docker + shell completion, cut v1.0.0
 - **Post-1.0** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell

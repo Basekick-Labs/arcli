@@ -103,7 +103,7 @@ func (c *Client) QueryJSON(ctx context.Context, sql, database string) (*QueryRes
 func decodeServerError(status int, body []byte) error {
 	var er errorResponse
 	if err := json.Unmarshal(body, &er); err == nil && er.Error != "" {
-		return fmt.Errorf("arc: %s (HTTP %d)", er.Error, status)
+		return &HTTPError{Status: status, Message: scrubControls(er.Error), Body: body}
 	}
 	// Non-JSON or JSON-but-no-error-field. Truncate so a multi-MB
 	// HTML error page from nginx doesn't fill the terminal.
@@ -112,7 +112,7 @@ func decodeServerError(status int, body []byte) error {
 	if len(raw) > maxRawLen {
 		raw = raw[:maxRawLen] + "...[truncated]"
 	}
-	return fmt.Errorf("arc: HTTP %d: %s", status, raw)
+	return &HTTPError{Status: status, Raw: scrubControls(raw), Body: body}
 }
 
 // RowAt returns the i-th row of a QueryResult. Returns nil if i is

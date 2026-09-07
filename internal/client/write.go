@@ -91,14 +91,14 @@ func decodeWriteError(status int, body []byte) error {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &er); err == nil && er.Error != "" {
-		return &HTTPError{Status: status, Message: scrubControls(er.Error)}
+		return &HTTPError{Status: status, Message: scrubControls(er.Error), Body: body}
 	}
 	const maxRawLen = 512
 	raw := string(body)
 	if len(raw) > maxRawLen {
 		raw = raw[:maxRawLen] + "...[truncated]"
 	}
-	return &HTTPError{Status: status, Raw: scrubControls(raw)}
+	return &HTTPError{Status: status, Raw: scrubControls(raw), Body: body}
 }
 
 // scrubControls strips C0/C1 control characters and Unicode bidi
@@ -126,6 +126,10 @@ type HTTPError struct {
 	Status  int
 	Message string
 	Raw     string
+	// Body is the unmodified response body (bounded by the caller's
+	// read limit) for callers that need extra fields from a structured
+	// error, such as a 409's "operation" or "cycle_id".
+	Body []byte
 }
 
 func (e *HTTPError) Error() string {
