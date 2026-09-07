@@ -18,7 +18,7 @@ The model for connection management is the InfluxDB v2 CLI (`influx config creat
   4. `ARC_ENDPOINT` + `ARC_TOKEN` env vars (full ad-hoc)
   5. `active` connection in config file
   → No fallback past 5; commands error with a clear "no active connection" message
-- **No state on disk besides the config file.** No history file, no cache, no telemetry — `arcli` never phones home.
+- **No state on disk besides the config file.** No history file, no cache. `arcli` never phones home: it only ever talks to the Arc endpoints the user configures. The one identity it carries is `installation_id` (random UUID minted by `config.Save()`, stored in the config file), sent as `Arcli-Installation-Id` so Arc's own opt-out telemetry can count CLI installations per instance (the same id goes to every server the user configures, and the README's Privacy section says so). Opt-outs: `send_installation_id = false`, `DO_NOT_TRACK=1`. Never extend this into the CLI reporting to Basekick directly.
 - **Targeted server version:** arcli 1.x talks to Arc 26.06+ (pre-26.06 lacks Phase A cluster auth replication, so token admin would behave inconsistently across nodes).
 
 ## Build & Test
@@ -209,7 +209,7 @@ When adding or modifying any command, verify ALL of the following:
 - **Don't close `resp.Body` before reading it; don't forget to close it after** — `defer resp.Body.Close()` immediately after the error check on `client.Do(req)`.
 - **Cobra completion is free but not on by default** — `arcli completion bash|zsh|fish` is a generated command and worth enabling once the command tree stabilizes (PR8).
 - **The user's terminal may not be a TTY** — do not detect TTY to switch output format; default `-o table` always and let the user pipe `-o json` when scripting. Surprising behaviour is worse than a flag.
-- **Don't add telemetry, ever** — `feedback_smoke_telemetry_disabled.md` is for Arc server, but the spirit applies harder here: a CLI that phones home is a trust violation, and we have no need.
+- **Don't add telemetry to the CLI** — arcli reporting to Basekick directly would be a trust violation. The sanctioned mechanism is the installation-id header to the user's own Arc server (see Architecture); anything beyond that needs an explicit decision, an opt-in, and a doc rewrite.
 - **Don't add `-y` / `--yes` to destructive ops with a default-yes prompt** — destructive ops (`db drop`, `config delete`) prompt `y/N` and require `--yes` to skip. Default is always no.
 
 ## Carry-overs from Arc work (user-level conventions)

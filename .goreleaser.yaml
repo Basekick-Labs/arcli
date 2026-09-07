@@ -240,7 +240,10 @@ release:
   prerelease: auto
   # Publish order is images → this release → formula. A rerun of the
   # tag (e.g. after a failed Homebrew push) replaces the assets instead
-  # of failing on "already exists" and re-pushes the images.
+  # of failing on "already exists" and re-pushes the images; mode
+  # replace also rewrites the release body (default keep-existing would
+  # leave stale notes on the page after a re-cut).
+  mode: replace
   replace_existing_artifacts: true
   preflight:
     fail_on_error: true

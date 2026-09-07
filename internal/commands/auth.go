@@ -551,7 +551,7 @@ never authenticate.`,
 					return fmt.Errorf("--save refused: profile %q's stored token is not the token in use", connName)
 				}
 			}
-			cli, err := buildClientFrom(stderr, conn, f.insecure, f.timeout)
+			cli, err := buildClientFrom(stderr, conn, cfg.OutboundInstallationID(), f.insecure, f.timeout)
 			if err != nil {
 				return err
 			}

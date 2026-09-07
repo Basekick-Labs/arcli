@@ -372,6 +372,12 @@ arcli completion powershell | Out-String | Invoke-Expression
 
 The Homebrew formula and the deb / rpm / Arch packages install the completions (and man pages: `man arcli`, `man arcli-query`) for you.
 
+## Privacy
+
+arcli never contacts Basekick or any third party; every request goes to the Arc server you configured, and the only thing it stores is `~/.arcli/config.toml`.
+
+Requests carry a `User-Agent` with the arcli version and OS/architecture and, once a config file exists, a random installation id (`installation_id` in the config file, minted by the first `config create`, not derived from your machine or account) in the `Arcli-Installation-Id` header. Arc's own opt-out telemetry may report that id together with its instance id to Basekick once a day (and at shutdown), so Basekick can count how many CLI installations talk to how many Arc servers. Because the id is the same for every server you use, it links the servers one installation talks to. Only requests the server authenticated are counted, so `ping` alone never registers anything. Opt out with `DO_NOT_TRACK=1` or `send_installation_id = false` in the config file; disabling telemetry on the Arc server also stops it. `arcli config current` shows the id and whether it is being sent; delete the key and the next command that writes the config file (`config create|update|set-active|delete`) mints a new one. With no config file at all (env-only use in a container) there is no id to send. Nothing else is stored or sent.
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
