@@ -190,7 +190,7 @@ Even small, test-only, or single-file diffs go through the matrix + deep reviewe
 
 When adding or modifying any command, verify ALL of the following:
 
-1. **Tokens never appear in stdout/stderr unredacted** — use `config.RedactToken()` for every human-facing print. Verbose mode (`-v`) may print HTTP headers; redact the `Authorization` value there too.
+1. **Tokens never appear in stdout/stderr unredacted** — use `config.RedactToken()` for every human-facing print. Verbose mode (`-v`) may print HTTP headers; redact the `Authorization` value there too. **The one sanctioned exception:** `auth token create` and `auth token rotate` print the freshly minted secret to stdout, because delivering it is their purpose and the server never shows it again. They print nothing else on stdout in table mode (so `$(...)` capture is clean) and put the "store it securely" reminder on stderr. Every other command handles `TokenInfo`, which carries no secret.
 2. **Tokens never appear in error messages** — wrap underlying HTTP/network errors so the bearer header doesn't leak through a `%v` of an `http.Request`.
 3. **Config file mode is 0600** — verified by `internal/config/config.go#Save()`; if you add a new persisted file (history, cache), it gets the same treatment.
 4. **Config directory mode is 0700** — `os.MkdirAll(dir, 0o700)` before any file create.

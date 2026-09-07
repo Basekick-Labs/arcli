@@ -2,7 +2,7 @@
 
 CLI for [Arc](https://github.com/Basekick-Labs/arc) — operator-facing client for Arc time-series databases.
 
-> **Status:** v0.4.0-dev (PR4). Manages connection profiles, runs SQL queries, writes line protocol, administers databases + measurements, and bulk-imports CSV / LP / Parquet / TLE files. `auth` / `cluster` subcommands ship in follow-up PRs.
+> **Status:** v0.5.0-dev (PR5). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, and API tokens, bulk-imports CSV / LP / Parquet / TLE files, and checks connectivity with `ping`. `cluster` / `compaction` / `retention` ship in follow-up PRs.
 
 ## Why
 
@@ -50,6 +50,9 @@ arcli config create --name staging --endpoint https://arc.staging.example.com --
 
 # Switch active
 arcli config set-active staging
+
+# Change a stored field (e.g. after rotating a token)
+arcli config update prod --token NEW-TOKEN
 
 # Override per-command (later PRs)
 arcli --connection prod query "SELECT count(*) FROM cpu"
@@ -178,6 +181,43 @@ arcli import tle -f starlink.tle --database satellites --measurement starlink
 
 All four require an **admin** token (server-side `adminAuth`). Each prints either a pretty result block or `-o json` for scripting; server errors (auth, validation, "file is empty", quota) surface verbatim.
 
+## Auth & tokens
+
+`arcli ping` is the first thing to run after `config create`: it hits `GET /health` (no token sent) and then `GET /api/v1/auth/verify` with the token, and exits non-zero if either fails. `-o json` always prints the report so a script can see which half failed.
+
+```bash
+arcli ping
+arcli ping -c prod -o json
+arcli auth whoami                       # the token this connection uses
+```
+
+Everything under `auth token` needs an **admin** token. Tokens are addressed by numeric id or exact name.
+
+```bash
+arcli auth token list                   # -o table|json|csv; revoked tokens show ENABLED=false
+arcli auth token show grafana
+arcli auth token permissions grafana    # effective per-database permissions (RBAC-aware)
+
+# Create: the secret is printed to stdout exactly once; id + reminder go to stderr
+T=$(arcli auth token create --name ci --permission read,write --expires-in 30d)
+arcli auth token create --name ops --permission admin -o json
+
+arcli auth token update ci --description "nightly" --permission read
+arcli auth token rotate ci --yes        # new secret on stdout; old secret dead immediately
+arcli auth token revoke ci --yes        # permanent; the row stays listed, disabled
+arcli auth token delete ci --yes        # revoke/delete of the last enabled admin token needs --force
+```
+
+Permissions are `read`, `write`, `delete`, `admin`. `--expires-in` takes a Go duration (`24h`) or a day count (`7d`); once set, an expiry can be moved but not removed (server limitation).
+
+Rotating, revoking, or deleting the token arcli itself is using prints a loud warning. For rotation, `--save` writes the new secret into every profile in the config file that held the old one. It is refused up front, before anything is rotated, unless the connection came from a named profile, the server confirms the target is the token in use, and the config directory is writable. The secret is always printed before the config file is touched; the updated profile names go to stderr:
+
+```bash
+arcli auth token rotate admin --save
+```
+
+Interactive confirmations go to stderr and answering anything but `y`/`yes` exits 1. When stdin is not a terminal the prompt is refused outright, so scripts must pass `--yes`.
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
@@ -194,11 +234,14 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR1** — scaffold, `config` subcommand tree, multi-connection store~~ ✅ shipped
 - ~~**PR2** — `arcli query`, `arcli write`, output formats: table/json/csv/arrow~~ ✅ shipped
 - ~~**PR3** — `arcli db {list,show,create,drop}`, `arcli measurement list`~~ ✅ shipped
-- ~~**PR4** — `arcli import {csv,lp,parquet,tle}` (msgpack write deferred to a follow-up)~~ ✅ shipped
-- **PR5** — `arcli auth {token,whoami}`
-- **PR6** — `arcli cluster {status,nodes}`, `arcli compaction`, `arcli retention`
-- **PR7** — `arcli write --format msgpack` (msgpack-write follow-up)
-- **PR8** — release workflow + Homebrew tap + multi-arch Docker, cut v1.0.0
+- ~~**PR4** — `arcli import {csv,lp,parquet,tle}`~~ ✅ shipped
+- ~~**PR5** — `arcli auth {whoami,token ...}`, `arcli ping`, `arcli config update`~~ ✅ shipped
+- **PR6** — `arcli cluster {status,nodes,node show,health,node remove}`, `arcli compaction {status,stats,candidates,jobs,history,trigger}`
+- **PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions)
+- **PR8** — `arcli delete` (predicate delete), `arcli backup {...}`, `arcli restore`
+- **PR9** — `arcli write --format msgpack`, `arcli import stats`, `arcli query --estimate`, `arcli logs`
+- **PR10** — release workflow + Homebrew tap + multi-arch Docker + shell completion, cut v1.0.0
+- **Post-1.0** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
 
 Target: arcli 1.x speaks to Arc 26.06+.
 

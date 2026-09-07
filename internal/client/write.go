@@ -80,20 +80,40 @@ func (c *Client) WriteLineProtocol(ctx context.Context, body io.Reader, database
 	return decodeWriteError(resp.StatusCode, respBody)
 }
 
-// decodeWriteError handles the write endpoint's error shape, which
-// differs from query: `{"error": "..."}` with no `success` field.
-// Falls back to truncated raw body for non-JSON responses (proxies).
+// decodeWriteError turns a non-2xx response into an *HTTPError. It is
+// the shared decoder for every JSON endpoint (write, databases, import,
+// auth, health): Arc's error bodies are `{"error": "..."}`, optionally
+// with a `success:false`, and a non-JSON body is kept as a truncated
+// raw string.
 func decodeWriteError(status int, body []byte) error {
 	var er struct {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &er); err == nil && er.Error != "" {
-		return fmt.Errorf("arc: %s (HTTP %d)", er.Error, status)
+		return &HTTPError{Status: status, Message: er.Error}
 	}
 	const maxRawLen = 512
 	raw := string(body)
 	if len(raw) > maxRawLen {
 		raw = raw[:maxRawLen] + "...[truncated]"
 	}
-	return fmt.Errorf("arc: HTTP %d: %s", status, raw)
+	return &HTTPError{Status: status, Raw: raw}
+}
+
+// HTTPError is a non-2xx response from Arc. Message is the server's
+// JSON `error` field when the body was JSON; otherwise Raw holds a
+// truncated copy of the body. Callers that need to branch on status
+// (e.g. treating 404 on an optional route as "feature disabled") use
+// errors.As; everyone else just prints Error().
+type HTTPError struct {
+	Status  int
+	Message string
+	Raw     string
+}
+
+func (e *HTTPError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("arc: %s (HTTP %d)", e.Message, e.Status)
+	}
+	return fmt.Sprintf("arc: HTTP %d: %s", e.Status, e.Raw)
 }

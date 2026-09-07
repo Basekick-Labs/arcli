@@ -2,7 +2,8 @@
 //
 // Each top-level command lives in its own file. PR1 shipped `root` +
 // `config`; PR2 added `query` + `write`; PR3 added `db` + `measurement`;
-// PR4 added `import`. Later PRs add: auth, cluster, ops.
+// PR4 added `import`; PR5 added `auth` + `ping`. Later PRs add: cluster,
+// compaction, retention, cq, delete, backup.
 package commands
 
 import "github.com/spf13/cobra"
@@ -36,6 +37,8 @@ First-time setup:
 		newDBCmd(),
 		newMeasurementCmd(),
 		newImportCmd(),
+		newAuthCmd(),
+		newPingCmd(),
 	)
 	return root
 }

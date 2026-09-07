@@ -281,14 +281,20 @@ func TestRenderMeasurementList_TableEmpty(t *testing.T) {
 
 func TestConfirmDestructive_AcceptsY(t *testing.T) {
 	cmd := newTestCmd()
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
 	cmd.SetIn(strings.NewReader("y\n"))
 	if !confirmDestructive(cmd, "Delete X?") {
 		t.Error("y should accept")
 	}
-	if !strings.Contains(out.String(), "Delete X? [y/N]") {
-		t.Errorf("prompt missing: %q", out.String())
+	// The prompt goes to stderr (PR5) so stdout stays clean for
+	// scripts capturing a command's result.
+	if !strings.Contains(errOut.String(), "Delete X? [y/N]") {
+		t.Errorf("prompt missing from stderr: %q", errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("prompt leaked to stdout: %q", out.String())
 	}
 }
 

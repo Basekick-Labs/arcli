@@ -4,6 +4,7 @@ package commands
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -26,6 +27,7 @@ Stored in ~/.arcli/config.toml (mode 0600, plaintext tokens — same posture as
 	}
 	c.AddCommand(
 		newConfigCreateCmd(),
+		newConfigUpdateCmd(),
 		newConfigListCmd(),
 		newConfigSetActiveCmd(),
 		newConfigDeleteCmd(),
@@ -53,6 +55,13 @@ func newConfigCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" || endpoint == "" || token == "" {
 				return fmt.Errorf("--name, --endpoint, and --token are required")
+			}
+			if err := validateEndpoint(endpoint); err != nil {
+				return err
+			}
+			if strings.HasPrefix(name, "(") {
+				// "(flags)" / "(env)" are Resolve's ad-hoc sentinels.
+				return fmt.Errorf("connection name must not start with \"(\"")
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -90,6 +99,93 @@ func newConfigCreateCmd() *cobra.Command {
 	c.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification for this connection")
 	c.Flags().BoolVar(&activate, "activate", false, "make this the active connection")
 	return c
+}
+
+// ---- update ----------------------------------------------------------------
+
+func newConfigUpdateCmd() *cobra.Command {
+	var (
+		endpoint        string
+		token           string
+		defaultDatabase string
+		insecure        bool
+	)
+	c := &cobra.Command{
+		Use:   "update <name>",
+		Short: "Change fields of an existing connection profile",
+		Long: `Change one or more fields of an existing connection profile. Only the
+flags you pass are changed; --default-database "" clears the default.
+
+Typical use is refreshing a stored token after "arcli auth token rotate".`,
+		Example: `  arcli config update prod --token NEW-TOKEN
+  arcli config update local --default-database metrics --insecure=false`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			fl := cmd.Flags()
+			if !fl.Changed("endpoint") && !fl.Changed("token") && !fl.Changed("default-database") && !fl.Changed("insecure") {
+				return fmt.Errorf("nothing to update (pass at least one of --endpoint, --token, --default-database, --insecure)")
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			conn, ok := cfg.Connections[name]
+			if !ok {
+				return fmt.Errorf("connection %q not found (run `arcli config list`)", name)
+			}
+			var changed []string
+			if fl.Changed("endpoint") {
+				if err := validateEndpoint(endpoint); err != nil {
+					return err
+				}
+				conn.Endpoint = endpoint
+				changed = append(changed, "endpoint")
+			}
+			if fl.Changed("token") {
+				if token == "" {
+					return fmt.Errorf("--token must not be empty")
+				}
+				conn.Token = token
+				changed = append(changed, "token")
+			}
+			if fl.Changed("default-database") {
+				conn.DefaultDatabase = defaultDatabase
+				changed = append(changed, "default_database")
+			}
+			if fl.Changed("insecure") {
+				conn.InsecureTLS = insecure
+				changed = append(changed, "insecure_tls")
+			}
+			cfg.Connections[name] = conn
+			if err := cfg.Save(); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Updated connection %q (%s)\n", name, strings.Join(changed, ", "))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&endpoint, "endpoint", "", "new Arc HTTP endpoint URL")
+	c.Flags().StringVar(&token, "token", "", "new API token")
+	c.Flags().StringVar(&defaultDatabase, "default-database", "", "new default database (\"\" clears)")
+	c.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification for this connection (use --insecure=false to re-enable)")
+	return c
+}
+
+// validateEndpoint rejects values that cannot be an Arc base URL. The
+// check is deliberately minimal (scheme + host); the first request
+// against a wrong endpoint produces the definitive error.
+func validateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("--endpoint must be an http:// or https:// URL (got %q)", endpoint)
+	}
+	if u.User != nil {
+		// Credentials belong in --token; a userinfo component would be
+		// echoed raw by every command that prints the endpoint.
+		return fmt.Errorf("--endpoint must not contain credentials (user:password@)")
+	}
+	return nil
 }
 
 // ---- list ------------------------------------------------------------------
@@ -187,11 +283,11 @@ func newConfigDeleteCmd() *cobra.Command {
 				// Read one line of confirmation from stdin. Use os.Stdin
 				// directly (not cmd.InOrStdin) so test scripts can also
 				// pre-fill via t.Setenv-style stdin redirection.
-				fmt.Fprintf(cmd.OutOrStdout(), "Delete connection %q? [y/N] ", name)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Delete connection %q? [y/N] ", name)
 				var resp string
 				_, _ = fmt.Fscanln(os.Stdin, &resp)
 				if !strings.EqualFold(strings.TrimSpace(resp), "y") && !strings.EqualFold(strings.TrimSpace(resp), "yes") {
-					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+					fmt.Fprintln(cmd.ErrOrStderr(), "Aborted.")
 					return nil
 				}
 			}

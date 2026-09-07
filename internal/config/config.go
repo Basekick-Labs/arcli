@@ -144,8 +144,8 @@ type ResolveOptions struct {
 
 // Resolve returns the Connection a command should use. See the package
 // docstring for full precedence rules. The returned Connection is never
-// persisted by this call — Save() is only invoked by the `config`
-// subcommand explicitly.
+// persisted by this call — Save() is invoked explicitly by the `config`
+// subcommands and by `auth token rotate --save`.
 func (c *Config) Resolve(opts ResolveOptions) (Connection, string, error) {
 	// 1. --connection flag wins outright.
 	if opts.ConnectionName != "" {

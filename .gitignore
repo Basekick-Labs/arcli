@@ -22,3 +22,6 @@
 # Coverage
 coverage.txt
 coverage.html
+
+# Local implementation plans (see .claude/CLAUDE.md)
+/docs/progress/
