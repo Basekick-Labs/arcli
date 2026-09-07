@@ -2,7 +2,7 @@
 
 CLI for [Arc](https://github.com/Basekick-Labs/arc) — operator-facing client for Arc time-series databases.
 
-> **Status:** v0.6.0-dev (PR6). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, and API tokens, bulk-imports CSV / LP / Parquet / TLE files, checks connectivity with `ping`, and inspects clusters and compaction. `retention` / `cq` ship in follow-up PRs.
+> **Status:** v0.7.0-dev (PR7). Manages connection profiles, runs SQL queries, writes line protocol, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, checks connectivity with `ping`, and inspects clusters, compaction and schedulers. `delete` / `backup` ship in follow-up PRs.
 
 ## Why
 
@@ -244,6 +244,37 @@ arcli compaction trigger --wait         # poll until the cycle finishes (--wait-
 
 Trigger is asynchronous on the server: the reported cycle id is the one the server expects to assign, and it can be off by one or belong to a scheduled cycle that raced the trigger; `--wait` detects both and stops early instead of sleeping to the timeout. A tier that is disabled or not configured server-side is skipped silently by Arc, so arcli warns before sending. Arc's `/compaction/jobs` endpoint is a stub that always reports zero jobs and is deliberately not exposed.
 
+## Retention policies & continuous queries
+
+A retention policy deletes whole files whose newest row is older than `retention-days + buffer-days` in one database (optionally one measurement). Listing works with any token; changes and execution need admin.
+
+```bash
+arcli retention list                                     # -o table|json|csv
+arcli retention create --name metrics-90d --database metrics --retention-days 90 --buffer-days 7
+arcli retention update metrics-90d --buffer-days 14      # read-merge-write: Arc's PUT is a full replace
+arcli retention execute metrics-90d --dry-run            # server reports what it would delete
+arcli retention execute metrics-90d                      # dry-run preflight, then a prompt with the server's cutoff and counts
+arcli retention executions metrics-90d --limit 20
+arcli retention delete metrics-90d --yes
+```
+
+`execute` is synchronous on the server and defaults to `--timeout 30m`; if the client times out the server keeps going, so check `executions` afterwards.
+
+A continuous query runs an aggregation over a time window and writes the result into a destination measurement. Every `cq` command needs an admin token. The SQL must contain `{start_time}` and `{end_time}` and read the source as `FROM <database>.<source>` (Arc rewrites only that form); arcli warns otherwise, validates the interval (a Go duration, at least 10s, which Arc itself does not check at create time), and reads `--query-file` by the process, bounded at 64 KiB.
+
+```bash
+arcli cq list --database metrics --active
+arcli cq create --name cpu-1m --database metrics --source cpu --destination cpu_1m --interval 1m --tag-column host --query-file cpu_1m.sql
+arcli cq show cpu-1m
+arcli cq update cpu-1m --interval 5m                    # read-merge-write; --clear-tag-columns, --description ""
+arcli cq execute cpu-1m --dry-run                        # shows the SQL the server would run
+arcli cq execute cpu-1m --start 2026-09-01T00:00:00Z --end 2026-09-02T00:00:00Z   # backfill; warns if --end rewinds the watermark
+arcli cq executions cpu-1m
+arcli cq delete cpu-1m --yes
+```
+
+On Arc OSS neither the retention nor the CQ scheduler runs (Enterprise feature), so nothing fires automatically; `arcli scheduler status` shows both schedulers' state and the reason, and `create` prints a hint when the relevant scheduler is not running. Follow-ups: chunked `cq execute --backfill`, `scheduler` reload/trigger commands (Enterprise).
+
 ## TLS
 
 For HTTPS endpoints, certificate verification is on by default. To skip verification (lab / self-signed certs only), use either:
@@ -263,7 +294,7 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR4** — `arcli import {csv,lp,parquet,tle}`~~ ✅ shipped
 - ~~**PR5** — `arcli auth {whoami,token ...}`, `arcli ping`, `arcli config update`~~ ✅ shipped
 - ~~**PR6** — `arcli cluster {status,nodes,node show,node remove,health}`, `arcli compaction {status,stats,candidates,history,trigger}`~~ ✅ shipped
-- **PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions)
+- ~~**PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions), `arcli scheduler status`~~ ✅ shipped
 - **PR8** — `arcli delete` (predicate delete), `arcli backup {...}`, `arcli restore`
 - **PR9** — `arcli write --format msgpack`, `arcli import stats`, `arcli query --estimate`, `arcli logs`
 - **PR10** — release workflow + Homebrew tap + multi-arch Docker + shell completion, cut v1.0.0

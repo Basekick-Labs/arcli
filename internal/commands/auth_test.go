@@ -209,6 +209,16 @@ func TestConfirmOrAbort(t *testing.T) {
 	if err := confirmOrAbort(cmd, "Go?", false); err == nil || !strings.Contains(err.Error(), "stdin is not a terminal") {
 		t.Errorf("file stdin: err = %v", err)
 	}
+	// /dev/null is a char device but nobody is there to answer.
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	cmd.SetIn(devnull)
+	if err := confirmOrAbort(cmd, "Go?", false); err == nil || !strings.Contains(err.Error(), "stdin is not a terminal") {
+		t.Errorf("/dev/null stdin: err = %v", err)
+	}
 }
 
 // ---- end-to-end against an httptest fake of the auth routes -----------------
@@ -573,6 +583,13 @@ func TestPing_NonArcHealthIsFailure(t *testing.T) {
 func TestClean_StripsControlChars(t *testing.T) {
 	if got := clean("ok\x1b[31mred\x07\n"); got != "ok[31mred" {
 		t.Errorf("clean = %q", got)
+	}
+	// C1 controls (8-bit CSI) and bidi overrides are stripped too.
+	if got := clean("a\u009bb\u202ec"); got != "abc" {
+		t.Errorf("clean C1/bidi = %q", got)
+	}
+	if got := cleanMultiline("SELECT 1\n\tFROM x\x1b\u202e"); got != "SELECT 1\n\tFROM x" {
+		t.Errorf("cleanMultiline = %q", got)
 	}
 }
 

@@ -838,11 +838,24 @@ func normalisePermissions(in []string) []string {
 // go through encoders and need no help.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if isTerminalUnsafe(r) || r == '\n' || r == '\t' {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// isTerminalUnsafe reports C0/C1 control characters (except newline and
+// tab, which callers decide about) and Unicode bidi overrides, all of
+// which can rewrite or reorder what a terminal shows.
+func isTerminalUnsafe(r rune) bool {
+	switch {
+	case r < 0x20 && r != '\n' && r != '\t', r == 0x7f, r >= 0x80 && r <= 0x9f:
+		return true
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
 }
 
 func permsOrNone(p []string) string {
@@ -951,10 +964,10 @@ func confirmOrAbort(cmd *cobra.Command, question string, yes bool) error {
 	if yes {
 		return nil
 	}
-	in := cmd.InOrStdin()
-	if f, ok := in.(*os.File); ok && isPipe(f) {
-		return fmt.Errorf("confirmation required but stdin is not a terminal; pass --yes")
+	if err := requireInteractiveStdin(cmd); err != nil {
+		return err
 	}
+	in := cmd.InOrStdin()
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N] ", question)
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && line == "" {
@@ -965,6 +978,51 @@ func confirmOrAbort(cmd *cobra.Command, question string, yes bool) error {
 		return nil
 	}
 	return errAborted
+}
+
+// requireInteractiveStdin is the non-TTY guard confirmOrAbort applies,
+// exposed so commands that do expensive work before their prompt (the
+// retention execute dry-run preflight) can refuse up front instead.
+//
+// /dev/null is a character device, so the pipe heuristic alone would
+// let a headless invocation (systemd StandardInput=null, nohup,
+// `< /dev/null`) reach the prompt; it is refused explicitly.
+func requireInteractiveStdin(cmd *cobra.Command) error {
+	f, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return nil
+	}
+	if isPipe(f) || isDevNull(f) {
+		return fmt.Errorf("confirmation required but stdin is not a terminal; pass --yes")
+	}
+	return nil
+}
+
+// isDevNull reports whether f is /dev/null. os.Stdin.Name() is always
+// "/dev/stdin" regardless of redirection, so compare the underlying
+// file identity instead of the name.
+func isDevNull(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	nfi, err := os.Stat(os.DevNull)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fi, nfi)
+}
+
+// cleanMultiline strips control characters like clean but keeps
+// newlines and tabs, for server-supplied text that is meant to span
+// lines (SQL).
+func cleanMultiline(s string) string {
+	return strings.Map(func(r rune) rune {
+		if isTerminalUnsafe(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // preflightConfigWritable proves the config directory accepts a new
