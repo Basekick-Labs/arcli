@@ -247,7 +247,7 @@ config gate is the reason.`,
 			}
 			if !yes {
 				if !confirmDestructive(cmd, fmt.Sprintf("Delete database %q and ALL its files?", name)) {
-					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+					fmt.Fprintln(cmd.ErrOrStderr(), "Aborted.")
 					return nil
 				}
 			}
@@ -275,8 +275,11 @@ config gate is the reason.`,
 // Anything else — empty input, "n", EOF, read error — returns false.
 // That's the safe default for a destructive prompt: when in doubt,
 // don't delete.
+//
+// The prompt is written to stderr so stdout stays clean for scripts
+// that capture it.
 func confirmDestructive(cmd *cobra.Command, question string) bool {
-	fmt.Fprintf(cmd.OutOrStdout(), "%s [y/N] ", question)
+	fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N] ", question)
 	r := bufio.NewReader(cmd.InOrStdin())
 	line, err := r.ReadString('\n')
 	if err != nil && line == "" {
