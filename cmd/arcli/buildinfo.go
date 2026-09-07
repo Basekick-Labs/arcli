@@ -19,7 +19,7 @@ var pseudoVersion = regexp.MustCompile(`\d{14}-[0-9a-f]{12}(\+[a-z]+)?$`)
 //
 //   - version: ldflags, else the module version when the binary was
 //     built from a tagged module, else "dev". Note Go only recognises
-//     v0/v1 tags for this module path, so with CalVer tags (v26.9.0)
+//     v0/v1 tags for this module path, so with CalVer tags (v26.09.1)
 //     this branch fires only for the release build's ldflags.
 //   - commit: ldflags, else vcs.revision shortened to 7 with "+dirty"
 //     appended when vcs.modified is set.

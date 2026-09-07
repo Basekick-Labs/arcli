@@ -2,7 +2,7 @@
 
 CLI for [Arc](https://github.com/Basekick-Labs/arc) — operator-facing client for Arc time-series databases.
 
-> **Status:** 26.9.0-dev (PR10). Manages connection profiles, runs SQL queries, writes line protocol / MessagePack / JSON, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, deletes rows by predicate, takes and restores backups, checks connectivity with `ping`, reads server logs, and inspects clusters, compaction and schedulers. Release tooling (packages, Homebrew, Docker) lands with the first tag.
+> **Status:** 26.09.1. Manages connection profiles, runs SQL queries, writes line protocol / MessagePack / JSON, administers databases, measurements, API tokens, retention policies and continuous queries, bulk-imports CSV / LP / Parquet / TLE files, deletes rows by predicate, takes and restores backups, checks connectivity with `ping`, reads server logs, and inspects clusters, compaction and schedulers.
 
 ## Why
 
@@ -10,18 +10,43 @@ Today operating Arc means hand-crafting `curl` calls: copying the bootstrap toke
 
 ## Install
 
-Pre-built binaries, deb / rpm / Arch packages, a Homebrew formula and a Docker image land with the first tag (26.9.0).
-
-For now, build from source:
+Every release ships archives for Linux / macOS / Windows (amd64 + arm64), deb / rpm / Arch packages, a Homebrew formula, and a multi-arch image on GHCR. Packages and the formula install shell completions and man pages too.
 
 ```bash
-git clone https://github.com/Basekick-Labs/arcli
-cd arcli
-go build -o arcli ./cmd/arcli
-./arcli --version
+# Homebrew (macOS + Linux)
+brew install basekick-labs/tap/arcli
+
+# Debian / Ubuntu
+curl -LO https://github.com/Basekick-Labs/arcli/releases/download/v26.09.1/arcli_26.9.1_amd64.deb   # or _arm64
+sudo dpkg -i arcli_26.9.1_amd64.deb
+
+# RHEL / Fedora / Rocky
+sudo rpm -i https://github.com/Basekick-Labs/arcli/releases/download/v26.09.1/arcli-26.9.1-1.x86_64.rpm   # or .aarch64
+
+# Arch
+sudo pacman -U arcli-26.9.1-1-x86_64.pkg.tar.zst   # or -aarch64
+
+# Docker (distroless, non-root; config via env or a mounted ~/.arcli)
+docker run --rm -e ARC_ENDPOINT=http://arc:8000 -e ARC_TOKEN=... ghcr.io/basekick-labs/arcli ping
+
+# Archive
+tar xzf arcli_26.9.1_linux_amd64.tar.gz && sudo install arcli /usr/local/bin/
 ```
 
-Requires Go 1.25+.
+Image tags: `26.9.1` (immutable), `26.9`, `26`, `latest` (move on final releases only). Git tags are zero-padded like Arc (`v26.09.1`); GoReleaser normalises the version in every artifact name, image tag and `--version` to `26.9.1`.
+
+Verify a download: `checksums.txt` covers every archive, package and SBOM and is signed keylessly with cosign from the release workflow (the packages themselves carry no GPG signature; the container image is not signed yet):
+
+```bash
+sha256sum -c --ignore-missing checksums.txt
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/Basekick-Labs/arcli/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+```
+
+Each archive also carries a SPDX SBOM (`*.sbom.json`).
+
+From source (Go 1.25+): `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` (see [Roadmap](#roadmap) for why tagged installs are not possible), or clone and `go build -o arcli ./cmd/arcli`.
 
 ## Quickstart
 
@@ -369,11 +394,11 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR7** — `arcli retention {...}`, `arcli cq {...}` (full CRUD + execute + executions), `arcli scheduler status`~~ ✅ shipped
 - ~~**PR8** — `arcli delete` (predicate delete), `arcli backup {create,list,show,status,delete,restore}`~~ ✅ shipped
 - ~~**PR9** — `arcli write --format msgpack|json`, `arcli query --estimate`, `arcli logs`, `arcli import stats`, signal-aware root, `--token-stdin`~~ ✅ shipped
-- **PR10a** — shell completion, build metadata in `--version`, distroless image, man pages (this PR)
-- **PR10b** — GoReleaser: archives, deb / rpm / Arch packages, Homebrew tap, multi-arch GHCR image, SBOMs, cosign; cut the first CalVer tag (`v26.9.0`)
+- ~~**PR10a** — shell completion, build metadata in `--version`, distroless image, man pages~~ ✅ shipped
+- ~~**PR10b** — GoReleaser: archives, deb / rpm / Arch packages, Homebrew tap, multi-arch GHCR image, SBOMs, cosign; cut the first CalVer tag (`v26.09.1`)~~ ✅ shipped
 - **Later** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
 
-Versioning is CalVer like Arc: `YY.M.PATCH`, tagged `v26.9.0` (no zero padding; GoReleaser normalises `26.09` to `26.9` anyway). arcli 26.x speaks to Arc 26.06+. One consequence: Go only accepts `v0`/`v1` tags for this module path, so `go install …@v26.9.0` is not possible; `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` instead, and the packages, Homebrew and Docker are the release channels.
+Versioning is CalVer like Arc: `YY.0M.PATCH`, tagged `v26.09.1`; artifact names and `--version` carry the normalised `26.9.1`. arcli 26.x speaks to Arc 26.06+. One consequence: Go only accepts `v0`/`v1` tags for this module path, so `go install …@v26.09.1` is not possible; `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` instead, and the packages, Homebrew and Docker are the release channels.
 
 ## Development
 
@@ -382,11 +407,12 @@ go test -race ./...
 go vet ./...
 gofmt -l .
 go run ./internal/tools/gendocs .gen     # man pages + completion scripts (what the packages ship)
+goreleaser release --snapshot --clean --skip=sign,sbom   # every artifact a tag would produce, under dist/
 ```
 
-CI runs the first three on every PR. `arcli --version` reports the module version, commit and commit date: injected by the release build, or read from Go's embedded build info for a plain `go build` / `go install` (`+dirty` when the tree had uncommitted changes).
+CI runs gofmt / vet / tests on every PR plus a GoReleaser snapshot (no Docker / signing / SBOM there). Releasing is `git tag -a v26.09.2 -m "arcli 26.09.2" && git push origin v26.09.2` on a commit reachable from `main`; the workflow refuses tags that are not, and refuses to start without the `HOMEBREW_TAP_TOKEN` secret. If `docs/releases/<tag>.md` exists it becomes the release notes header above the generated changelog. After the first tag, make the GHCR package public in the org package settings (new packages start private; the workflow warns if the image is not anonymously pullable) and confirm the documented `cosign verify-blob` line with a current cosign. `arcli --version` reports the module version, commit and commit date: injected by the release build, or read from Go's embedded build info for a plain `go build` / `go install` (`+dirty` when the tree had uncommitted changes).
 
-The `Dockerfile` packages a prebuilt binary the way the release pipeline stages it (`linux/<arch>/arcli` in the build context, distroless static, non-root); it is not a from-source build.
+The `Dockerfile` packages a prebuilt binary the way GoReleaser stages it (`linux/<arch>/arcli` in the build context, distroless static, non-root); it is not a from-source build, so build images with the snapshot command above.
 
 ## License
 

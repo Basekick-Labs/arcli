@@ -1,0 +1,279 @@
+# GoReleaser configuration for arcli. Runs on every v* tag via
+# .github/workflows/release.yml; validated on every PR by the
+# release-dry-run CI job (snapshot, nothing published).
+#
+# Local snapshot (needs Docker for the image step):
+#   goreleaser release --snapshot --clean --skip=sign,sbom
+version: 2
+
+project_name: arcli
+
+before:
+  hooks:
+    - go mod verify
+    # Man pages + completion scripts, shipped in the archives, the Linux
+    # packages and the Homebrew formula. .gen/ is gitignored: hook output
+    # must not live under dist/ (GoReleaser refuses a non-empty dist).
+    - rm -rf .gen
+    - go run ./internal/tools/gendocs -version {{ .Version }} -date {{ .CommitDate }} .gen
+
+builds:
+  - id: arcli
+    main: ./cmd/arcli
+    binary: arcli
+    env:
+      - CGO_ENABLED=0 # pure Go; cross-compiles for every target below
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .CommitDate }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: arcli
+    ids: [arcli]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - src: .gen/completions/*
+        dst: completions
+      - src: .gen/man/*.1
+        dst: man
+
+# One nfpms entry per format: `overrides.<format>.contents` replaces the
+# base list instead of merging, so the full list is spelled out three
+# times. The only differences are the zsh completion directory (Debian
+# compiles fpath with vendor-completions, not site-functions) and where
+# the license lives.
+nfpms:
+  - id: deb
+    ids: [arcli]
+    formats: [deb]
+    package_name: arcli
+    vendor: Basekick Labs
+    homepage: https://github.com/Basekick-Labs/arcli
+    maintainer: Basekick Labs <contact@basekick.com>
+    description: |-
+      CLI for Arc time-series databases.
+      Manages connection profiles and talks to one or more Arc clusters
+      over the HTTP API: queries, writes, bulk imports, tokens, retention
+      policies, continuous queries, backups, cluster and compaction status.
+    license: Apache-2.0
+    section: utils
+    priority: optional
+    bindir: /usr/bin
+    file_name_template: "{{ .ConventionalFileName }}"
+    mtime: "{{ .CommitDate }}"
+    contents:
+      - src: .gen/completions/arcli.bash
+        dst: /usr/share/bash-completion/completions/arcli
+      - src: .gen/completions/_arcli
+        dst: /usr/share/zsh/vendor-completions/_arcli
+      - src: .gen/completions/arcli.fish
+        dst: /usr/share/fish/vendor_completions.d/arcli.fish
+      - src: .gen/man/*.1.gz
+        dst: /usr/share/man/man1/
+      - src: LICENSE
+        dst: /usr/share/doc/arcli/copyright
+      - src: README.md
+        dst: /usr/share/doc/arcli/README.md
+  - id: rpm
+    ids: [arcli]
+    formats: [rpm]
+    package_name: arcli
+    vendor: Basekick Labs
+    homepage: https://github.com/Basekick-Labs/arcli
+    maintainer: Basekick Labs <contact@basekick.com>
+    description: |-
+      CLI for Arc time-series databases.
+      Manages connection profiles and talks to one or more Arc clusters
+      over the HTTP API: queries, writes, bulk imports, tokens, retention
+      policies, continuous queries, backups, cluster and compaction status.
+    license: Apache-2.0
+    bindir: /usr/bin
+    file_name_template: "{{ .ConventionalFileName }}"
+    mtime: "{{ .CommitDate }}"
+    rpm:
+      summary: CLI for Arc time-series databases
+      group: Applications/Databases
+    contents:
+      - src: .gen/completions/arcli.bash
+        dst: /usr/share/bash-completion/completions/arcli
+      - src: .gen/completions/_arcli
+        dst: /usr/share/zsh/site-functions/_arcli
+      - src: .gen/completions/arcli.fish
+        dst: /usr/share/fish/vendor_completions.d/arcli.fish
+      - src: .gen/man/*.1.gz
+        dst: /usr/share/man/man1/
+      - src: LICENSE
+        dst: /usr/share/licenses/arcli/LICENSE
+        type: license
+      - src: README.md
+        dst: /usr/share/doc/arcli/README.md
+        type: doc
+  - id: archlinux
+    ids: [arcli]
+    formats: [archlinux]
+    package_name: arcli
+    vendor: Basekick Labs
+    homepage: https://github.com/Basekick-Labs/arcli
+    maintainer: Basekick Labs <contact@basekick.com>
+    description: CLI for Arc time-series databases
+    license: Apache-2.0
+    bindir: /usr/bin
+    file_name_template: "{{ .ConventionalFileName }}"
+    mtime: "{{ .CommitDate }}"
+    archlinux:
+      pkgbase: arcli
+      packager: Basekick Labs <contact@basekick.com>
+    contents:
+      - src: .gen/completions/arcli.bash
+        dst: /usr/share/bash-completion/completions/arcli
+      - src: .gen/completions/_arcli
+        dst: /usr/share/zsh/site-functions/_arcli
+      - src: .gen/completions/arcli.fish
+        dst: /usr/share/fish/vendor_completions.d/arcli.fish
+      - src: .gen/man/*.1.gz
+        dst: /usr/share/man/man1/
+      - src: LICENSE
+        dst: /usr/share/licenses/arcli/LICENSE
+      - src: README.md
+        dst: /usr/share/doc/arcli/README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# SBOM per archive (syft, SPDX JSON), as in tsm2arc.
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless cosign signature over checksums.txt, which covers every archive
+# and package. Verify:
+#   cosign verify-blob --bundle checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github.com/Basekick-Labs/arcli/\.github/workflows/release\.yml@refs/tags/v' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+signs:
+  - id: checksum
+    cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    # --new-bundle-format: the Sigstore protobuf bundle that the
+    # .sigstore.json name denotes (cosign >= 2.5 verifies it; other
+    # Sigstore clients reject the legacy cosign JSON).
+    args: ["sign-blob", "--new-bundle-format", "--bundle=${signature}", "${artifact}", "--yes"]
+
+# Multi-arch image on GHCR from the prebuilt binaries (see Dockerfile).
+# Floating tags (26, 26.9, latest) only move on final releases.
+dockers_v2:
+  - id: arcli
+    ids: [arcli]
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/basekick-labs/arcli
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}{{ .Major }}.{{ .Minor }}{{ end }}"
+      - "{{ if not .Prerelease }}{{ .Major }}{{ end }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: arcli
+      org.opencontainers.image.description: CLI for Arc time-series databases
+      org.opencontainers.image.source: https://github.com/Basekick-Labs/arcli
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.licenses: Apache-2.0
+
+# Homebrew formula pushed to Basekick-Labs/homebrew-tap. Needs the
+# HOMEBREW_TAP_TOKEN secret (fine-grained PAT, contents:write on the tap);
+# release.yml refuses to start without it. `brews` is deprecated in
+# favour of casks, which are macOS-only and expect signed binaries; a
+# formula serves Linuxbrew too and needs no signing.
+brews:
+  - name: arcli
+    ids: [arcli]
+    repository:
+      owner: Basekick-Labs
+      name: homebrew-tap
+      branch: main
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    directory: Formula
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "arcli {{ .Tag }}"
+    homepage: https://github.com/Basekick-Labs/arcli
+    description: CLI for Arc time-series databases
+    license: Apache-2.0
+    skip_upload: auto
+    install: |
+      bin.install "arcli"
+      bash_completion.install "completions/arcli.bash" => "arcli"
+      zsh_completion.install "completions/_arcli"
+      fish_completion.install "completions/arcli.fish"
+      man1.install Dir["man/*.1"]
+    test: |
+      assert_match "arcli version", shell_output("#{bin}/arcli --version")
+
+release:
+  github:
+    owner: Basekick-Labs
+    name: arcli
+  draft: false
+  prerelease: auto
+  # Publish order is images → this release → formula. A rerun of the
+  # tag (e.g. after a failed Homebrew push) replaces the assets instead
+  # of failing on "already exists" and re-pushes the images.
+  replace_existing_artifacts: true
+  preflight:
+    fail_on_error: true
+  footer: |
+    ---
+    ### Install
+
+    | | |
+    |---|---|
+    {{- if .Prerelease }}
+    | Homebrew | not published for prereleases |
+    | Linux packages | see the asset list (prerelease versions render as `{{ .Major }}.{{ .Minor }}.{{ .Patch }}~{{ .Prerelease }}` for deb/rpm and `{{ .Major }}.{{ .Minor }}.{{ .Patch }}{{ .Prerelease }}` for Arch) |
+    {{- else }}
+    | Homebrew | `brew install basekick-labs/tap/arcli` |
+    | Debian / Ubuntu | `sudo dpkg -i arcli_{{ .Version }}_amd64.deb` (or `_arm64.deb`) |
+    | RHEL / Fedora | `sudo rpm -i arcli-{{ .Version }}-1.x86_64.rpm` (or `.aarch64.rpm`) |
+    | Arch | `sudo pacman -U arcli-{{ .Version }}-1-x86_64.pkg.tar.zst` (or `-aarch64`) |
+    {{- end }}
+    | Docker | `docker run --rm ghcr.io/basekick-labs/arcli:{{ .Version }} --version` |
+    | Go | `go install github.com/basekick-labs/arcli/cmd/arcli@latest` (builds `main`; Go does not accept CalVer tags for this module path) |
+
+    Every archive carries a SPDX SBOM (`*.sbom.json`); `checksums.txt` covers all archives, packages and SBOMs and is signed keylessly with cosign:
+
+    ```
+    cosign verify-blob --bundle checksums.txt.sigstore.json \
+      --certificate-identity-regexp '^https://github.com/Basekick-Labs/arcli/\.github/workflows/release\.yml@refs/tags/v' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+    ```
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs(\\(.*\\))?:"
+      - "^test(\\(.*\\))?:"
+      - "^chore(\\(.*\\))?:"
+      - "Merge pull request"

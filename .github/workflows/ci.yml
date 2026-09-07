@@ -18,6 +18,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -42,3 +44,33 @@ jobs:
 
       - name: Test (-race)
         run: go test -race -count=1 ./...
+
+  release-dry-run:
+    # Catches .goreleaser.yaml drift on every PR: builds every target,
+    # renders the packages and the formula, publishes nothing. Docker,
+    # signing and SBOMs are skipped here (they need buildx/OIDC/syft and
+    # are exercised by the tag build).
+    name: Release dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2.18"
+          args: release --snapshot --clean --skip=publish,sign,sbom,docker
+
+      - name: Show what a release would ship
+        run: |
+          for f in dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/*.zst dist/checksums.txt; do echo "$f"; done
+          head -c 2000 dist/homebrew/Formula/arcli.rb

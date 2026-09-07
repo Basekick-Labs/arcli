@@ -12,12 +12,10 @@
 # a `--user` other than 65532 gets HOME=/ and a clear write failure. No
 # shell, no package manager.
 #
-# The base is pinned by digest (the tag is kept for readability) so the
-# signed release describes exactly one image; bump the digest on purpose.
+# The base is pinned by digest (the tag is kept for readability) so a
+# rebuild of the same tag reproduces the same image; bump on purpose.
 #
-# Build locally:  goreleaser release --snapshot --clean --skip=publish,sign
-#                 (.goreleaser.yaml lands with PR10b; until then there is
-#                 no way to build this image from a plain checkout)
+# Build locally:  goreleaser release --snapshot --clean --skip=sign,sbom
 # Run:            docker run --rm -e ARC_ENDPOINT=... -e ARC_TOKEN=... \
 #                   ghcr.io/basekick-labs/arcli ping
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
