@@ -94,11 +94,19 @@ func newConfigCreateCmd() *cobra.Command {
 			if cfg.Active == "" || activate {
 				cfg.Active = name
 			}
+			minted := cfg.InstallationID == ""
 			if err := cfg.Save(); err != nil {
 				return err
 			}
 			path, _ := config.ConfigPath()
 			fmt.Fprintf(cmd.OutOrStdout(), "Created connection %q at %s\n", name, path)
+			if minted {
+				if cfg.OutboundInstallationID() == "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Generated installation id %s (not sent: DO_NOT_TRACK or send_installation_id = false is in effect)\n", cfg.InstallationID)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Generated installation id %s; arcli sends it to the Arc servers you connect to (see README, Privacy). Disable with DO_NOT_TRACK=1 or send_installation_id = false.\n", cfg.InstallationID)
+				}
+			}
 			if cfg.Active == name {
 				fmt.Fprintf(cmd.OutOrStdout(), "Active connection is now %q\n", name)
 			}
@@ -393,6 +401,16 @@ func newConfigCurrentCmd() *cobra.Command {
 			}
 			if c.InsecureTLS {
 				fmt.Fprintf(cmd.OutOrStdout(), "insecure_tls:     true\n")
+			}
+			if cfg.InstallationID != "" {
+				sent := "yes"
+				switch {
+				case config.DoNotTrack():
+					sent = "no (DO_NOT_TRACK is set)"
+				case !cfg.SendsInstallationID():
+					sent = "no (send_installation_id = false)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "installation_id:  %s (sent to Arc servers: %s)\n", cfg.InstallationID, sent)
 			}
 			return nil
 		},

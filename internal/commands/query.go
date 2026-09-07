@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -250,15 +251,29 @@ func buildClient(stderr io.Writer, connectionName, endpoint, token string, insec
 	if err != nil {
 		return nil, "", err
 	}
-	cli, err := buildClientFrom(stderr, conn, insecureFlag, timeout)
+	cli, err := buildClientFrom(stderr, conn, cfg.OutboundInstallationID(), insecureFlag, timeout)
 	return cli, name, err
+}
+
+// cliVersion is set by NewRoot and becomes part of the User-Agent.
+var cliVersion = "dev"
+
+func userAgent() string {
+	v := cliVersion
+	if v == "" {
+		v = "dev"
+	}
+	return fmt.Sprintf("arcli/%s (%s/%s)", v, runtime.GOOS, runtime.GOARCH)
 }
 
 // buildClientFrom constructs the HTTP client for an already-resolved
 // connection. Split from buildClient so commands that must keep the
 // loaded *config.Config around (auth token rotate --save) can do their
 // own Load/Resolve and still share the TLS-warning + client wiring.
-func buildClientFrom(stderr io.Writer, conn config.Connection, insecureFlag bool, timeout time.Duration) (*client.Client, error) {
+//
+// installationID is what goes on the wire (already filtered through the
+// user's opt-out by config.OutboundInstallationID); "" sends nothing.
+func buildClientFrom(stderr io.Writer, conn config.Connection, installationID string, insecureFlag bool, timeout time.Duration) (*client.Client, error) {
 	insecure := conn.InsecureTLS || insecureFlag
 	if insecure && strings.HasPrefix(strings.ToLower(conn.Endpoint), "https://") {
 		// Only warn when TLS verify would actually have been applied.
@@ -271,10 +286,12 @@ func buildClientFrom(stderr io.Writer, conn config.Connection, insecureFlag bool
 		}
 	}
 	return client.New(client.Config{
-		Endpoint:    conn.Endpoint,
-		Token:       conn.Token,
-		Database:    conn.DefaultDatabase,
-		InsecureTLS: insecure,
-		Timeout:     timeout,
+		Endpoint:       conn.Endpoint,
+		Token:          conn.Token,
+		Database:       conn.DefaultDatabase,
+		InsecureTLS:    insecure,
+		Timeout:        timeout,
+		UserAgent:      userAgent(),
+		InstallationID: installationID,
 	})
 }

@@ -60,7 +60,21 @@ type Config struct {
 	// Writes and small queries finish well under this; for large
 	// `-o arrow` streams we override on the request.
 	Timeout time.Duration
+
+	// UserAgent identifies the client build, e.g. "arcli/26.09.1
+	// (darwin/arm64)". Empty falls back to "arcli".
+	UserAgent string
+
+	// InstallationID, when non-empty, is sent as Arcli-Installation-Id
+	// on every request so the server's telemetry can count distinct CLI
+	// installations. The caller applies the user's opt-out before
+	// setting it.
+	InstallationID string
 }
+
+// HeaderInstallationID carries the CLI installation id (see
+// Config.InstallationID). Arc records it in its own telemetry.
+const HeaderInstallationID = "Arcli-Installation-Id"
 
 // Client is a stateful adapter around *http.Client + auth headers.
 // One Client per Arc cluster; safe for concurrent use.
@@ -131,7 +145,21 @@ func (c *Client) setCommonHeaders(req *http.Request, database string) {
 	if db := c.resolveDatabase(database); db != "" {
 		req.Header.Set(HeaderDatabase, db)
 	}
-	req.Header.Set("User-Agent", "arcli")
+	c.setIdentityHeaders(req)
+}
+
+// setIdentityHeaders writes User-Agent and, when configured, the
+// installation id. Shared by both header writers so the two can never
+// drift.
+func (c *Client) setIdentityHeaders(req *http.Request) {
+	ua := c.cfg.UserAgent
+	if ua == "" {
+		ua = "arcli"
+	}
+	req.Header.Set("User-Agent", ua)
+	if c.cfg.InstallationID != "" {
+		req.Header.Set(HeaderInstallationID, c.cfg.InstallationID)
+	}
 }
 
 // setCrossDBHeaders writes Authorization + User-Agent but NEVER sends
@@ -144,5 +172,5 @@ func (c *Client) setCommonHeaders(req *http.Request, database string) {
 // non-empty default Database would silently include the wrong header.
 func (c *Client) setCrossDBHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
-	req.Header.Set("User-Agent", "arcli")
+	c.setIdentityHeaders(req)
 }

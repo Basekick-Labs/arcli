@@ -37,7 +37,7 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "arcli")
+	c.setIdentityHeaders(req)
 
 	start := time.Now()
 	resp, err := c.http.Do(req)

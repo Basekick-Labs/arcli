@@ -44,6 +44,7 @@ func (b BuildInfo) String() string {
 // NewRoot returns the arcli root command with all subcommands attached
 // and shell completion wired.
 func NewRoot(build BuildInfo) *cobra.Command {
+	cliVersion = build.Version
 	root := &cobra.Command{
 		Use:   "arcli",
 		Short: "Arc CLI — operator-facing client for Arc time-series databases",

@@ -16,10 +16,12 @@
 package config
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -36,6 +38,55 @@ type Connection struct {
 type Config struct {
 	Active      string                `mapstructure:"active" toml:"active"`
 	Connections map[string]Connection `mapstructure:"connections" toml:"connections"`
+
+	// InstallationID is a random UUID minted by the first Save() and
+	// kept for the life of the config file. arcli presents it to the
+	// Arc servers it talks to (header Arcli-Installation-Id) so Arc's
+	// own telemetry can count CLI installations; arcli itself never
+	// sends it anywhere else. Delete the key to mint a new one.
+	InstallationID string `mapstructure:"installation_id" toml:"installation_id"`
+
+	// SendInstallationID gates the header. nil (key absent) means true,
+	// so a Config built as a struct literal is never a silent opt-out;
+	// `send_installation_id = false` in the file (or the DO_NOT_TRACK=1
+	// env var) stops identifying this installation to servers.
+	SendInstallationID *bool `mapstructure:"send_installation_id" toml:"send_installation_id,omitempty"`
+}
+
+// SendsInstallationID reports the config-file setting (absent = true).
+func (c *Config) SendsInstallationID() bool {
+	return c.SendInstallationID == nil || *c.SendInstallationID
+}
+
+// OutboundInstallationID is the id to put on requests, or "" when the
+// user opted out (config key or DO_NOT_TRACK) or no id exists yet (no
+// config file has ever been written, e.g. env-only use in a container).
+func (c *Config) OutboundInstallationID() string {
+	if !c.SendsInstallationID() || DoNotTrack() {
+		return ""
+	}
+	return c.InstallationID
+}
+
+// DoNotTrack reports whether the DO_NOT_TRACK environment variable is
+// set to a truthy value (https://consoledonottrack.com).
+func DoNotTrack() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("DO_NOT_TRACK"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// newInstallationID returns a random version-4 UUID.
+func newInstallationID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate installation id: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // ConfigPath returns the path arcli reads/writes its config from.
@@ -99,9 +150,21 @@ func (c *Config) Save() error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
+	if c.InstallationID == "" {
+		id, err := newInstallationID()
+		if err != nil {
+			return err
+		}
+		c.InstallationID = id
+	}
 	v := viper.New()
 	v.Set("active", c.Active)
 	v.Set("connections", c.Connections)
+	v.Set("installation_id", c.InstallationID)
+	if c.SendInstallationID != nil && !*c.SendInstallationID {
+		// Only the opt-out is written; the default stays implicit.
+		v.Set("send_installation_id", false)
+	}
 
 	// Write to a temp file in the same directory then rename atomically,
 	// so we never leave a half-written config behind on a crash. Use a
