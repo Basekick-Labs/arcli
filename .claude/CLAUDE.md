@@ -13,11 +13,12 @@ The model for connection management is the InfluxDB v2 CLI (`influx config creat
 - **Config file:** `~/.arcli/config.toml` (mode 0600), honored override `ARCLI_CONFIG` env var (for tests + CI)
 - **Connection precedence (highest first):**
   1. `--connection NAME` / `-c NAME` flag
-  2. `--endpoint URL --token T` flags (full ad-hoc)
+  2. `--endpoint URL [--token T]` flags (ad-hoc)
   3. `ARC_CONNECTION` env var
-  4. `ARC_ENDPOINT` + `ARC_TOKEN` env vars (full ad-hoc)
+  4. `ARC_ENDPOINT` [+ `ARC_TOKEN`] env vars (ad-hoc)
   5. `active` connection in config file
   → No fallback past 5; commands error with a clear "no active connection" message
+  → Since 26.09.3 a token is optional (Arc with `auth.enabled = false`): an empty token means no `Authorization` header at all. A token without an endpoint is still an error.
 - **No state on disk besides the config file.** No history file, no cache. `arcli` never phones home: it only ever talks to the Arc endpoints the user configures. The one identity it carries is `installation_id` (random UUID minted by `config.Save()`, stored in the config file), sent as `Arcli-Installation-Id` so Arc's own opt-out telemetry can count CLI installations per instance (the same id goes to every server the user configures, and the README's Privacy section says so). Opt-outs: `send_installation_id = false`, `DO_NOT_TRACK=1`. Never extend this into the CLI reporting to Basekick directly.
 - **Targeted server version:** arcli 1.x talks to Arc 26.06+ (pre-26.06 lacks Phase A cluster auth replication, so token admin would behave inconsistently across nodes).
 
@@ -119,7 +120,8 @@ Before invoking any reviewer, write down — in the conversation, not a file —
 | `--endpoint + --token` flag override (no config file) | ... | ... |
 | `ARC_CONNECTION` env (named exists) | ... | ... |
 | `ARC_ENDPOINT + ARC_TOKEN` env (no config file) | ... | ... |
-| Half-set: `--endpoint` only / `ARC_TOKEN` only | ... | ... |
+| Token-less: `--endpoint` only / `ARC_ENDPOINT` only / profile with empty token | ... | ... |
+| Half-set: `--token` only / `ARC_TOKEN` only | ... | ... |
 | Output flag: `-o json` / `-o csv` / `-o arrow` / default | ... | ... |
 
 For each cell:
@@ -129,7 +131,7 @@ For each cell:
 If a row is "yes, but I don't know if precondition X holds in this mode" — that row IS the bug. Find it and fix it before continuing.
 
 **Concrete shapes to enumerate explicitly**, because they bit Arc and will bite us too:
-- "user typed `--token` without `--endpoint`" (or vice versa) — the half-set ad-hoc case must error, not silently fall through to the active connection
+- "user typed `--token` without `--endpoint`" — must error, not silently fall through to the active connection. The reverse (`--endpoint` alone) is a valid token-less ad-hoc connection for a server with `auth.enabled = false`; it must send no `Authorization` header
 - "config file missing vs. config file present but empty" — both are valid first-run states; `Load()` must distinguish IO errors from "file does not exist"
 - "`Resolve()` returns an unnamed Connection (ad-hoc)" — code that prints `"using connection: %s"` must handle the `(flags)` / `(env)` sentinel display name, not assume a real name
 - "output format is `arrow` but the server doesn't support arrow" — graceful fallback, not a panic on nil response body
