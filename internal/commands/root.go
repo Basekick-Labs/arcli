@@ -56,6 +56,7 @@ ARC_CONNECTION / ARC_ENDPOINT / ARC_TOKEN env vars.
 
 First-time setup:
     arcli config create --name local --endpoint http://localhost:8000 --token <T> --activate
+    (omit --token for an Arc running with auth.enabled = false)
     arcli config current
 `,
 		Version: build.String(),

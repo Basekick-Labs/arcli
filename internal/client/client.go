@@ -44,7 +44,9 @@ type Config struct {
 	// (no trailing slash; we add the API paths ourselves).
 	Endpoint string
 
-	// Token is the Bearer token from Arc's first-run banner.
+	// Token is the Bearer token from Arc's first-run banner. Empty is
+	// allowed for servers running with auth.enabled = false: no
+	// Authorization header is sent then.
 	Token string
 
 	// Database is the default database name to send via x-arc-database
@@ -88,9 +90,6 @@ type Client struct {
 func New(cfg Config) (*Client, error) {
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("client: endpoint required")
-	}
-	if cfg.Token == "" {
-		return nil, fmt.Errorf("client: token required")
 	}
 	cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
 	if cfg.Timeout == 0 {
@@ -141,7 +140,7 @@ func (c *Client) resolveDatabase(override string) string {
 // resolveDatabase rules), and User-Agent onto a *http.Request. Use
 // for per-database endpoints (query, write).
 func (c *Client) setCommonHeaders(req *http.Request, database string) {
-	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	c.setAuthHeader(req)
 	if db := c.resolveDatabase(database); db != "" {
 		req.Header.Set(HeaderDatabase, db)
 	}
@@ -171,6 +170,19 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 // accidental — calling setCommonHeaders(req, "") on a client with a
 // non-empty default Database would silently include the wrong header.
 func (c *Client) setCrossDBHeaders(req *http.Request) {
-	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	c.setAuthHeader(req)
 	c.setIdentityHeaders(req)
 }
+
+// setAuthHeader adds the bearer token when the connection has one. A
+// profile without a token targets a server with authentication
+// disabled; sending "Bearer " with nothing after it would only turn a
+// clear 401 into a malformed-header error.
+func (c *Client) setAuthHeader(req *http.Request) {
+	if c.cfg.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	}
+}
+
+// HasToken reports whether the connection carries a bearer token.
+func (c *Client) HasToken() bool { return c.cfg.Token != "" }

@@ -55,8 +55,10 @@ func newPingCmd() *cobra.Command {
 Two requests: GET /health (public, no token sent) and
 GET /api/v1/auth/verify (with the token). Exit status is 0 only when the
 endpoint answered AND the token is valid or the server has
-authentication disabled. Any failure exits 1; with -o json the report is
-still printed so the failing half can be read.`,
+authentication disabled. A connection without a token is fine against a
+server with auth.enabled = false and reported as a failure otherwise.
+Any failure exits 1; with -o json the report is still printed so the
+failing half can be read.`,
 		Example: `  arcli ping
   arcli ping -c prod
   arcli ping --endpoint http://localhost:8000 --token T -o json`,
@@ -98,6 +100,12 @@ still printed so the failing half can be read.`,
 					// /api/v1/auth/* is only registered when auth is
 					// enabled server-side; 404 means "no auth", not "bad token".
 					rep.Auth = &pingAuth{Valid: false, Disabled: true}
+				case !cli.HasToken():
+					// No token on this connection and the server does
+					// have auth: say so instead of quoting a bare 401.
+					rep.Auth = &pingAuth{Valid: false, Error: "server requires a token but this connection has none"}
+					failure = errors.New("authentication failed: server requires a token but this connection has none (add one with `arcli config update NAME --token ...`)")
+					rep.Error = failure.Error()
 				default:
 					rep.Auth = &pingAuth{Valid: false, Error: verr.Error()}
 					failure = fmt.Errorf("authentication failed: %w", verr)

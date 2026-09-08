@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -185,21 +186,42 @@ func TestResolve_Errors(t *testing.T) {
 			}
 		})
 
-		t.Run("flag_endpoint_without_token", func(t *testing.T) {
-			cfg := &Config{Connections: map[string]Connection{}}
-			_, _, err := cfg.Resolve(ResolveOptions{Endpoint: "http://x"})
-			if err == nil {
-				t.Error("expected error for endpoint without token")
+		// A token is optional (servers with auth.enabled = false), so an
+		// endpoint alone resolves to a token-less ad-hoc connection; a
+		// token alone names no server and is the error.
+		t.Run("flag_endpoint_without_token_is_tokenless", func(t *testing.T) {
+			cfg := &Config{Active: "local", Connections: map[string]Connection{"local": {Endpoint: "http://active", Token: "active-token-1234"}}}
+			conn, name, err := cfg.Resolve(ResolveOptions{Endpoint: "http://x"})
+			if err != nil || name != "(flags)" || conn.Endpoint != "http://x" || conn.Token != "" {
+				t.Errorf("endpoint alone: conn=%+v name=%q err=%v", conn, name, err)
 			}
 		})
 
-		t.Run("env_endpoint_without_token", func(t *testing.T) {
+		t.Run("flag_token_without_endpoint", func(t *testing.T) {
+			cfg := &Config{Connections: map[string]Connection{}}
+			_, _, err := cfg.Resolve(ResolveOptions{Token: "t"})
+			if err == nil || !strings.Contains(err.Error(), "--token needs --endpoint") {
+				t.Errorf("token alone: err = %v", err)
+			}
+		})
+
+		t.Run("env_endpoint_without_token_is_tokenless", func(t *testing.T) {
 			clearEnv(t)
 			t.Setenv("ARC_ENDPOINT", "http://x")
+			cfg := &Config{Active: "local", Connections: map[string]Connection{"local": {Endpoint: "http://active", Token: "active-token-1234"}}}
+			conn, name, err := cfg.Resolve(ResolveOptions{})
+			if err != nil || name != "(env)" || conn.Endpoint != "http://x" || conn.Token != "" {
+				t.Errorf("ARC_ENDPOINT alone: conn=%+v name=%q err=%v", conn, name, err)
+			}
+		})
+
+		t.Run("env_token_without_endpoint", func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("ARC_TOKEN", "t")
 			cfg := &Config{Connections: map[string]Connection{}}
 			_, _, err := cfg.Resolve(ResolveOptions{})
-			if err == nil {
-				t.Error("expected error for ARC_ENDPOINT without ARC_TOKEN")
+			if err == nil || !strings.Contains(err.Error(), "ARC_TOKEN needs ARC_ENDPOINT") {
+				t.Errorf("ARC_TOKEN alone: err = %v", err)
 			}
 		})
 
@@ -230,7 +252,7 @@ func TestRedactToken(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"", "************"},
+		{"", "(none)"},
 		{"short", "************"},
 		{"abcdefghijkl", "abcd...ijkl"},
 		{"abcdefghijklmnop", "abcd...mnop"},
