@@ -345,17 +345,11 @@ func newConfigDeleteCmd() *cobra.Command {
 			if _, ok := cfg.Connections[name]; !ok {
 				return fmt.Errorf("connection %q not found", name)
 			}
-			if !yes {
-				// Read one line of confirmation from stdin. Use os.Stdin
-				// directly (not cmd.InOrStdin) so test scripts can also
-				// pre-fill via t.Setenv-style stdin redirection.
-				fmt.Fprintf(cmd.ErrOrStderr(), "Delete connection %q? [y/N] ", name)
-				var resp string
-				_, _ = fmt.Fscanln(os.Stdin, &resp)
-				if !strings.EqualFold(strings.TrimSpace(resp), "y") && !strings.EqualFold(strings.TrimSpace(resp), "yes") {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Aborted.")
-					return nil
-				}
+			// Same gate as every other destructive command: a declined or
+			// non-interactive prompt is an error (exit 1), never a silent
+			// success (arcli#23).
+			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete connection %q?", name), yes); err != nil {
+				return err
 			}
 			delete(cfg.Connections, name)
 			// If we just deleted the active one, clear active so the
@@ -371,7 +365,7 @@ func newConfigDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation prompt")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt (destructive!)")
 	return c
 }
 

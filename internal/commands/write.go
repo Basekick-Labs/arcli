@@ -207,7 +207,9 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // operator who runs `arcli write` interactively and types lines is a
 // supported (if rare) workflow. The hang-on-empty-TTY foot-gun
 // matters for query because empty-SQL would error anyway; for write an
-// empty body is a no-op (lp) or a clear client error (msgpack, json).
+// empty body is a clear error either way: the server answers 400
+// ("Empty request body") for line protocol, and arcli refuses an empty
+// msgpack or json document before sending.
 func openWriteBody(cmd *cobra.Command, path string) (io.Reader, io.Closer, error) {
 	if path == "" {
 		return cmd.InOrStdin(), nil, nil

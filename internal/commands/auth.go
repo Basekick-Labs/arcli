@@ -954,12 +954,11 @@ func renderTokenList(cmd *cobra.Command, tokens []client.TokenInfo, format strin
 // errAborted is returned when the operator answers anything but yes.
 var errAborted = errors.New("aborted")
 
-// confirmOrAbort is the confirmation gate for commands whose stdout is
-// a secret or a machine-readable result. Unlike confirmDestructive it
-// returns an error (non-zero exit) on "no", and refuses outright when
-// stdin is a pipe or file and --yes was not given, so a script never
-// gets exit 0 with an empty stdout. The prompt goes to stderr so
-// `$(...)` capture stays clean.
+// confirmOrAbort is the single confirmation gate for every destructive
+// command. It returns an error (non-zero exit) on "no", and refuses
+// outright when stdin is a pipe, a file or /dev/null and --yes was not
+// given, so a script never gets exit 0 without the action having
+// happened. The prompt goes to stderr so `$(...)` capture stays clean.
 func confirmOrAbort(cmd *cobra.Command, question string, yes bool) error {
 	if yes {
 		return nil
