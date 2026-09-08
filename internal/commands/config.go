@@ -54,13 +54,14 @@ func newConfigCreateCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Add a new connection profile",
 		Example: `  arcli config create --name local --endpoint http://localhost:8000 --token ABC --activate
-  arcli config create --name prod  --endpoint https://arc.prod.example.com --token XYZ --default-database metrics`,
+  arcli config create --name prod  --endpoint https://arc.prod.example.com --token XYZ --default-database metrics
+  arcli config create --name lab   --endpoint http://lab:8000              # auth.enabled = false on the server: no token`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --token / --token-stdin exclusivity is enforced by cobra
 			// before RunE. Validate the other flags before draining stdin
 			// so a typo does not consume (and discard) the piped secret.
-			if name == "" || endpoint == "" || (token == "" && !tokenStdin) {
-				return fmt.Errorf("--name, --endpoint, and --token (or --token-stdin) are required")
+			if name == "" || endpoint == "" {
+				return fmt.Errorf("--name and --endpoint are required (add --token or --token-stdin unless the server runs without authentication)")
 			}
 			if err := validateEndpoint(endpoint); err != nil {
 				return err
@@ -100,6 +101,9 @@ func newConfigCreateCmd() *cobra.Command {
 			}
 			path, _ := config.ConfigPath()
 			fmt.Fprintf(cmd.OutOrStdout(), "Created connection %q at %s\n", name, path)
+			if token == "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: no token stored for %q; requests are sent without one, which only works against an Arc with auth.enabled = false (add one later with `arcli config update %s --token ...`)\n", name, name)
+			}
 			if minted {
 				if cfg.OutboundInstallationID() == "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "Generated installation id %s (not sent: DO_NOT_TRACK or send_installation_id = false is in effect)\n", cfg.InstallationID)
@@ -115,7 +119,7 @@ func newConfigCreateCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&name, "name", "", "connection name (required)")
 	c.Flags().StringVar(&endpoint, "endpoint", "", "Arc HTTP endpoint URL (required, e.g. http://localhost:8000)")
-	c.Flags().StringVar(&token, "token", "", "API token from Arc's first-run banner (required)")
+	c.Flags().StringVar(&token, "token", "", "API token from Arc's first-run banner (omit only for a server with authentication disabled)")
 	c.Flags().StringVar(&defaultDatabase, "default-database", "", "default database for query/write commands (optional)")
 	c.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification for this connection")
 	c.Flags().BoolVar(&activate, "activate", false, "make this the active connection")
@@ -172,7 +176,9 @@ func newConfigUpdateCmd() *cobra.Command {
 		Long: `Change one or more fields of an existing connection profile. Only the
 flags you pass are changed; --default-database "" clears the default.
 
-Typical use is refreshing a stored token after "arcli auth token rotate".`,
+Typical use is refreshing a stored token after "arcli auth token rotate".
+--token "" clears the token for a profile that targets a server with
+authentication disabled.`,
 		Example: `  arcli config update prod --token NEW-TOKEN
   arcli config update local --default-database metrics --insecure=false`,
 		Args: cobra.ExactArgs(1),
@@ -207,11 +213,11 @@ Typical use is refreshing a stored token after "arcli auth token rotate".`,
 				changed = append(changed, "endpoint")
 			}
 			if fl.Changed("token") || tokenStdin {
-				if token == "" {
-					return fmt.Errorf("--token must not be empty")
-				}
 				conn.Token = token
 				changed = append(changed, "token")
+				if token == "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: token cleared for %q; requests are sent without one, which only works against an Arc with auth.enabled = false\n", name)
+				}
 			}
 			if fl.Changed("default-database") {
 				conn.DefaultDatabase = defaultDatabase
@@ -230,7 +236,7 @@ Typical use is refreshing a stored token after "arcli auth token rotate".`,
 		},
 	}
 	c.Flags().StringVar(&endpoint, "endpoint", "", "new Arc HTTP endpoint URL")
-	c.Flags().StringVar(&token, "token", "", "new API token")
+	c.Flags().StringVar(&token, "token", "", "new API token (\"\" clears it, for a server with authentication disabled)")
 	c.Flags().StringVar(&defaultDatabase, "default-database", "", "new default database (\"\" clears)")
 	c.Flags().BoolVar(&insecure, "insecure", false, "skip TLS certificate verification for this connection (use --insecure=false to re-enable)")
 	c.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the new token from the first line of stdin")
@@ -381,7 +387,7 @@ func newConfigCurrentCmd() *cobra.Command {
 				return err
 			}
 			if cfg.Active == "" {
-				return fmt.Errorf("no active connection (run `arcli config create --name NAME --endpoint URL --token TOKEN --activate`)")
+				return fmt.Errorf("no active connection (run `arcli config create --name NAME --endpoint URL [--token TOKEN] --activate`)")
 			}
 			c, ok := cfg.Connections[cfg.Active]
 			if !ok {

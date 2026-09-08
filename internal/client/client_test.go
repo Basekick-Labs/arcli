@@ -23,20 +23,14 @@ func freshClient(t *testing.T, srv *httptest.Server, db string) *Client {
 	return c
 }
 
-func TestNew_RequiresEndpointAndToken(t *testing.T) {
-	cases := []struct {
-		name string
-		cfg  Config
-	}{
-		{"no endpoint", Config{Token: "x"}},
-		{"no token", Config{Endpoint: "http://x"}},
+func TestNew_RequiresEndpointOnly(t *testing.T) {
+	if _, err := New(Config{Token: "x"}); err == nil {
+		t.Fatal("no endpoint: expected error, got nil")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := New(tc.cfg); err == nil {
-				t.Fatal("expected error, got nil")
-			}
-		})
+	// A token is optional: servers with auth.enabled = false take none.
+	c, err := New(Config{Endpoint: "http://x"})
+	if err != nil || c.HasToken() {
+		t.Fatalf("no token: err=%v hasToken=%v", err, c != nil && c.HasToken())
 	}
 }
 

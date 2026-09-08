@@ -138,3 +138,80 @@ func TestConfigDelete_DeclinedPromptIsAnError(t *testing.T) {
 		t.Fatalf("--yes: err=%v out=%q", err, out)
 	}
 }
+
+// Token-less profiles: allowed for servers with auth.enabled = false.
+func TestTokenlessProfile(t *testing.T) {
+	t.Setenv("ARCLI_CONFIG", t.TempDir()+"/config.toml")
+	t.Setenv("ARC_CONNECTION", "")
+	t.Setenv("ARC_ENDPOINT", "")
+	t.Setenv("ARC_TOKEN", "")
+	out, errOut, err := execCmd(t, newConfigCreateCmd(), "--name", "lab", "--endpoint", "http://lab:8000")
+	if err != nil || !strings.Contains(out, `Created connection "lab"`) || !strings.Contains(errOut, "no token stored") {
+		t.Fatalf("create without token: err=%v out=%q stderr=%q", err, out, errOut)
+	}
+	out, _, _ = execCmd(t, newConfigCmd(), "list")
+	if !strings.Contains(out, "(none)") {
+		t.Errorf("list must show (none) for an empty token: %q", out)
+	}
+	// --token "" clears a stored token, with the same note.
+	if _, _, err := execCmd(t, newConfigUpdateCmd(), "lab", "--token", "secret-token-1234"); err != nil {
+		t.Fatal(err)
+	}
+	_, errOut, err = execCmd(t, newConfigUpdateCmd(), "lab", "--token", "")
+	cfg, _ := config.Load()
+	if err != nil || cfg.Connections["lab"].Token != "" || !strings.Contains(errOut, "token cleared") {
+		t.Errorf("clear: err=%v token=%q stderr=%q", err, cfg.Connections["lab"].Token, errOut)
+	}
+	// A name and an endpoint are still required.
+	if _, _, err := execCmd(t, newConfigCreateCmd(), "--name", "x"); err == nil || !strings.Contains(err.Error(), "--name and --endpoint are required") {
+		t.Errorf("missing endpoint: %v", err)
+	}
+}
+
+// ping against a server with authentication disabled (verify 404s)
+// succeeds without a token; against one that has auth it fails with a
+// message naming the missing token rather than a bare 401.
+func TestPing_NoToken(t *testing.T) {
+	authOn := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+		case "/api/v1/auth/verify":
+			if authOn {
+				w.WriteHeader(401)
+				_, _ = w.Write([]byte(`{"error":"Invalid or expired token"}`))
+			} else {
+				w.WriteHeader(404)
+				_, _ = w.Write([]byte(`{"error":"Cannot GET /api/v1/auth/verify"}`))
+			}
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ARCLI_CONFIG", t.TempDir()+"/none.toml")
+	t.Setenv("ARC_CONNECTION", "")
+	t.Setenv("ARC_TOKEN", "")
+	t.Setenv("ARC_ENDPOINT", srv.URL) // endpoint alone, no token
+	out, _, err := execCmd(t, newPingCmd())
+	if err != nil || !strings.Contains(out, "auth:       disabled on server (no token required)") || !strings.Contains(out, "(connection (env))") {
+		t.Fatalf("auth off: err=%v out=%q", err, out)
+	}
+	authOn = true
+	out, _, err = execCmd(t, newPingCmd())
+	if err == nil || !strings.Contains(err.Error(), "server requires a token but this connection has none") || !strings.Contains(out, "auth:       FAILED (server requires a token") {
+		t.Errorf("auth on: err=%v out=%q", err, out)
+	}
+	// An ad-hoc --endpoint without --token works the same way.
+	t.Setenv("ARC_ENDPOINT", "")
+	authOn = false
+	if _, _, err := execCmd(t, newPingCmd(), "--endpoint", srv.URL); err != nil {
+		t.Errorf("--endpoint alone: %v", err)
+	}
+	// A token without an endpoint is still an error.
+	if _, _, err := execCmd(t, newPingCmd(), "--token", "t"); err == nil || !strings.Contains(err.Error(), "--token needs --endpoint") {
+		t.Errorf("--token alone: %v", err)
+	}
+}

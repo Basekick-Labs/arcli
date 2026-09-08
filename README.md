@@ -102,12 +102,14 @@ pass show arc/prod | arcli config create --name prod --endpoint https://arc.prod
 ### Precedence
 
 1. `--connection NAME` flag
-2. `--endpoint URL --token T` flags (full ad-hoc)
+2. `--endpoint URL [--token T]` flags (ad-hoc)
 3. `ARC_CONNECTION` env var
-4. `ARC_ENDPOINT` + `ARC_TOKEN` env vars (full ad-hoc)
+4. `ARC_ENDPOINT` [+ `ARC_TOKEN`] env vars (ad-hoc)
 5. Active connection in `~/.arcli/config.toml`
 
 If none are set, commands fail with a clear "no active connection" error.
+
+A token is optional: an Arc running with `auth.enabled = false` takes requests without one, so `arcli config create --name lab --endpoint http://lab:8000` (no `--token`), `--endpoint` alone and `ARC_ENDPOINT` alone are all valid, and arcli then sends no `Authorization` header. `config list` shows such a profile's token as `(none)`; `config update NAME --token ""` clears a stored one. A token without an endpoint (`--token` alone, `ARC_TOKEN` alone) is still an error.
 
 ### Config file location
 

@@ -7,11 +7,15 @@
 //
 // Precedence for which connection a command uses (highest first):
 //  1. --connection / -c flag
-//  2. --endpoint + --token flags (full ad-hoc override)
+//  2. --endpoint [+ --token] flags (ad-hoc override)
 //  3. ARC_CONNECTION env var
-//  4. ARC_ENDPOINT + ARC_TOKEN env vars (full ad-hoc override)
+//  4. ARC_ENDPOINT [+ ARC_TOKEN] env vars (ad-hoc override)
 //  5. active connection in ~/.arcli/config.toml
 //
+// A token is optional everywhere: an Arc running with auth.enabled =
+// false accepts requests without one, so a profile or an ad-hoc
+// connection may carry an empty token and arcli then sends no
+// Authorization header. A token without an endpoint is still an error.
 // If nothing is set the resolver returns an error rather than guessing.
 package config
 
@@ -219,12 +223,13 @@ func (c *Config) Resolve(opts ResolveOptions) (Connection, string, error) {
 		return conn, opts.ConnectionName, nil
 	}
 
-	// 2. Full ad-hoc flag overrides (--endpoint + --token).
-	if opts.Endpoint != "" && opts.Token != "" {
+	// 2. Ad-hoc flag override: --endpoint, with --token when the server
+	// requires one. A token alone names no server and is an error.
+	if opts.Endpoint != "" {
 		return Connection{Endpoint: opts.Endpoint, Token: opts.Token}, "(flags)", nil
 	}
-	if opts.Endpoint != "" || opts.Token != "" {
-		return Connection{}, "", errors.New("--endpoint and --token must be set together for ad-hoc use")
+	if opts.Token != "" {
+		return Connection{}, "", errors.New("--token needs --endpoint (or use a named connection)")
 	}
 
 	// 3. ARC_CONNECTION env var.
@@ -236,19 +241,20 @@ func (c *Config) Resolve(opts ResolveOptions) (Connection, string, error) {
 		return conn, name, nil
 	}
 
-	// 4. Full env override (ARC_ENDPOINT + ARC_TOKEN).
+	// 4. Env override: ARC_ENDPOINT, with ARC_TOKEN when the server
+	// requires one.
 	ep := os.Getenv("ARC_ENDPOINT")
 	tok := os.Getenv("ARC_TOKEN")
-	if ep != "" && tok != "" {
+	if ep != "" {
 		return Connection{Endpoint: ep, Token: tok}, "(env)", nil
 	}
-	if ep != "" || tok != "" {
-		return Connection{}, "", errors.New("ARC_ENDPOINT and ARC_TOKEN must both be set for env-only auth")
+	if tok != "" {
+		return Connection{}, "", errors.New("ARC_TOKEN needs ARC_ENDPOINT (or use ARC_CONNECTION)")
 	}
 
 	// 5. Active connection in file.
 	if c.Active == "" {
-		return Connection{}, "", errors.New("no active connection configured (run `arcli config create --name NAME --endpoint URL --token TOKEN --activate`)")
+		return Connection{}, "", errors.New("no active connection configured (run `arcli config create --name NAME --endpoint URL [--token TOKEN] --activate`)")
 	}
 	conn, ok := c.Connections[c.Active]
 	if !ok {
@@ -259,8 +265,13 @@ func (c *Config) Resolve(opts ResolveOptions) (Connection, string, error) {
 
 // RedactToken returns the token with all but the first 4 and last 4
 // characters replaced by * for display in `config list` / `config
-// current` output. A token shorter than 12 chars is fully redacted.
+// current` output. A token shorter than 12 chars is fully redacted; an
+// empty token (a profile for a server without authentication) reads
+// "(none)".
 func RedactToken(token string) string {
+	if token == "" {
+		return "(none)"
+	}
 	if len(token) < 12 {
 		return "************"
 	}
