@@ -114,3 +114,27 @@ func TestConfigCreatePrintsInstallationNotice(t *testing.T) {
 		t.Errorf("DO_NOT_TRACK create: %q", out)
 	}
 }
+
+// config delete goes through confirmOrAbort (arcli#23): declined or
+// non-interactive prompts exit 1 and leave the file untouched.
+func TestConfigDelete_DeclinedPromptIsAnError(t *testing.T) {
+	writeTestConfig(t, "http://a", "tok")
+	c := newConfigCmd()
+	c.SetIn(strings.NewReader("n\n"))
+	_, errOut, err := execCmd(t, c, "delete", "twin")
+	if err != errAborted || !strings.Contains(errOut, `Delete connection "twin"? [y/N]`) {
+		t.Fatalf("declined: err=%v stderr=%q", err, errOut)
+	}
+	cfg, _ := config.Load()
+	if _, ok := cfg.Connections["twin"]; !ok {
+		t.Fatal("declined prompt must not delete the profile")
+	}
+	c = newConfigCmd()
+	c.SetIn(strings.NewReader("yes\n"))
+	if out, _, err := execCmd(t, c, "delete", "twin"); err != nil || !strings.Contains(out, `Deleted connection "twin"`) {
+		t.Fatalf("accepted: err=%v out=%q", err, out)
+	}
+	if out, _, err := execCmd(t, newConfigCmd(), "delete", "other", "--yes"); err != nil || !strings.Contains(out, `Deleted connection "other"`) {
+		t.Fatalf("--yes: err=%v out=%q", err, out)
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
-	"io"
 	"strings"
 	"testing"
 
@@ -276,65 +275,38 @@ func TestRenderMeasurementList_TableEmpty(t *testing.T) {
 	}
 }
 
-// confirmDestructive tests — the prompt is the only client-side gate
-// on db drop, so it has to be testable without spinning up an arc.
+// db drop goes through confirmOrAbort like every other destructive
+// command (arcli#23): a declined prompt is exit 1, never a silent
+// success, and --yes skips it.
 
-func TestConfirmDestructive_AcceptsY(t *testing.T) {
-	cmd := newTestCmd()
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetIn(strings.NewReader("y\n"))
-	if !confirmDestructive(cmd, "Delete X?") {
-		t.Error("y should accept")
+func TestDBDrop_DeclinedPromptIsAnError(t *testing.T) {
+	writeTestConfig(t, "http://127.0.0.1:1", "tok")
+	c := newDBCmd()
+	c.SetIn(strings.NewReader("n\n"))
+	out, errOut, err := execCmd(t, c, "drop", "staging")
+	if err != errAborted {
+		t.Fatalf("declined prompt: err = %v, want errAborted", err)
 	}
-	// The prompt goes to stderr (PR5) so stdout stays clean for
-	// scripts capturing a command's result.
-	if !strings.Contains(errOut.String(), "Delete X? [y/N]") {
-		t.Errorf("prompt missing from stderr: %q", errOut.String())
+	if !strings.Contains(errOut, `Delete database "staging" and ALL its files? [y/N]`) || out != "" {
+		t.Errorf("prompt: stderr=%q stdout=%q", errOut, out)
 	}
-	if out.Len() != 0 {
-		t.Errorf("prompt leaked to stdout: %q", out.String())
+	// Empty stdin (EOF) is a decline too.
+	c = newDBCmd()
+	c.SetIn(strings.NewReader(""))
+	if _, _, err := execCmd(t, c, "drop", "staging"); err != errAborted {
+		t.Errorf("EOF: err = %v", err)
 	}
-}
-
-func TestConfirmDestructive_AcceptsYes(t *testing.T) {
-	cmd := newTestCmd()
-	cmd.SetIn(strings.NewReader("YES\n"))
-	cmd.SetOut(io.Discard)
-	if !confirmDestructive(cmd, "Delete X?") {
-		t.Error("YES should accept (case-insensitive)")
+	// "y" proceeds to the request (which fails against the dead endpoint,
+	// proving the prompt was passed).
+	c = newDBCmd()
+	c.SetIn(strings.NewReader("y\n"))
+	if _, _, err := execCmd(t, c, "drop", "staging"); err == nil || err == errAborted {
+		t.Errorf("accepted prompt must reach the server: err = %v", err)
 	}
-}
-
-func TestConfirmDestructive_DefaultsNo(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-	}{
-		{"empty newline", "\n"},
-		{"n", "n\n"},
-		{"NO", "NO\n"},
-		{"random", "delete it\n"},
-		{"EOF no newline", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cmd := newTestCmd()
-			cmd.SetIn(strings.NewReader(tc.input))
-			cmd.SetOut(io.Discard)
-			if confirmDestructive(cmd, "Delete X?") {
-				t.Errorf("input %q should NOT confirm", tc.input)
-			}
-		})
-	}
-}
-
-func TestConfirmDestructive_TrimsWhitespace(t *testing.T) {
-	cmd := newTestCmd()
-	cmd.SetIn(strings.NewReader("  y  \n"))
-	cmd.SetOut(io.Discard)
-	if !confirmDestructive(cmd, "Delete X?") {
-		t.Error("'  y  ' (whitespace-padded) should accept")
+	// --yes never prompts.
+	c = newDBCmd()
+	c.SetIn(strings.NewReader(""))
+	if _, errOut, err := execCmd(t, c, "drop", "staging", "--yes"); err == errAborted || strings.Contains(errOut, "[y/N]") {
+		t.Errorf("--yes: err=%v stderr=%q", err, errOut)
 	}
 }

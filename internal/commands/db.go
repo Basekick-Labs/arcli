@@ -8,7 +8,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -16,7 +15,6 @@ import (
 	"io"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -245,11 +243,11 @@ config gate is the reason.`,
 			if err != nil {
 				return err
 			}
-			if !yes {
-				if !confirmDestructive(cmd, fmt.Sprintf("Delete database %q and ALL its files?", name)) {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Aborted.")
-					return nil
-				}
+			// Same gate as every other destructive command: a declined or
+			// non-interactive prompt is an error (exit 1), never a silent
+			// success (arcli#23).
+			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete database %q and ALL its files?", name), yes); err != nil {
+				return err
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
@@ -265,28 +263,6 @@ config gate is the reason.`,
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt (destructive!)")
 	addTimeoutFlag(c, &timeout)
 	return c
-}
-
-// confirmDestructive reads one line from cmd.InOrStdin() and returns
-// true only if the user typed "y" or "yes" (case-insensitive). Reading
-// from cmd.InOrStdin() (not os.Stdin) means tests can drive the prompt
-// via cmd.SetIn(strings.NewReader("y\n")).
-//
-// Anything else — empty input, "n", EOF, read error — returns false.
-// That's the safe default for a destructive prompt: when in doubt,
-// don't delete.
-//
-// The prompt is written to stderr so stdout stays clean for scripts
-// that capture it.
-func confirmDestructive(cmd *cobra.Command, question string) bool {
-	fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N] ", question)
-	r := bufio.NewReader(cmd.InOrStdin())
-	line, err := r.ReadString('\n')
-	if err != nil && line == "" {
-		return false
-	}
-	resp := strings.TrimSpace(line)
-	return strings.EqualFold(resp, "y") || strings.EqualFold(resp, "yes")
 }
 
 // ---- helpers --------------------------------------------------------------
