@@ -12,7 +12,9 @@
 .vscode/
 *.swp
 
-# Claude Code local-only state (CLAUDE.md is tracked; settings + worktrees are not)
+# Claude Code local-only state. CLAUDE.md is local guidance, not a repo
+# artifact, so it stays out of the tree.
+.claude/CLAUDE.md
 .claude/settings.local.json
 .claude/worktrees/
 
