@@ -64,6 +64,38 @@ arcli config current
 arcli config list
 ```
 
+## Sample datasets
+
+A synthetic data point proves the write path works; it does not show you what Arc is for. `arcli sample`
+puts a real public dataset into a database you own, then hands you queries worth running against it.
+
+```bash
+# What is published
+arcli sample list
+
+# Details, licence, time range, and (with -o json) every file URL + SHA-256
+arcli sample show citibike
+
+# Download, verify each file's SHA-256, and import into your Arc
+arcli sample load citibike
+
+# Pick your own target, or just fetch the files
+arcli sample load citibike --database nyc --measurement trips
+arcli sample load citibike --download-only --download-dir ./data
+```
+
+`load` creates the target database if it does not exist, imports each file in order, and prints two
+queries to run against what just landed. Importing requires an admin token when the server has
+authentication enabled. Downloads resume: a file already present with a matching checksum is not
+fetched again, and a checksum that does not match is re-downloaded once before the command fails
+rather than importing data that does not match the manifest.
+
+If the target measurement already holds rows, `load` says so and asks before adding more, so a second
+run cannot silently double the counts the printed queries report. Pass `--yes` to skip that prompt in
+a script.
+
+These are the only commands that contact a Basekick-controlled host; see [Privacy](#privacy).
+
 ## Connection management
 
 `arcli` stores connection profiles in `~/.arcli/config.toml` (mode 0600). One profile is marked active; commands use it by default.
@@ -376,9 +408,19 @@ The Homebrew formula and the deb / rpm / Arch packages install the completions (
 
 ## Privacy
 
-arcli never contacts Basekick or any third party; every request goes to the Arc server you configured, and the only thing it stores is `~/.arcli/config.toml`.
+With one exception, arcli contacts only the Arc server you configured, and the only thing it stores is
+`~/.arcli/config.toml`.
 
-Requests carry a `User-Agent` with the arcli version and OS/architecture and, once a config file exists, a random installation id (`installation_id` in the config file, minted by the first `config create`, not derived from your machine or account) in the `Arcli-Installation-Id` header. Arc's own opt-out telemetry may report that id together with its instance id to Basekick once a day (and at shutdown), so Basekick can count how many CLI installations talk to how many Arc servers. Because the id is the same for every server you use, it links the servers one installation talks to. Only requests the server authenticated are counted, so `ping` alone never registers anything. Opt out with `DO_NOT_TRACK=1` or `send_installation_id = false` in the config file; disabling telemetry on the Arc server also stops it. `arcli config current` shows the id and whether it is being sent; delete the key and the next command that writes the config file (`config create|update|set-active|delete`) mints a new one. With no config file at all (env-only use in a container) there is no id to send. Nothing else is stored or sent.
+**The exception is `arcli sample`.** Those commands download published datasets from
+`https://samples.basekick.net`, a Basekick-controlled host, so they necessarily tell Basekick that a
+download happened. They send the same `User-Agent` and `Arcli-Installation-Id` as any other arcli
+request (the opt-outs below apply), and never your token, your Arc endpoint, or anything about your
+data. Beyond that, fetching a file over the internet reveals your IP address and the file you asked
+for to whoever serves it, and Cloudflare's platform logging records that on Basekick's behalf as it
+would for any website. If you would rather not fetch from us at all, `arcli sample show <dataset> -o json`
+prints every file URL and SHA-256, so you can download them however you like and use `arcli import parquet`.
+
+Requests carry a `User-Agent` with the arcli version and OS/architecture and, once a config file exists, a random installation id (`installation_id` in the config file, minted by the first `config create`, not derived from your machine or account) in the `Arcli-Installation-Id` header. Arc's own opt-out telemetry may report that id together with its instance id to Basekick once a day (and at shutdown), so Basekick can count how many CLI installations talk to how many Arc servers. Because the id is the same for every server you use, it links the servers one installation talks to. Only requests the server authenticated are counted, so `ping` alone never registers anything. Opt out with `DO_NOT_TRACK=1` or `send_installation_id = false` in the config file; disabling telemetry on the Arc server also stops it. `arcli config current` shows the id and whether it is being sent; delete the key and the next command that writes the config file (`config create|update|set-active|delete`) mints a new one. With no config file at all (env-only use in a container) there is no id to send. Apart from the `arcli sample` downloads described above, nothing else is stored or sent.
 
 ## TLS
 
@@ -404,6 +446,7 @@ This repo is being built in [phased PRs](https://github.com/Basekick-Labs/arcli/
 - ~~**PR9** — `arcli write --format msgpack|json`, `arcli query --estimate`, `arcli logs`, `arcli import stats`, signal-aware root, `--token-stdin`~~ ✅ shipped
 - ~~**PR10a** — shell completion, build metadata in `--version`, distroless image, man pages~~ ✅ shipped
 - ~~**PR10b** — GoReleaser: archives, deb / rpm / Arch packages, Homebrew tap, multi-arch GHCR image, SBOMs, cosign; cut the first CalVer tag (`v26.09.1`)~~ ✅ shipped
+- ~~**PR11** — `arcli sample {list,show,load}`: download a real public dataset and import it into your own Arc~~ ✅ shipped
 - **Later** — Arc Enterprise surface (`queries`, `governance`, `rbac`, `audit`, `tiering`, `spoke`, `mqtt`), `debug` commands, interactive shell
 
 Versioning is CalVer like Arc: `YY.0M.PATCH`, tagged `v26.09.1`; only the deb / rpm / Arch package versions are normalised to `26.9.1` by their packagers. arcli 26.x speaks to Arc 26.06+. One consequence: Go only accepts `v0`/`v1` tags for this module path, so `go install …@v26.09.1` is not possible; `go install github.com/basekick-labs/arcli/cmd/arcli@latest` builds the current `main` instead, and the packages, Homebrew and Docker are the release channels.
