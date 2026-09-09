@@ -28,3 +28,7 @@ coverage.html
 
 # GoReleaser before-hook output (man pages + completions); see .goreleaser.yaml
 /.gen/
+
+# Cloudflare CLI cache; carries the account id. Never belongs in this repo,
+# but wrangler creates it in whatever directory it is run from.
+/.wrangler/
