@@ -347,6 +347,14 @@ func (c *Client) Fetch(ctx context.Context, dir string, parts []Part, concurrenc
 		wg.Add(1)
 		go func(i int, p Part) {
 			defer wg.Done()
+			// Check cancellation before racing for a slot. A select with
+			// both a free slot and a closed Done channel picks at random,
+			// so testing Done first is what actually stops new downloads
+			// starting after a failure.
+			if ctx.Err() != nil {
+				results <- result{index: i, err: ctx.Err()}
+				return
+			}
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -354,6 +362,7 @@ func (c *Client) Fetch(ctx context.Context, dir string, parts []Part, concurrenc
 				results <- result{index: i, err: ctx.Err()}
 				return
 			}
+			// Re-check: the slot may have been won while a sibling failed.
 			if ctx.Err() != nil {
 				results <- result{index: i, err: ctx.Err()}
 				return

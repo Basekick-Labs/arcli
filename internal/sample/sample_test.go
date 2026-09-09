@@ -296,43 +296,41 @@ func TestNoRedirectOffHost(t *testing.T) {
 	}
 }
 
-// TestFetchFailsFast: one failure must stop the remaining downloads. The
-// motivating case is a 403 from the gate, which fails for every part, and
-// without cancellation would cost the user a full dataset of requests
-// before reporting a problem present from the first byte.
+// TestFetchFailsFast: a failure must stop the remaining downloads rather
+// than pull the whole dataset before reporting a problem present from the
+// first byte.
+//
+// Every part fails, which is the real-world shape this guards (a 403
+// because the gate did not recognise this build fails for every part).
+// Making them all fail also keeps the test deterministic: singling out
+// one part would depend on the Go scheduler running that goroutine in the
+// first concurrency-sized batch, which it does not guarantee.
 func TestFetchFailsFast(t *testing.T) {
-	var served int64
+	var started int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "part-000.parquet") {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		select {
-		case <-time.After(2 * time.Second):
-		case <-r.Context().Done():
-			return // cancelled, which is what this test is checking for
-		}
-		atomic.AddInt64(&served, 1)
-		w.Write([]byte("x"))
+		atomic.AddInt64(&started, 1)
+		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
 
-	parts := make([]Part, 0, 24)
-	for i := 0; i < 24; i++ {
+	const total = 24
+	parts := make([]Part, 0, total)
+	for i := 0; i < total; i++ {
 		parts = append(parts, Part{
 			Key:    fmt.Sprintf("p/part-%03d.parquet", i),
 			Bytes:  1,
 			SHA256: sha256Hex([]byte("x")),
 		})
 	}
-	c := newTestClient(t, srv.URL, "")
-	c.httpClient.Timeout = 30 * time.Second
 
-	if _, err := c.Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil {
+	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil {
 		t.Fatal("expected an error")
 	}
-	if n := atomic.LoadInt64(&served); n > 6 {
-		t.Errorf("fail-fast not working: %d parts still completed after the first failure", n)
+	// With cancellation working, only the first concurrency-sized batch
+	// (plus at most a straggler already past the check) ever reaches the
+	// server. Without it, all 24 would.
+	if n := atomic.LoadInt64(&started); n > 8 {
+		t.Errorf("fail-fast not working: %d of %d parts reached the server after the first failure", n, total)
 	}
 }
 
