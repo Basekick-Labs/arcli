@@ -156,17 +156,50 @@ func describeProgress(w io.Writer, p *client.BackupProgress) {
 	// already lacked, and warehouse files a restore had nowhere to put. The
 	// server already names the counts of a failed restore in its error, so
 	// only the names and the backup's own gaps are added here.
+	writeRestoreGaps(w, p)
+	writeSample(w, "skipped", p.SkippedSample)
+	if p.UnaddressableFiles > 0 && len(p.UnaddressableSample) == 0 {
+		// A backup publishes the count before copying but names the files
+		// only in its manifest, which exists once it has completed; while it
+		// runs, or after it failed, the names are in the server log.
+		if p.Operation == "backup" && p.Status == "completed" {
+			fmt.Fprintf(w, "  unaddressable: %d files (names: arcli backup show %s)\n", p.UnaddressableFiles, clean(p.BackupID))
+		} else {
+			fmt.Fprintf(w, "  unaddressable: %d files (names in the server log)\n", p.UnaddressableFiles)
+		}
+	}
+	writeSample(w, "unaddressable", p.UnaddressableSample)
+}
+
+// writeRestoreGaps prints what a restore's progress says about gaps that are
+// not the restore's own doing: what the restored backup already lacked when it
+// was taken, and warehouse files this node had nowhere to put. Printed for a
+// failed and a completed restore alike, since the latter is the only place the
+// warehouse gap shows when Iceberg is off on the node.
+func writeRestoreGaps(w io.Writer, p *client.BackupProgress) {
 	if p.BackupSkippedFiles > 0 || p.BackupUnaddressableFiles > 0 {
 		fmt.Fprintf(w, "backup had: %s when it was taken\n", describeIncomplete(p.BackupSkippedFiles, 0, p.BackupUnaddressableFiles))
 	}
 	if p.IcebergWarehouseFilesSkipped > 0 {
 		fmt.Fprintf(w, "iceberg:    %d warehouse files not restored (this node has no outside-root warehouse)\n", p.IcebergWarehouseFilesSkipped)
 	}
-	writeSample(w, "skipped", p.SkippedSample)
-	if p.UnaddressableFiles > 0 && len(p.UnaddressableSample) == 0 {
-		fmt.Fprintf(w, "  unaddressable: %d files (names: arcli backup show %s)\n", p.UnaddressableFiles, clean(p.BackupID))
+}
+
+// overlongClause phrases how many skips were for a destination key over the
+// storage limit, the permanent cause fixed by renaming the file.
+func overlongClause(n int64) string {
+	if n == 1 {
+		return "1 for a key too long to store"
 	}
-	writeSample(w, "unaddressable", p.UnaddressableSample)
+	return fmt.Sprintf("%d for keys too long to store", n)
+}
+
+// wasWere is the verb for n skipped files.
+func wasWere(n int64) string {
+	if n == 1 {
+		return "was"
+	}
+	return "were"
 }
 
 // describeIncomplete phrases a backup's incompleteness counts, each in its own
@@ -316,7 +349,7 @@ deletion can run at a time.`,
 			fmt.Fprintln(out)
 			if len(gaps) > 0 {
 				writeSample(out, "skipped", final.SkippedSample)
-				fmt.Fprintf(out, "see \"arcli backup show %s\" for the full breakdown\n", clean(id))
+				fmt.Fprintf(cmd.ErrOrStderr(), "see `arcli backup show %s` for the full breakdown\n", clean(id))
 			}
 			return nil
 		},
@@ -486,24 +519,57 @@ func describeManifestIncomplete(m *client.BackupManifest) string {
 	var clauses []string
 	var skipped []string
 	if m.SkippedFiles > 0 {
-		skipped = append(skipped, fmt.Sprintf("%d of %d files", m.SkippedFiles, m.TotalFiles))
+		// A manifest written before the data/metadata split folded metadata
+		// skips into skipped_files, so the count can exceed the total; then
+		// "N of M" would read as nonsense.
+		if m.SkippedFiles > m.TotalFiles {
+			skipped = append(skipped, plural(m.SkippedFiles, "file", "files"))
+		} else {
+			skipped = append(skipped, fmt.Sprintf("%d of %d files", m.SkippedFiles, m.TotalFiles))
+		}
 	}
 	if m.SkippedMetadataFiles > 0 {
 		skipped = append(skipped, plural(m.SkippedMetadataFiles, "metadata file", "metadata files"))
 	}
 	if len(skipped) > 0 {
-		verb := "were"
-		if m.SkippedFiles+m.SkippedMetadataFiles == 1 {
-			verb = "was"
-		}
-		clause := strings.Join(skipped, " and ") + " " + verb + " skipped while backing up"
+		clause := strings.Join(skipped, " and ") + " " + wasWere(m.SkippedFiles+m.SkippedMetadataFiles) + " skipped while backing up"
 		if m.SkippedOverlongKeys > 0 {
-			clause += fmt.Sprintf(" (%d for a key too long to store)", m.SkippedOverlongKeys)
+			clause += " (" + overlongClause(m.SkippedOverlongKeys) + ")"
 		}
 		clauses = append(clauses, clause)
 	}
 	if m.UnaddressableFiles > 0 {
 		clauses = append(clauses, plural(m.UnaddressableFiles, "file", "files")+" could not be listed (unaddressable)")
+	}
+	if m.IcebergWarehouse != nil && m.IcebergWarehouse.SkippedFiles > 0 {
+		clauses = append(clauses, plural(m.IcebergWarehouse.SkippedFiles, "Iceberg warehouse file was", "Iceberg warehouse files were")+" skipped")
+	}
+	return strings.Join(clauses, "; ")
+}
+
+// describeRestoreGaps phrases what a backup lacked when it was taken, for the
+// warning before a restore: the same shape as describeManifestIncomplete, with
+// the overlong clause on the joined skipped sentence because the server counts
+// overlong keys across data and metadata files alike. "" when the manifest
+// records no gap.
+func describeRestoreGaps(m *client.BackupManifest) string {
+	var clauses []string
+	var skipped []string
+	if m.SkippedFiles > 0 {
+		skipped = append(skipped, plural(m.SkippedFiles, "file", "files"))
+	}
+	if m.SkippedMetadataFiles > 0 {
+		skipped = append(skipped, plural(m.SkippedMetadataFiles, "metadata file", "metadata files"))
+	}
+	if len(skipped) > 0 {
+		clause := strings.Join(skipped, " and ") + " " + wasWere(m.SkippedFiles+m.SkippedMetadataFiles) + " skipped when it was taken"
+		if m.SkippedOverlongKeys > 0 {
+			clause += ", " + strings.Replace(overlongClause(m.SkippedOverlongKeys), " for ", " of them for ", 1)
+		}
+		clauses = append(clauses, clause)
+	}
+	if m.UnaddressableFiles > 0 {
+		clauses = append(clauses, plural(m.UnaddressableFiles, "file", "files")+" could not be listed")
 	}
 	if m.IcebergWarehouse != nil && m.IcebergWarehouse.SkippedFiles > 0 {
 		clauses = append(clauses, plural(m.IcebergWarehouse.SkippedFiles, "Iceberg warehouse file was", "Iceberg warehouse files were")+" skipped")
@@ -673,22 +739,8 @@ to 2h).`,
 				return fmt.Errorf("backup %s does not contain the server config; drop --with-config", clean(id))
 			}
 			stderr := cmd.ErrOrStderr()
-			if m.SkippedFiles > 0 || m.SkippedMetadataFiles > 0 || m.UnaddressableFiles > 0 {
-				var gaps []string
-				if m.SkippedFiles > 0 {
-					g := fmt.Sprintf("%d files were skipped when it was taken", m.SkippedFiles)
-					if m.SkippedOverlongKeys > 0 {
-						g += fmt.Sprintf(", %d of them for keys too long to store", m.SkippedOverlongKeys)
-					}
-					gaps = append(gaps, g)
-				}
-				if m.SkippedMetadataFiles > 0 {
-					gaps = append(gaps, fmt.Sprintf("%d metadata files were skipped", m.SkippedMetadataFiles))
-				}
-				if m.UnaddressableFiles > 0 {
-					gaps = append(gaps, fmt.Sprintf("%d files could not be listed", m.UnaddressableFiles))
-				}
-				fmt.Fprintf(stderr, "warning: backup %s is incomplete (%s)\n", clean(id), strings.Join(gaps, "; "))
+			if gaps := describeRestoreGaps(m); gaps != "" {
+				fmt.Fprintf(stderr, "warning: backup %s is incomplete (%s)\n", clean(id), gaps)
 			}
 			dbs := make([]string, 0, len(m.Databases))
 			for _, db := range m.Databases {
@@ -781,6 +833,7 @@ to 2h).`,
 				}
 			} else if final.Status == "completed" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes))
+				writeRestoreGaps(cmd.OutOrStdout(), final)
 			} else {
 				describeProgress(cmd.OutOrStdout(), final)
 			}

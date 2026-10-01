@@ -476,18 +476,20 @@ func TestBackup_CreateWaitReportsIncomplete(t *testing.T) {
 	f := newFakeBackupServer(t)
 	f.incomplete = true
 	writeTestConfig(t, f.srv.URL, "tok")
-	out, _, err := execCmd(t, newBackupCreateCmd(), "--wait", "--wait-timeout", "10s")
+	out, stderr, err := execCmd(t, newBackupCreateCmd(), "--wait", "--wait-timeout", "10s")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		"completed: 1 files, 1.0 KiB (1 files skipped, 1 files could not be listed — the backup is incomplete)\n",
 		"  skipped:       smoke/cpu/2026/09/07/20/gone.parquet\n",
-		"see \"arcli backup show backup-20260907-200001-00000001\" for the full breakdown\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("create --wait output lacks %q:\n%s", want, out)
 		}
+	}
+	if !strings.Contains(stderr, "see `arcli backup show backup-20260907-200001-00000001` for the full breakdown\n") {
+		t.Errorf("create --wait stderr lacks the show hint:\n%s", stderr)
 	}
 	out, _, err = execCmd(t, newBackupListCmd())
 	if err != nil || !strings.Contains(out, "1 skipped, 1 unaddressable") {
