@@ -37,13 +37,23 @@ func (e *BackupBusyError) Error() string {
 }
 
 // BackupSummary is one entry of GET /api/v1/backup/.
+//
+// The three incompleteness counts arrive from Arc 26.09.3 on and are absent
+// (zero) from older servers; each is its own population on the server:
+// SkippedFiles are data files inside TotalFiles that were not stored,
+// SkippedMetadataFiles are Iceberg metadata or compaction recovery state
+// (not inside TotalFiles), UnaddressableFiles were never inventoried because
+// no listing can return their key.
 type BackupSummary struct {
-	BackupID      string    `json:"backup_id"`
-	CreatedAt     time.Time `json:"created_at"`
-	BackupType    string    `json:"backup_type"`
-	TotalFiles    int64     `json:"total_files"`
-	TotalBytes    int64     `json:"total_size_bytes"`
-	DatabaseCount int       `json:"database_count"`
+	BackupID             string    `json:"backup_id"`
+	CreatedAt            time.Time `json:"created_at"`
+	BackupType           string    `json:"backup_type"`
+	TotalFiles           int64     `json:"total_files"`
+	TotalBytes           int64     `json:"total_size_bytes"`
+	DatabaseCount        int       `json:"database_count"`
+	SkippedFiles         int64     `json:"skipped_files,omitempty"`
+	SkippedMetadataFiles int64     `json:"skipped_metadata_files,omitempty"`
+	UnaddressableFiles   int64     `json:"unaddressable_files,omitempty"`
 }
 
 // BackupMeasurement / BackupDatabase / BackupManifest mirror
@@ -61,19 +71,34 @@ type BackupDatabase struct {
 	SizeBytes    int64               `json:"size_bytes"`
 }
 
+// BackupIcebergWarehouse mirrors the manifest's iceberg_warehouse object: an
+// Iceberg warehouse outside the storage root, copied separately.
+type BackupIcebergWarehouse struct {
+	Path         string `json:"path"`
+	FileCount    int64  `json:"file_count"`
+	SizeBytes    int64  `json:"size_bytes"`
+	SkippedFiles int64  `json:"skipped_files,omitempty"`
+}
+
 type BackupManifest struct {
-	Version           string           `json:"version"`
-	BackupID          string           `json:"backup_id"`
-	CreatedAt         time.Time        `json:"created_at"`
-	BackupType        string           `json:"backup_type"`
-	Databases         []BackupDatabase `json:"databases"`
-	TotalFiles        int64            `json:"total_files"`
-	TotalSizeBytes    int64            `json:"total_size_bytes"`
-	SkippedFiles      int64            `json:"skipped_files,omitempty"`
-	HasMetadata       bool             `json:"has_metadata"`
-	HasIcebergCatalog bool             `json:"has_iceberg_catalog,omitempty"`
-	HasConfig         bool             `json:"has_config"`
-	Raw               json.RawMessage  `json:"-"`
+	Version              string                  `json:"version"`
+	BackupID             string                  `json:"backup_id"`
+	CreatedAt            time.Time               `json:"created_at"`
+	BackupType           string                  `json:"backup_type"`
+	Databases            []BackupDatabase        `json:"databases"`
+	TotalFiles           int64                   `json:"total_files"`
+	TotalSizeBytes       int64                   `json:"total_size_bytes"`
+	SkippedFiles         int64                   `json:"skipped_files,omitempty"`
+	SkippedMetadataFiles int64                   `json:"skipped_metadata_files,omitempty"`
+	SkippedSample        []string                `json:"skipped_sample,omitempty"`
+	SkippedOverlongKeys  int64                   `json:"skipped_overlong_keys,omitempty"`
+	UnaddressableFiles   int64                   `json:"unaddressable_files,omitempty"`
+	UnaddressableSample  []string                `json:"unaddressable_sample,omitempty"`
+	IcebergWarehouse     *BackupIcebergWarehouse `json:"iceberg_warehouse,omitempty"`
+	HasMetadata          bool                    `json:"has_metadata"`
+	HasIcebergCatalog    bool                    `json:"has_iceberg_catalog,omitempty"`
+	HasConfig            bool                    `json:"has_config"`
+	Raw                  json.RawMessage         `json:"-"`
 }
 
 // BackupProgress is GET /api/v1/backup/status when an operation has run
@@ -91,6 +116,19 @@ type BackupProgress struct {
 	StartedAt      time.Time  `json:"started_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 	Error          string     `json:"error,omitempty"`
+	// SkippedSample names up to 32 of the skipped files: for a backup (Arc
+	// 26.09.3+) its skipped data and Iceberg metadata files, for a restore the
+	// backup objects it could not read. UnaddressableFiles is published for
+	// both operations; its sample only for a restore.
+	SkippedSample       []string `json:"skipped_sample,omitempty"`
+	UnaddressableFiles  int64    `json:"unaddressable_files,omitempty"`
+	UnaddressableSample []string `json:"unaddressable_sample,omitempty"`
+	// Restore only: what the restored backup already lacked when it was taken,
+	// and warehouse files left out because this node has no outside-root
+	// Iceberg warehouse.
+	BackupSkippedFiles           int64 `json:"backup_skipped_files,omitempty"`
+	BackupUnaddressableFiles     int64 `json:"backup_unaddressable_files,omitempty"`
+	IcebergWarehouseFilesSkipped int64 `json:"iceberg_warehouse_files_skipped,omitempty"`
 }
 
 // BackupStatus is the decoded status endpoint: Idle when the server has

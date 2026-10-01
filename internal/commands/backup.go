@@ -152,6 +152,56 @@ func describeProgress(w io.Writer, p *client.BackupProgress) {
 	if p.Error != "" {
 		fmt.Fprintf(w, "error:      %s\n", clean(p.Error))
 	}
+	// What the counts above do not say: which files, what the restored backup
+	// already lacked, and warehouse files a restore had nowhere to put. The
+	// server already names the counts of a failed restore in its error, so
+	// only the names and the backup's own gaps are added here.
+	if p.BackupSkippedFiles > 0 || p.BackupUnaddressableFiles > 0 {
+		fmt.Fprintf(w, "backup had: %s when it was taken\n", describeIncomplete(p.BackupSkippedFiles, 0, p.BackupUnaddressableFiles))
+	}
+	if p.IcebergWarehouseFilesSkipped > 0 {
+		fmt.Fprintf(w, "iceberg:    %d warehouse files not restored (this node has no outside-root warehouse)\n", p.IcebergWarehouseFilesSkipped)
+	}
+	writeSample(w, "skipped", p.SkippedSample)
+	if p.UnaddressableFiles > 0 && len(p.UnaddressableSample) == 0 {
+		fmt.Fprintf(w, "  unaddressable: %d files (names: arcli backup show %s)\n", p.UnaddressableFiles, clean(p.BackupID))
+	}
+	writeSample(w, "unaddressable", p.UnaddressableSample)
+}
+
+// describeIncomplete phrases a backup's incompleteness counts, each in its own
+// domain because the server keeps them apart: skipped data files are part of
+// the backup's file total, metadata skips (Iceberg metadata, compaction
+// recovery state) are not, and unaddressable files were never inventoried at
+// all, so the numbers are never summed. Returns "" when all are zero, which is
+// also what an Arc older than 26.09.3 reports: none, not necessarily complete.
+func describeIncomplete(skipped, metadata, unaddressable int64) string {
+	var parts []string
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", skipped))
+	}
+	if metadata > 0 {
+		parts = append(parts, fmt.Sprintf("%d metadata", metadata))
+	}
+	if unaddressable > 0 {
+		parts = append(parts, fmt.Sprintf("%d unaddressable", unaddressable))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// writeSample prints one labelled line per path (up to the server's 32).
+func writeSample(w io.Writer, label string, paths []string) {
+	for _, p := range paths {
+		fmt.Fprintf(w, "  %-14s %s\n", label+":", clean(p))
+	}
+}
+
+// plural returns n with the singular or plural noun.
+func plural(n int64, singular, pluralForm string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, pluralForm)
 }
 
 // ---- create ----------------------------------------------------------------
@@ -251,11 +301,23 @@ deletion can run at a time.`,
 				describeProgress(cmd.OutOrStdout(), final)
 				return fmt.Errorf("backup %s %s: %s", clean(id), clean(final.Status), clean(final.Error))
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Backup %s completed: %d files, %s", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes))
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Backup %s completed: %d files, %s", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes))
+			var gaps []string
 			if final.SkippedFiles > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), " (%d files skipped — the backup is incomplete)", final.SkippedFiles)
+				gaps = append(gaps, fmt.Sprintf("%d files skipped", final.SkippedFiles))
 			}
-			fmt.Fprintln(cmd.OutOrStdout())
+			if final.UnaddressableFiles > 0 {
+				gaps = append(gaps, fmt.Sprintf("%d files could not be listed", final.UnaddressableFiles))
+			}
+			if len(gaps) > 0 {
+				fmt.Fprintf(out, " (%s — the backup is incomplete)", strings.Join(gaps, ", "))
+			}
+			fmt.Fprintln(out)
+			if len(gaps) > 0 {
+				writeSample(out, "skipped", final.SkippedSample)
+				fmt.Fprintf(out, "see \"arcli backup show %s\" for the full breakdown\n", clean(id))
+			}
 			return nil
 		},
 	}
@@ -279,10 +341,18 @@ func newBackupListCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "List backups, newest first",
-		Long: `List backups (GET /api/v1/backup/), newest first. The listing cannot
-tell whether a backup is incomplete; "backup show" reports skipped files.
+		Long: `List backups (GET /api/v1/backup/), newest first.
 
-Output formats: table (default) | json | csv`,
+INCOMPLETE says what the backup lacks, as the server counts it (Arc
+26.09.3+): "skipped" data files that were inventoried but not stored,
+"metadata" files (Iceberg metadata, compaction recovery state) that were
+skipped, and "unaddressable" files whose key no listing can return, so
+they were never inventoried. "-" means none reported: a complete backup,
+or an Arc older than 26.09.3. "backup show" names the files.
+
+Output formats: table (default) | json | csv. The csv columns
+skipped_files, skipped_metadata_files and unaddressable_files follow
+total_size_bytes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -306,12 +376,12 @@ Output formats: table (default) | json | csv`,
 			if outputFormat == output.FormatCSV {
 				cw := csv.NewWriter(w)
 				if !noHeader {
-					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes"}); err != nil {
+					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files"}); err != nil {
 						return err
 					}
 				}
 				for _, b := range list {
-					if err := cw.Write([]string{b.BackupID, fmtTimeVal(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10)}); err != nil {
+					if err := cw.Write([]string{b.BackupID, fmtTimeVal(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10)}); err != nil {
 						return err
 					}
 				}
@@ -324,9 +394,13 @@ Output formats: table (default) | json | csv`,
 			}
 			rows := make([][]string, 0, len(list))
 			for _, b := range list {
-				rows = append(rows, []string{clean(b.BackupID), fmtTimeVal(b.CreatedAt, "-"), clean(b.BackupType), strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), humanBytes(b.TotalBytes)})
+				incomplete := describeIncomplete(b.SkippedFiles, b.SkippedMetadataFiles, b.UnaddressableFiles)
+				if incomplete == "" {
+					incomplete = "-"
+				}
+				rows = append(rows, []string{clean(b.BackupID), fmtTimeVal(b.CreatedAt, "-"), clean(b.BackupType), strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), humanBytes(b.TotalBytes), incomplete})
 			}
-			headers := []string{"ID", "CREATED", "TYPE", "DATABASES", "FILES", "SIZE"}
+			headers := []string{"ID", "CREATED", "TYPE", "DATABASES", "FILES", "SIZE", "INCOMPLETE"}
 			if noHeader {
 				headers = nil
 			}
@@ -382,8 +456,10 @@ func writeManifest(w io.Writer, m *client.BackupManifest) error {
 	fmt.Fprintf(w, "created:     %s\n", fmtTimeVal(m.CreatedAt, "-"))
 	fmt.Fprintf(w, "type:        %s (server %s)\n", clean(m.BackupType), clean(m.Version))
 	fmt.Fprintf(w, "contents:    %d files, %s, metadata %t, config %t\n", m.TotalFiles, humanBytes(m.TotalSizeBytes), m.HasMetadata, m.HasConfig)
-	if m.SkippedFiles > 0 {
-		fmt.Fprintf(w, "INCOMPLETE:  %d files were skipped while backing up\n", m.SkippedFiles)
+	if line := describeManifestIncomplete(m); line != "" {
+		fmt.Fprintf(w, "INCOMPLETE:  %s\n", line)
+		writeSample(w, "skipped", m.SkippedSample)
+		writeSample(w, "unaddressable", m.UnaddressableSample)
 	}
 	if len(m.Databases) == 0 {
 		_, err := fmt.Fprintln(w, "(no databases)")
@@ -400,6 +476,39 @@ func writeManifest(w io.Writer, m *client.BackupManifest) error {
 		}
 	}
 	return output.Table(w, []string{"DATABASE", "MEASUREMENT", "FILES", "SIZE"}, rows)
+}
+
+// describeManifestIncomplete phrases a manifest's incompleteness, or returns
+// "" for a backup that reports none. The skipped clause counts data files
+// against the backup's file total and metadata files apart (they are not in
+// that total); the overlong clause spans both, as the server counts it.
+func describeManifestIncomplete(m *client.BackupManifest) string {
+	var clauses []string
+	var skipped []string
+	if m.SkippedFiles > 0 {
+		skipped = append(skipped, fmt.Sprintf("%d of %d files", m.SkippedFiles, m.TotalFiles))
+	}
+	if m.SkippedMetadataFiles > 0 {
+		skipped = append(skipped, plural(m.SkippedMetadataFiles, "metadata file", "metadata files"))
+	}
+	if len(skipped) > 0 {
+		verb := "were"
+		if m.SkippedFiles+m.SkippedMetadataFiles == 1 {
+			verb = "was"
+		}
+		clause := strings.Join(skipped, " and ") + " " + verb + " skipped while backing up"
+		if m.SkippedOverlongKeys > 0 {
+			clause += fmt.Sprintf(" (%d for a key too long to store)", m.SkippedOverlongKeys)
+		}
+		clauses = append(clauses, clause)
+	}
+	if m.UnaddressableFiles > 0 {
+		clauses = append(clauses, plural(m.UnaddressableFiles, "file", "files")+" could not be listed (unaddressable)")
+	}
+	if m.IcebergWarehouse != nil && m.IcebergWarehouse.SkippedFiles > 0 {
+		clauses = append(clauses, plural(m.IcebergWarehouse.SkippedFiles, "Iceberg warehouse file was", "Iceberg warehouse files were")+" skipped")
+	}
+	return strings.Join(clauses, "; ")
 }
 
 func newBackupStatusCmd() *cobra.Command {
@@ -564,8 +673,22 @@ to 2h).`,
 				return fmt.Errorf("backup %s does not contain the server config; drop --with-config", clean(id))
 			}
 			stderr := cmd.ErrOrStderr()
-			if m.SkippedFiles > 0 {
-				fmt.Fprintf(stderr, "warning: backup %s is incomplete (%d files were skipped when it was taken)\n", clean(id), m.SkippedFiles)
+			if m.SkippedFiles > 0 || m.SkippedMetadataFiles > 0 || m.UnaddressableFiles > 0 {
+				var gaps []string
+				if m.SkippedFiles > 0 {
+					g := fmt.Sprintf("%d files were skipped when it was taken", m.SkippedFiles)
+					if m.SkippedOverlongKeys > 0 {
+						g += fmt.Sprintf(", %d of them for keys too long to store", m.SkippedOverlongKeys)
+					}
+					gaps = append(gaps, g)
+				}
+				if m.SkippedMetadataFiles > 0 {
+					gaps = append(gaps, fmt.Sprintf("%d metadata files were skipped", m.SkippedMetadataFiles))
+				}
+				if m.UnaddressableFiles > 0 {
+					gaps = append(gaps, fmt.Sprintf("%d files could not be listed", m.UnaddressableFiles))
+				}
+				fmt.Fprintf(stderr, "warning: backup %s is incomplete (%s)\n", clean(id), strings.Join(gaps, "; "))
 			}
 			dbs := make([]string, 0, len(m.Databases))
 			for _, db := range m.Databases {
