@@ -214,6 +214,9 @@ type fakeBackupServer struct {
 	publishDelay time.Duration
 	counter      int32
 	srv          *httptest.Server
+	// incomplete makes every backup report one skipped and one unaddressable
+	// file on the status, the manifest and the listing (Arc 26.09.3 shapes).
+	incomplete bool
 }
 
 func newFakeBackupServer(t *testing.T) *fakeBackupServer {
@@ -224,7 +227,11 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 		_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
 	})
 	manifest := func(id string) string {
-		return `{"version":"dev","backup_id":"` + id + `","created_at":"2026-09-07T20:00:00Z","backup_type":"full","databases":[{"name":"smoke","measurements":[{"name":"cpu","file_count":1,"size_bytes":1064}],"file_count":1,"size_bytes":1064}],"total_files":1,"total_size_bytes":1064,"has_metadata":true,"has_config":false}`
+		gaps := ""
+		if f.incomplete {
+			gaps = `"skipped_files":1,"skipped_sample":["smoke/cpu/2026/09/07/20/gone.parquet"],"unaddressable_files":1,"unaddressable_sample":["smoke/.hidden.parquet"],`
+		}
+		return `{"version":"dev","backup_id":"` + id + `","created_at":"2026-09-07T20:00:00Z","backup_type":"full","databases":[{"name":"smoke","measurements":[{"name":"cpu","file_count":1,"size_bytes":1064}],"file_count":1,"size_bytes":1064}],"total_files":1,"total_size_bytes":1064,` + gaps + `"has_metadata":true,"has_config":false}`
 	}
 	publish := func(op, id string) {
 		time.Sleep(f.publishDelay)
@@ -234,7 +241,11 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 		f.mu.Unlock()
 		time.Sleep(f.publishDelay)
 		f.mu.Lock()
-		f.status = `{"operation":"` + op + `","backup_id":"` + id + `","status":"completed","total_files":1,"processed_files":1,"skipped_files":0,"total_bytes":1064,"processed_bytes":1064,"started_at":"` + started + `","completed_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `"}`
+		done := `"skipped_files":0,`
+		if f.incomplete && op == "backup" {
+			done = `"skipped_files":1,"unaddressable_files":1,"skipped_sample":["smoke/cpu/2026/09/07/20/gone.parquet"],`
+		}
+		f.status = `{"operation":"` + op + `","backup_id":"` + id + `","status":"completed","total_files":1,"processed_files":1,` + done + `"total_bytes":1064,"processed_bytes":1064,"started_at":"` + started + `","completed_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `"}`
 		if op == "backup" {
 			f.backups[id] = manifest(id)
 		}
@@ -259,7 +270,11 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 		case rest == "" && r.Method == http.MethodGet:
 			list := []string{}
 			for id := range f.backups {
-				list = append(list, `{"backup_id":"`+id+`","created_at":"2026-09-07T20:00:00Z","backup_type":"full","total_files":1,"total_size_bytes":1064,"database_count":1}`)
+				gaps := ""
+				if f.incomplete {
+					gaps = `,"skipped_files":1,"unaddressable_files":1`
+				}
+				list = append(list, `{"backup_id":"`+id+`","created_at":"2026-09-07T20:00:00Z","backup_type":"full","total_files":1,"total_size_bytes":1064,"database_count":1`+gaps+`}`)
 			}
 			_, _ = w.Write([]byte(`{"backups":[` + strings.Join(list, ",") + `],"count":` + itoa(int64(len(list))) + `}`))
 		case rest == "status":
@@ -451,5 +466,41 @@ func TestBackup_DisabledServer(t *testing.T) {
 	_, _, err := execCmd(t, newBackupListCmd())
 	if err == nil || !strings.Contains(err.Error(), "backups are disabled on this server (backup.enabled=false)") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// A backup the server reports as incomplete: create --wait says so on its
+// success line and names the files; list and show carry the gaps too.
+func TestBackup_CreateWaitReportsIncomplete(t *testing.T) {
+	fastPolls(t)
+	f := newFakeBackupServer(t)
+	f.incomplete = true
+	writeTestConfig(t, f.srv.URL, "tok")
+	out, stderr, err := execCmd(t, newBackupCreateCmd(), "--wait", "--wait-timeout", "10s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"completed: 1 files, 1.0 KiB (1 files skipped, 1 files could not be listed — the backup is incomplete)\n",
+		"  skipped:       smoke/cpu/2026/09/07/20/gone.parquet\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("create --wait output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(stderr, "see `arcli backup show backup-20260907-200001-00000001` for the full breakdown\n") {
+		t.Errorf("create --wait stderr lacks the show hint:\n%s", stderr)
+	}
+	out, _, err = execCmd(t, newBackupListCmd())
+	if err != nil || !strings.Contains(out, "1 skipped, 1 unaddressable") {
+		t.Errorf("list: err=%v out=%s", err, out)
+	}
+	out, _, err = execCmd(t, newBackupShowCmd(), "backup-20260907-200001-00000001")
+	if err != nil || !strings.Contains(out, "INCOMPLETE:  1 of 1 files was skipped while backing up; 1 file could not be listed (unaddressable)\n  skipped:       smoke/cpu/2026/09/07/20/gone.parquet\n  unaddressable: smoke/.hidden.parquet\n") {
+		t.Errorf("show: err=%v out=%s", err, out)
+	}
+	out, _, err = execCmd(t, newBackupStatusCmd())
+	if err != nil || !strings.Contains(out, "  skipped:       smoke/cpu/2026/09/07/20/gone.parquet\n  unaddressable: 1 files (names: arcli backup show backup-20260907-200001-00000001)\n") {
+		t.Errorf("status: err=%v out=%s", err, out)
 	}
 }
