@@ -49,7 +49,12 @@ func newMeasurementListCmd() *cobra.Command {
 
 The database name comes from --database, or (when --database is omitted)
 from the active connection's default_database. If neither is set the
-command errors before any network call.`,
+command errors before any network call.
+
+The endpoint needs a token with read permission plus, where the server
+restricts reads per database, a grant for the database named. A token
+without that grant is refused with HTTP 403; pass --database with one
+it does hold.`,
 		Example: `  arcli measurement list --database metrics
   arcli measurement list -c prod --database logs -o json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
