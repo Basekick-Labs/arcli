@@ -46,6 +46,14 @@ type createDatabaseRequest struct {
 
 // ListDatabases returns every database the caller can see, with
 // measurement counts pre-computed by the server.
+//
+// The route requires the read permission, and a read grant covering
+// every database when the server has RBAC configured. A token scoped to
+// particular databases therefore gets HTTP 403 here rather than a
+// filtered list — Arc will never filter this list, matching
+// `SHOW DATABASES` — which arrives as an *AccessDeniedError with
+// Scoped set. That is an expected answer for a scoped token, not a
+// transient failure: name a database instead of retrying.
 func (c *Client) ListDatabases(ctx context.Context) (*DatabaseListResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.Endpoint+"/api/v1/databases", nil)
 	if err != nil {
@@ -68,7 +76,7 @@ func (c *Client) ListDatabases(ctx context.Context) (*DatabaseListResponse, erro
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, decodeWriteError(resp.StatusCode, body)
+		return nil, c.classifyAccessError(decodeWriteError(resp.StatusCode, body), listAllDatabases)
 	}
 	var out DatabaseListResponse
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -80,6 +88,11 @@ func (c *Client) ListDatabases(ctx context.Context) (*DatabaseListResponse, erro
 // GetDatabase returns metadata for one database. Returns a
 // recognisable "not found" error for HTTP 404 so the command layer can
 // distinguish "missing" from "broken."
+//
+// A 401, or a 403 from the read-permission or per-database RBAC gate,
+// arrives as an *AccessDeniedError; a 404 stays an *HTTPError carrying
+// Status 404, so "no grant for this database" and "no such database"
+// stay distinguishable.
 func (c *Client) GetDatabase(ctx context.Context, name string) (*DatabaseInfo, error) {
 	if name == "" {
 		return nil, fmt.Errorf("database name is required")
@@ -103,7 +116,7 @@ func (c *Client) GetDatabase(ctx context.Context, name string) (*DatabaseInfo, e
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, decodeWriteError(resp.StatusCode, body)
+		return nil, c.classifyAccessError(decodeWriteError(resp.StatusCode, body), name)
 	}
 	var out DatabaseInfo
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -190,6 +203,11 @@ func (c *Client) DeleteDatabase(ctx context.Context, name string) error {
 
 // ListMeasurements returns measurements inside a single database via
 // GET /api/v1/databases/:name/measurements.
+//
+// Like GetDatabase, this needs the read permission plus a grant
+// covering the named database; both refusals arrive as an
+// *AccessDeniedError, while an unknown database stays a 404
+// *HTTPError.
 func (c *Client) ListMeasurements(ctx context.Context, database string) (*MeasurementListResponse, error) {
 	if database == "" {
 		return nil, fmt.Errorf("database name is required")
@@ -213,7 +231,7 @@ func (c *Client) ListMeasurements(ctx context.Context, database string) (*Measur
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, decodeWriteError(resp.StatusCode, body)
+		return nil, c.classifyAccessError(decodeWriteError(resp.StatusCode, body), database)
 	}
 	var out MeasurementListResponse
 	if err := json.Unmarshal(body, &out); err != nil {
