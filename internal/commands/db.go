@@ -63,7 +63,13 @@ Output formats:
   table (default) | json | csv
 
 Each row shows the database name, its measurement count, and (when set
-by the server) the creation timestamp.`,
+by the server) the creation timestamp.
+
+The endpoint needs a token with read permission, and — where the server
+restricts reads per database — a grant covering every database. A token
+scoped to particular databases is refused here rather than given a
+filtered list, the same way SHOW DATABASES behaves; name one of its
+databases with ` + "`arcli db show <name>`" + ` instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if timeout <= 0 {
 				return fmt.Errorf("--timeout must be > 0 (got %s)", timeout)
@@ -116,7 +122,11 @@ GET /api/v1/databases/:name/measurements so the operator sees
 Output formats:
   table (default — two stacked tables, db info then measurements)
   json  (single object: {"database": {...}, "measurements": [...]})
-  csv   (measurements only — db metadata is one row, not table-shaped)`,
+  csv   (measurements only — db metadata is one row, not table-shaped)
+
+Both endpoints need a token with read permission plus, where the server
+restricts reads per database, a grant for this one. "No grant for that
+database" and "no such database" are reported separately.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if timeout <= 0 {
