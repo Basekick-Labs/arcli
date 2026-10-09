@@ -182,3 +182,86 @@ func TestTriggerCompaction_QueryValidationAnd409(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestTriggerCompaction_RoleRejection(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		want      string
+		wantTyped bool
+		wantRole  string
+		wantLease string
+	}{
+		{
+			name:      "another node holds the lease",
+			body:      `{"error":"compaction rejected","role":"writer","can_compact":false,"lease_holder":"arc-compactor1"}`,
+			want:      `lease holder is "arc-compactor1"`,
+			wantTyped: true,
+			wantRole:  "writer",
+			wantLease: "arc-compactor1",
+		},
+		{
+			name:      "cluster has no lease",
+			body:      `{"error":"compaction rejected","role":"writer","can_compact":false,"lease_holder":""}`,
+			want:      `cluster manages no compaction lease`,
+			wantTyped: true,
+			wantRole:  "writer",
+		},
+		{
+			name: "unrelated service unavailable",
+			body: `{"error":"temporarily unavailable"}`,
+		},
+		{
+			name: "compaction allowed field is true",
+			body: `{"error":"temporarily unavailable","can_compact":true}`,
+		},
+		{
+			name: "incomplete role rejection",
+			body: `{"error":"compaction rejected","role":"writer","can_compact":false}`,
+		},
+		{
+			name:   "role fields on another status",
+			status: http.StatusInternalServerError,
+			body:   `{"error":"internal server error","role":"writer","can_compact":false,"lease_holder":"arc-compactor1"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				status := tt.status
+				if status == 0 {
+					status = http.StatusServiceUnavailable
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(tt.body))
+			})
+
+			_, err := cli.TriggerCompaction(context.Background(), nil, "")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if tt.want != "" && !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q does not contain %q", err, tt.want)
+			}
+			var typed *CompactionNotPermittedError
+			if gotTyped := errors.As(err, &typed); gotTyped != tt.wantTyped {
+				t.Errorf("errors.As(*CompactionNotPermittedError) = %t, want %t (err: %v)", gotTyped, tt.wantTyped, err)
+			}
+			if tt.wantTyped && (typed.Role != tt.wantRole || typed.LeaseHolder != tt.wantLease) {
+				t.Errorf("typed error = %+v, want role %q and lease holder %q", typed, tt.wantRole, tt.wantLease)
+			}
+			if !tt.wantTyped {
+				var httpErr *HTTPError
+				wantStatus := tt.status
+				if wantStatus == 0 {
+					wantStatus = http.StatusServiceUnavailable
+				}
+				if !errors.As(err, &httpErr) || httpErr.Status != wantStatus {
+					t.Errorf("error = %v, want HTTPError with status %d", err, wantStatus)
+				}
+			}
+		})
+	}
+}
