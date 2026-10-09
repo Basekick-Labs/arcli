@@ -32,6 +32,20 @@ type QueryResult struct {
 
 	// ExecutionTimeMs is the server-side execution time.
 	ExecutionTimeMs float64 `json:"execution_time_ms"`
+
+	// Truncated reports that the server failed while streaming the result.
+	// A truncated result contains partial data and must not be treated as complete.
+	Truncated bool `json:"truncated,omitempty"`
+
+	// TruncationReason explains why the server could not finish streaming the result.
+	TruncationReason string `json:"truncation_reason,omitempty"`
+
+	// RowsCapped reports that a governance policy limited the result row count.
+	// Unlike Truncated, a capped result is complete up to the configured cap.
+	RowsCapped bool `json:"rows_capped,omitempty"`
+
+	// RowCap is the governance policy's maximum number of rows when RowsCapped is true.
+	RowCap int `json:"row_cap,omitempty"`
 }
 
 // queryRequest is the on-the-wire body shape for /api/v1/query.
