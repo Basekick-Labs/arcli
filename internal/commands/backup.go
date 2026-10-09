@@ -254,7 +254,10 @@ func newBackupCreateCmd() *cobra.Command {
 background; arcli prints the backup id as soon as the server publishes
 it and, with --wait, polls until it finishes (--wait-timeout defaults
 to 2h, the server's own budget). Only one backup, restore, or backup
-deletion can run at a time.`,
+deletion can run at a time.
+
+On a cluster, only the primary writer can create a backup. Other
+nodes receive HTTP 503 before the operation starts.`,
 		Example: `  arcli backup create
   arcli backup create --wait
   arcli backup create --no-config -o json`,
@@ -631,7 +634,12 @@ func newBackupDeleteCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Delete a backup from the server's backup directory",
-		Args:  cobra.ExactArgs(1),
+		Long: `Delete a backup from the server's backup directory.
+
+On a cluster, only the primary writer can delete a backup. A node
+that is not the primary writer returns HTTP 503 after confirmation;
+the backup is not deleted.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 			if err := client.ValidateBackupID(id); err != nil {
@@ -704,7 +712,11 @@ restored too, but it is only STAGED: the server applies it at its next
 start. --data-only skips metadata and config; --with-config also
 restores the server config file (staged as well). The restore runs in
 the background; --wait polls until it finishes (--wait-timeout defaults
-to 2h).`,
+to 2h).
+
+On a cluster, only the primary writer can restore a backup. A node
+that is not the primary writer returns HTTP 503 after confirmation,
+before the restore starts.`,
 		Example: `  arcli backup restore backup-20260907-201105-a0f5e600 --data-only --wait
   arcli backup restore backup-20260907-201105-a0f5e600 --yes`,
 		Args: cobra.ExactArgs(1),
