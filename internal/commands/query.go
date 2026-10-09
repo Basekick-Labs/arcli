@@ -101,7 +101,10 @@ it (a real scan) and reports the row count with a size class
 			if err != nil {
 				return err
 			}
-			return output.RenderQueryResult(cmd.OutOrStdout(), qr, outputFormat, noHeader, limit)
+			if err := output.RenderQueryResult(cmd.OutOrStdout(), qr, outputFormat, noHeader, limit); err != nil {
+				return err
+			}
+			return reportQuerySignals(cmd.ErrOrStderr(), qr)
 		},
 	}
 	c.Flags().StringVarP(&connectionName, "connection", "c", "", "named connection (overrides active)")
@@ -219,10 +222,35 @@ func runArrowQuery(ctx context.Context, cli *client.Client, sql, database string
 		fmt.Fprintf(stderr, "arrow: stream interrupted after %d bytes — stdout contains a truncated Arrow IPC payload that will not parse cleanly\n", n)
 		return fmt.Errorf("stream arrow body: %w", err)
 	}
+	if cap, ok := resp.RowCap(); ok {
+		fmt.Fprintf(stderr, "arrow: result capped at %s rows; additional matching rows were not returned\n", cap)
+	}
+	if reason, ok := resp.TruncationReason(); ok {
+		fmt.Fprintf(stderr, "arrow: server reported a truncated result after %d bytes\n", n)
+		return fmt.Errorf("arrow stream truncated: %s", reason)
+	}
 	if execMs, ok := resp.ExecutionTimeMs(); ok {
 		fmt.Fprintf(stderr, "arrow: %d bytes, server execution %dms\n", n, execMs)
 	} else {
 		fmt.Fprintf(stderr, "arrow: %d bytes\n", n)
+	}
+	return nil
+}
+
+// reportQuerySignals keeps policy-limited results distinct from failed,
+// truncated results. Renderers have already emitted the result, so callers
+// can still inspect partial JSON while the command exits unsuccessfully.
+func reportQuerySignals(stderr io.Writer, qr *client.QueryResult) error {
+	if qr.RowsCapped {
+		fmt.Fprintf(stderr, "query: result capped at %d rows; additional matching rows were not returned\n", qr.RowCap)
+	}
+	if qr.Truncated {
+		reason := strings.TrimSpace(qr.TruncationReason)
+		if reason == "" {
+			reason = "the server could not finish streaming the result"
+		}
+		fmt.Fprintf(stderr, "query: result is incomplete: %s\n", reason)
+		return fmt.Errorf("query result truncated: %s", reason)
 	}
 	return nil
 }

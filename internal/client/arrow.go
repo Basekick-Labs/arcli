@@ -10,14 +10,20 @@ import (
 	"strconv"
 )
 
+// Arrow response trailer names shared with Arc's query endpoint.
+const (
+	ArrowStreamTruncatedTrailer = "Arc-Stream-Truncated"
+	ArrowRowsCappedTrailer      = "Arc-Rows-Capped"
+)
+
 // ArrowResponse wraps the raw Arrow IPC stream from /api/v1/query/arrow.
 //
 // Wire contract (verified against arc/internal/api/query_arrow.go):
 //   - On error: HTTP non-2xx + JSON `{"success": false, "error": "..."}`.
 //   - On success: HTTP 200 + `Content-Type: application/vnd.apache.arrow.stream`,
-//     body is a streaming Arrow IPC payload. Server-side execution time
-//     is emitted as the `Arc-Execution-Time-Ms` HTTP trailer, available
-//     only after the body has been read to EOF.
+//     body is a streaming Arrow IPC payload. Execution time, truncation reason,
+//     and row-cap metadata are emitted as HTTP trailers, available only after
+//     the body has been read to EOF.
 //
 // The caller is responsible for Close()-ing this response (which closes
 // the underlying HTTP body); call ExecutionTimeMs() only after reading
@@ -98,4 +104,25 @@ func (a *ArrowResponse) ExecutionTimeMs() (int64, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// TruncationReason returns the server's reason for an incomplete Arrow
+// stream. Only valid after Body has been read to EOF.
+func (a *ArrowResponse) TruncationReason() (string, bool) {
+	if a == nil || a.resp == nil {
+		return "", false
+	}
+	v := a.resp.Trailer.Get(ArrowStreamTruncatedTrailer)
+	return v, v != ""
+}
+
+// RowCap returns the governance cap from the Arrow response trailer. Only
+// valid after Body has been read to EOF; a non-empty trailer indicates that
+// the result is complete up to this policy limit, not a failed stream.
+func (a *ArrowResponse) RowCap() (string, bool) {
+	if a == nil || a.resp == nil {
+		return "", false
+	}
+	v := a.resp.Trailer.Get(ArrowRowsCappedTrailer)
+	return v, v != ""
 }
