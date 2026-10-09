@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -326,10 +327,10 @@ func TestFetchFailsFast(t *testing.T) {
 	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil {
 		t.Fatal("expected an error")
 	}
-	// With cancellation working, only the first concurrency-sized batch
-	// (plus at most a straggler already past the check) ever reaches the
-	// server. Without it, all 24 would.
-	if n := atomic.LoadInt64(&started); n > 8 {
+	// With cancellation in the failing worker, only the first
+	// concurrency-sized batch can reach the server. Without it, all 24
+	// would.
+	if n := atomic.LoadInt64(&started); n > 4 {
 		t.Errorf("fail-fast not working: %d of %d parts reached the server after the first failure", n, total)
 	}
 }
@@ -351,8 +352,76 @@ func TestFetchAll403StopsEarly(t *testing.T) {
 	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil {
 		t.Fatal("expected an error")
 	}
-	if n := atomic.LoadInt64(&hits); n > 10 {
-		t.Errorf("made %d requests for a dataset that 403s on every part", n)
+	if n := atomic.LoadInt64(&hits); n > 4 {
+		t.Errorf("made %d requests with concurrency 4 for a dataset that 403s on every part", n)
+	}
+}
+
+func TestFetchCancelsBeforeReleasingFailedWorkerSlot(t *testing.T) {
+	progressEntered := make(chan struct{})
+	releaseProgress := make(chan struct{})
+	var releaseOnce sync.Once
+	failureServed := make(chan struct{})
+	queuedRequest := make(chan struct{}, 1)
+	var requests int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch atomic.AddInt64(&requests, 1) {
+		case 1:
+			_, _ = w.Write([]byte("x"))
+		case 2:
+			<-progressEntered
+			w.WriteHeader(http.StatusForbidden)
+			close(failureServed)
+		default:
+			queuedRequest <- struct{}{}
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	defer srv.Close()
+	defer releaseOnce.Do(func() { close(releaseProgress) })
+
+	parts := make([]Part, 0, 16)
+	for i := 0; i < cap(parts); i++ {
+		parts = append(parts, Part{
+			Key:    fmt.Sprintf("p/part-%03d.parquet", i),
+			Bytes:  1,
+			SHA256: sha256Hex([]byte("x")),
+		})
+	}
+
+	done := make(chan error, 1)
+	client := newTestClient(t, srv.URL, "")
+	dir := t.TempDir()
+	go func() {
+		_, err := client.Fetch(context.Background(), dir, parts, 1,
+			func(_, _ int, _ Part, _ bool) {
+				close(progressEntered)
+				<-releaseProgress
+			})
+		done <- err
+	}()
+
+	select {
+	case <-failureServed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second request did not fail")
+	}
+
+	select {
+	case <-queuedRequest:
+		t.Error("a queued part started after another part failed")
+	case <-time.After(250 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(releaseProgress) })
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected Fetch to return the failed request")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fetch did not finish after progress was released")
 	}
 }
 

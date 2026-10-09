@@ -368,6 +368,12 @@ func (c *Client) Fetch(ctx context.Context, dir string, parts []Part, concurrenc
 				return
 			}
 			cached, err := c.ensurePart(ctx, paths[i], p)
+			if err != nil {
+				// Cancel before releasing this worker's semaphore slot. If
+				// cancellation waits for the collector, a queued worker can
+				// start another request while the collector is handling progress.
+				cancelAll()
+			}
 			results <- result{index: i, cached: cached, err: err}
 		}(i, p)
 	}
