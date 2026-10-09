@@ -32,6 +32,21 @@ func (e *CompactionRunningError) Error() string {
 	return fmt.Sprintf("a compaction cycle is already running (cycle %d); wait for it to finish", e.CycleID)
 }
 
+// CompactionNotPermittedError is Arc's 503 response when the current node
+// cannot run a manually triggered compaction.
+type CompactionNotPermittedError struct {
+	Role        string
+	LeaseHolder string
+}
+
+func (e *CompactionNotPermittedError) Error() string {
+	role := scrubControls(e.Role)
+	if e.LeaseHolder != "" {
+		return fmt.Sprintf("compaction is not permitted on this node (role %q); lease holder is %q. Retry against the lease holder or move the lease via POST /api/v1/cluster/compactor/assign", role, scrubControls(e.LeaseHolder))
+	}
+	return fmt.Sprintf("compaction is not permitted for node role %q: this cluster manages no compaction lease. Trigger on a node with cluster.role=compactor or enable cluster.failover_enabled", role)
+}
+
 // CompactionTiers is the set of tiers Arc implements. The server does
 // NOT validate tier names on trigger (unknown ones are echoed back and
 // ignored), so the client does.
@@ -301,6 +316,9 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 		return nil, &CompactionRunningError{CycleID: conflict.CycleID}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if err := decodeCompactionNotPermittedError(resp.StatusCode, body); err != nil {
+			return nil, err
+		}
 		return nil, c.classifyRouteMissing(ctx, decodeWriteError(resp.StatusCode, body))
 	}
 	var out TriggerResult
@@ -312,4 +330,22 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 	}
 	out.Raw = body
 	return &out, nil
+}
+
+// decodeCompactionNotPermittedError recognises the structured 503 emitted
+// when a node cannot trigger compaction. Older Arc versions, incomplete
+// responses, and unrelated 503 responses remain ordinary HTTP errors.
+func decodeCompactionNotPermittedError(status int, body []byte) error {
+	if status != http.StatusServiceUnavailable {
+		return nil
+	}
+	var response struct {
+		CanCompact  *bool   `json:"can_compact"`
+		Role        string  `json:"role"`
+		LeaseHolder *string `json:"lease_holder"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || response.CanCompact == nil || *response.CanCompact || response.LeaseHolder == nil {
+		return nil
+	}
+	return &CompactionNotPermittedError{Role: response.Role, LeaseHolder: *response.LeaseHolder}
 }
