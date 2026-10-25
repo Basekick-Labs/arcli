@@ -88,6 +88,25 @@ func TestQueryJSON_SetsHeaders(t *testing.T) {
 	}
 }
 
+func TestQueryJSON_DecodesResultSignals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"columns":["n"],"data":[[1]],"row_count":1,"execution_time_ms":1.5,"truncated":true,"truncation_reason":"response byte limit","rows_capped":true,"row_cap":100}`)
+	}))
+	defer srv.Close()
+
+	c := freshClient(t, srv, "")
+	qr, err := c.QueryJSON(context.Background(), "SELECT 1", "")
+	if err != nil {
+		t.Fatalf("QueryJSON: %v", err)
+	}
+	if !qr.Truncated || qr.TruncationReason != "response byte limit" {
+		t.Errorf("truncation signals = (%t, %q), want (true, %q)", qr.Truncated, qr.TruncationReason, "response byte limit")
+	}
+	if !qr.RowsCapped || qr.RowCap != 100 {
+		t.Errorf("row cap signals = (%t, %d), want (true, 100)", qr.RowsCapped, qr.RowCap)
+	}
+}
+
 func TestQueryJSON_DatabaseOverride(t *testing.T) {
 	// Client default = "metrics", per-call override = "logs".
 	// Per-call wins.
@@ -227,6 +246,33 @@ func TestQueryArrow_StreamsBody(t *testing.T) {
 	}
 	if ms != 42 {
 		t.Errorf("trailer = %d, want 42", ms)
+	}
+}
+
+func TestQueryArrow_ReadsCompletenessTrailers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apache.arrow.stream")
+		w.Header().Set(http.TrailerPrefix+ArrowStreamTruncatedTrailer, "stream write failed")
+		w.Header().Set(http.TrailerPrefix+ArrowRowsCappedTrailer, "250")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ARROW-IPC-PRETEND"))
+	}))
+	defer srv.Close()
+
+	c := freshClient(t, srv, "")
+	resp, err := c.QueryArrow(context.Background(), "SELECT 1", "")
+	if err != nil {
+		t.Fatalf("QueryArrow: %v", err)
+	}
+	defer resp.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if got, ok := resp.TruncationReason(); !ok || got != "stream write failed" {
+		t.Errorf("TruncationReason() = (%q, %t), want (%q, true)", got, ok, "stream write failed")
+	}
+	if got, ok := resp.RowCap(); !ok || got != "250" {
+		t.Errorf("RowCap() = (%q, %t), want (%q, true)", got, ok, "250")
 	}
 }
 
