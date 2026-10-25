@@ -66,7 +66,8 @@ type SchedulerStatus struct {
 }
 
 // CompactionStatus is GET /api/v1/compaction/status. ActiveJobs is a
-// pointer because the server currently always sends null for it.
+// pointer for compatibility with Arc versions before 27.01.1, which send
+// null. Arc 27.01.1 and later report the number of in-flight compaction attempts.
 type CompactionStatus struct {
 	Manager struct {
 		ActiveJobs     *int `json:"active_jobs"`
