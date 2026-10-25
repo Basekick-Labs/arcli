@@ -146,6 +146,10 @@ Commands support the formats appropriate to their API:
 - `csv` for tabular exports
 - `arrow` for query streams
 
+When Arc reports a truncated query result, arcli writes the received data to stdout, reports the failure on stderr, and exits with status 1. Check the exit status before treating an export as complete. JSON output preserves `truncated` and `truncation_reason`; Arrow output stays raw IPC, with completeness signals read from HTTP trailers after the stream ends. A truncated Arrow payload may not parse.
+
+Governance row caps produce a notice on stderr and keep exit status 0: the result is complete up to the server's policy limit. JSON preserves `rows_capped` and `row_cap`. Client-side `--limit` only limits table/CSV display and does not suppress server truncation errors. Older servers without completeness metadata remain supported; missing signals do not guarantee completeness.
+
 Destructive commands prompt before making changes; pass `--yes` in non-interactive scripts. New token secrets are written to stdout exactly once, so they can be captured without mixing them with status messages.
 
 ## Privacy

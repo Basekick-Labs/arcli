@@ -50,6 +50,12 @@ neither is supplied). Output defaults to a pretty table; -o json|csv
 emit machine-parseable formats; -o arrow streams binary Arrow IPC to
 stdout for piping into pyarrow / duckdb / etc.
 
+If the server reports a truncated result, received data is written to stdout
+before the command exits with status 1. Governance row caps produce a notice
+on stderr and remain successful. JSON output preserves this metadata; Arrow
+reads it from response trailers after streaming. Older servers without these
+signals continue to work but cannot provide this completeness information.
+
 --estimate does not run the query; the server runs SELECT COUNT(*) over
 it (a real scan) and reports the row count with a size class
 (none / low / medium / high). Exit status is 1 when the estimate fails.`,
@@ -223,11 +229,11 @@ func runArrowQuery(ctx context.Context, cli *client.Client, sql, database string
 		return fmt.Errorf("stream arrow body: %w", err)
 	}
 	if cap, ok := resp.RowCap(); ok {
-		fmt.Fprintf(stderr, "arrow: result capped at %s rows; additional matching rows were not returned\n", cap)
+		fmt.Fprintf(stderr, "arrow: result capped at %s rows; additional matching rows were not returned\n", clean(cap))
 	}
 	if reason, ok := resp.TruncationReason(); ok {
 		fmt.Fprintf(stderr, "arrow: server reported a truncated result after %d bytes\n", n)
-		return fmt.Errorf("arrow stream truncated: %s", reason)
+		return fmt.Errorf("arrow stream truncated: %s", clean(reason))
 	}
 	if execMs, ok := resp.ExecutionTimeMs(); ok {
 		fmt.Fprintf(stderr, "arrow: %d bytes, server execution %dms\n", n, execMs)
@@ -245,7 +251,7 @@ func reportQuerySignals(stderr io.Writer, qr *client.QueryResult) error {
 		fmt.Fprintf(stderr, "query: result capped at %d rows; additional matching rows were not returned\n", qr.RowCap)
 	}
 	if qr.Truncated {
-		reason := strings.TrimSpace(qr.TruncationReason)
+		reason := strings.TrimSpace(clean(qr.TruncationReason))
 		if reason == "" {
 			reason = "the server could not finish streaming the result"
 		}
