@@ -2,9 +2,11 @@
 // compaction over /api/v1/compaction/*.
 //
 // The routes exist only when compaction.enabled=true on the server;
-// otherwise every subcommand reports "compaction is disabled". Note
-// that Arc's /compaction/jobs endpoint is a stub (always zero jobs) and
-// is deliberately not exposed here.
+// otherwise every subcommand reports "compaction is disabled". As of Arc
+// 27.01.1, /compaction/jobs reports an in-flight attempt count, but its jobs
+// array remains empty because attempt identities are not tracked. The endpoint
+// is deliberately not exposed here. Attempts are not batches: the adaptive
+// splitter can make several attempts per batch.
 package commands
 
 import (
