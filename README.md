@@ -121,6 +121,8 @@ arcli sample load citibike
 
 `sample load` downloads and verifies a public dataset, creates the target database when needed, imports the files, and prints useful starter queries. Downloads resume when verified files are already present.
 
+If a download fails, queued downloads stop and arcli reports the original failure without importing any files. Already verified files remain available for a later attempt.
+
 ### Operate Arc
 
 ```bash
