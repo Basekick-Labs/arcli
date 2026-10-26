@@ -316,6 +316,26 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 	return f
 }
 
+func TestBackup_MutatingCommandsDocumentPrimaryWriterRequirement(t *testing.T) {
+	backup := newBackupCmd()
+	want := map[string][]string{
+		"create":  {"primary writer", "HTTP 503", "before the operation starts"},
+		"delete":  {"primary writer", "HTTP 503", "after confirmation", "the backup is not deleted"},
+		"restore": {"primary writer", "HTTP 503", "after confirmation", "before the restore starts"},
+	}
+	for name, phrases := range want {
+		cmd, _, err := backup.Find([]string{name})
+		if err != nil {
+			t.Fatalf("find backup %s command: %v", name, err)
+		}
+		for _, phrase := range phrases {
+			if !strings.Contains(cmd.Long, phrase) {
+				t.Errorf("backup %s help must contain %q, got %q", name, phrase, cmd.Long)
+			}
+		}
+	}
+}
+
 func TestBackup_CreateWaitsForPublishedIDAndCompletion(t *testing.T) {
 	fastPolls(t)
 	f := newFakeBackupServer(t)
