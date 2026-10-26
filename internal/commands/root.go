@@ -79,6 +79,7 @@ First-time setup:
 		newImportCmd(),
 		newAuthCmd(),
 		newPingCmd(),
+		newLicenseCmd(),
 		newClusterCmd(),
 		newCompactionCmd(),
 		newRetentionCmd(),
