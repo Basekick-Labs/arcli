@@ -335,6 +335,19 @@ func (c *Client) Fetch(ctx context.Context, dir string, parts []Part, concurrenc
 	// dataset before reporting it.
 	ctx, cancelAll := context.WithCancel(ctx)
 	defer cancelAll()
+	var (
+		firstErr error
+		errOnce  sync.Once
+	)
+	fail := func(err error) {
+		// Record the initiating failure before cancellation wakes siblings.
+		// Otherwise their context.Canceled results can hide the real error.
+		// firstErr is read only after every worker has finished.
+		errOnce.Do(func() {
+			firstErr = err
+			cancelAll()
+		})
+	}
 
 	sem := make(chan struct{}, concurrency)
 	results := make(chan result, len(parts))
@@ -368,21 +381,24 @@ func (c *Client) Fetch(ctx context.Context, dir string, parts []Part, concurrenc
 				return
 			}
 			cached, err := c.ensurePart(ctx, paths[i], p)
+			if err != nil {
+				// Cancel before releasing this worker's semaphore slot. If
+				// cancellation waits for the collector, a queued worker can
+				// start another request while the collector is handling progress.
+				fail(err)
+			}
 			results <- result{index: i, cached: cached, err: err}
 		}(i, p)
 	}
 
-	var firstErr error
 	ok := 0
 	for range parts {
 		r := <-results
 		if r.err != nil {
-			if firstErr == nil {
-				firstErr = r.err
-				// Stop the rest; their ctx.Err() results are drained by
-				// this same loop.
-				cancelAll()
-			}
+			// This also records caller cancellation reported by a worker
+			// that never acquired a slot. Internally canceled siblings cannot
+			// replace the failure already recorded before cancellation.
+			fail(r.err)
 			continue
 		}
 		// Count only successes, so "downloaded 12/12" can never be
