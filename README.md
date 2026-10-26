@@ -121,19 +121,29 @@ arcli sample load citibike
 
 `sample load` downloads and verifies a public dataset, creates the target database when needed, imports the files, and prints useful starter queries. Downloads resume when verified files are already present.
 
+If a download fails, queued downloads stop and arcli reports the original failure without importing any files. Already verified files remain available for a later attempt.
+
 ### Operate Arc
 
 ```bash
 arcli db list
 arcli measurement list --database metrics
 arcli auth whoami
+arcli license status
+arcli license status -c prod -o json
 arcli compaction status
 arcli retention list
 arcli backup create --wait
 arcli logs --level warn --since 6h
 ```
 
+`backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
+
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
+
+`license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is normalized to UTC RFC3339 with fractional seconds when provided.
+
+Active, expired, invalid, and configured-but-unlicensed states retain the server's status. A missing or null license block is normal for OSS and is distinct from `unlicensed`: JSON returns `{"configured": false, "license": null}`. Present licenses use `{"configured": true, "license": {...}}`; optional fields are omitted when absent or null, while explicit zero days and `false` site-license values are retained. Unknown server status values are preserved. Successfully reading any of these states exits 0; configuration, request, decoding, and output failures exit nonzero. Installing licenses or configuring license keys/files belongs to the Arc server.
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
 
@@ -146,7 +156,11 @@ Commands support the formats appropriate to their API:
 - `csv` for tabular exports
 - `arrow` for query streams
 
-Destructive commands prompt before making changes; pass `--yes` in non-interactive scripts. New token secrets are written to stdout exactly once, so they can be captured without mixing them with status messages.
+When Arc reports a truncated query result, arcli writes the received data to stdout, reports the failure on stderr, and exits with status 1. Check the exit status before treating an export as complete. JSON output preserves `truncated` and `truncation_reason`; Arrow output stays raw IPC, with completeness signals read from HTTP trailers after the stream ends. A truncated Arrow payload may not parse.
+
+Governance row caps produce a notice on stderr and keep exit status 0: the result is complete up to the server's policy limit. JSON preserves `rows_capped` and `row_cap`. Client-side `--limit` only limits table/CSV display and does not suppress server truncation errors. Older servers without completeness metadata remain supported; missing signals do not guarantee completeness.
+
+Destructive commands prompt before making changes. Declining confirmation or using non-terminal stdin without `--yes` exits 1 without making changes; pass `--yes` in non-interactive scripts. This includes `db drop` and `config delete` starting in 26.09.2. New token secrets are written to stdout exactly once, so they can be captured without mixing them with status messages.
 
 ## Privacy
 

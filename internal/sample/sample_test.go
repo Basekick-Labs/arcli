@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -323,13 +325,13 @@ func TestFetchFailsFast(t *testing.T) {
 		})
 	}
 
-	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil {
-		t.Fatal("expected an error")
+	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil || !strings.Contains(err.Error(), "HTTP 403") || errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the HTTP 403 failure, got %v", err)
 	}
-	// With cancellation working, only the first concurrency-sized batch
-	// (plus at most a straggler already past the check) ever reaches the
-	// server. Without it, all 24 would.
-	if n := atomic.LoadInt64(&started); n > 8 {
+	// With cancellation in the failing worker, only the first
+	// concurrency-sized batch can reach the server. Without it, all 24
+	// would.
+	if n := atomic.LoadInt64(&started); n > 4 {
 		t.Errorf("fail-fast not working: %d of %d parts reached the server after the first failure", n, total)
 	}
 }
@@ -348,11 +350,210 @@ func TestFetchAll403StopsEarly(t *testing.T) {
 	for i := 0; i < 31; i++ {
 		parts = append(parts, Part{Key: fmt.Sprintf("p/part-%03d.parquet", i), Bytes: 1, SHA256: "aa"})
 	}
-	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil {
-		t.Fatal("expected an error")
+	if _, err := newTestClient(t, srv.URL, "").Fetch(context.Background(), t.TempDir(), parts, 4, nil); err == nil || !strings.Contains(err.Error(), "HTTP 403") || errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the HTTP 403 failure, got %v", err)
 	}
-	if n := atomic.LoadInt64(&hits); n > 10 {
-		t.Errorf("made %d requests for a dataset that 403s on every part", n)
+	if n := atomic.LoadInt64(&hits); n > 4 {
+		t.Errorf("made %d requests with concurrency 4 for a dataset that 403s on every part", n)
+	}
+}
+
+func TestFetchCancelsBeforeReleasingFailedWorkerSlot(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	progressEntered := make(chan struct{})
+	releaseProgress := make(chan struct{})
+	var releaseOnce sync.Once
+	failureServed := make(chan struct{})
+	queuedRequest := make(chan struct{}, 1)
+	var requests int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch atomic.AddInt64(&requests, 1) {
+		case 1:
+			_, _ = w.Write([]byte("x"))
+		case 2:
+			select {
+			case <-progressEntered:
+			case <-r.Context().Done():
+				return
+			case <-ctx.Done():
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			close(failureServed)
+		default:
+			select {
+			case queuedRequest <- struct{}{}:
+			default:
+			}
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	defer srv.Close()
+	defer cancel()
+	defer releaseOnce.Do(func() { close(releaseProgress) })
+
+	parts := make([]Part, 0, 16)
+	for i := 0; i < cap(parts); i++ {
+		parts = append(parts, Part{
+			Key:    fmt.Sprintf("p/part-%03d.parquet", i),
+			Bytes:  1,
+			SHA256: sha256Hex([]byte("x")),
+		})
+	}
+
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	client := newTestClient(t, srv.URL, "")
+	dir := t.TempDir()
+	go func() {
+		defer close(finished)
+		_, err := client.Fetch(ctx, dir, parts, 1,
+			func(_, _ int, _ Part, _ bool) {
+				close(progressEntered)
+				<-releaseProgress
+			})
+		done <- err
+	}()
+	defer func() {
+		cancel()
+		releaseOnce.Do(func() { close(releaseProgress) })
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("Fetch did not finish during cleanup")
+		}
+	}()
+
+	select {
+	case <-failureServed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second request did not fail")
+	}
+
+	select {
+	case <-queuedRequest:
+		t.Error("a queued part started after another part failed")
+	case <-time.After(250 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(releaseProgress) })
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "HTTP 403") || errors.Is(err, context.Canceled) {
+			t.Errorf("expected Fetch to retain the HTTP 403 failure, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fetch did not finish after progress was released")
+	}
+}
+
+func TestFetchPreservesDownloadError(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"forbidden", http.StatusForbidden, "", "HTTP 403"},
+		{"checksum", http.StatusOK, "y", "checksum mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			parts := make([]Part, 24)
+			for i := range parts {
+				parts[i] = Part{Key: fmt.Sprintf("p/part-%03d.parquet", i), Bytes: 1, SHA256: sha256Hex([]byte("x"))}
+			}
+			client := newTestClient(t, srv.URL, "")
+			dir := t.TempDir()
+			// Repeated public Fetch calls exercise sibling result ordering;
+			// the initiating failure must survive every ordering.
+			for i := 0; i < 100; i++ {
+				paths, err := client.Fetch(context.Background(), dir, parts, 4, nil)
+				if err == nil || !strings.Contains(err.Error(), tc.want) || errors.Is(err, context.Canceled) {
+					t.Fatalf("attempt %d: expected %s, got paths %v, error %v", i, tc.want, paths, err)
+				}
+				if paths != nil {
+					t.Fatalf("attempt %d: failed downloads returned importable paths: %v", i, paths)
+				}
+			}
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Errorf("failed downloads left files: %v, error %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestFetchExpiredContext(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+	}))
+	defer srv.Close()
+	parts := []Part{{Key: "p/part.parquet", Bytes: 1, SHA256: sha256Hex([]byte("x"))}}
+	paths, err := newTestClient(t, srv.URL, "").Fetch(ctx, t.TempDir(), parts, 4, nil)
+	if !errors.Is(err, context.DeadlineExceeded) || paths != nil {
+		t.Errorf("expired context = (%v, %v), want no paths and context.DeadlineExceeded", paths, err)
+	}
+	if n := requests.Load(); n != 0 {
+		t.Errorf("expired context started %d requests", n)
+	}
+}
+
+func TestFetchCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		// Wait for the client to cancel the HTTP request. Returning on the
+		// caller's local context can race the transport and send an empty
+		// HTTP 200 before cancellation reaches the client.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	defer cancel()
+	client := newTestClient(t, srv.URL, "")
+	dir := t.TempDir()
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_, err := client.Fetch(ctx, dir, []Part{{Key: "p/part.parquet", Bytes: 1, SHA256: sha256Hex([]byte("x"))}}, 1, nil)
+		done <- err
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("Fetch did not finish during cleanup")
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("caller cancellation = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fetch did not finish after caller cancellation")
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Errorf("canceled download left files: %v, error %v", entries, err)
 	}
 }
 
