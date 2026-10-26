@@ -514,10 +514,10 @@ func TestFetchCallerCancellation(t *testing.T) {
 		case started <- struct{}{}:
 		default:
 		}
-		select {
-		case <-r.Context().Done():
-		case <-ctx.Done():
-		}
+		// Wait for the client to cancel the HTTP request. Returning on the
+		// caller's local context can race the transport and send an empty
+		// HTTP 200 before cancellation reaches the client.
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 	defer cancel()
