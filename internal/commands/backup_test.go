@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -216,22 +217,34 @@ type fakeBackupServer struct {
 	srv          *httptest.Server
 	// incomplete makes every backup report one skipped and one unaddressable
 	// file on the status, the manifest and the listing (Arc 26.09.3 shapes).
-	incomplete bool
+	incomplete      bool
+	clustered       bool
+	hasMetadata     bool
+	hasConfig       bool
+	restoreRequests []map[string]json.RawMessage
 }
 
 func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 	t.Helper()
-	f := &fakeBackupServer{backups: map[string]string{}, status: `{"status":"idle"}`, publishDelay: 300 * time.Millisecond}
+	f := &fakeBackupServer{backups: map[string]string{}, status: `{"status":"idle"}`, publishDelay: 300 * time.Millisecond, hasMetadata: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
 	})
 	manifest := func(id string) string {
 		gaps := ""
+		metadata := "false"
+		config := "false"
 		if f.incomplete {
 			gaps = `"skipped_files":1,"skipped_sample":["smoke/cpu/2026/09/07/20/gone.parquet"],"unaddressable_files":1,"unaddressable_sample":["smoke/.hidden.parquet"],`
 		}
-		return `{"version":"dev","backup_id":"` + id + `","created_at":"2026-09-07T20:00:00Z","backup_type":"full","databases":[{"name":"smoke","measurements":[{"name":"cpu","file_count":1,"size_bytes":1064}],"file_count":1,"size_bytes":1064}],"total_files":1,"total_size_bytes":1064,` + gaps + `"has_metadata":true,"has_config":false}`
+		if f.hasConfig {
+			config = "true"
+		}
+		if f.hasMetadata {
+			metadata = "true"
+		}
+		return `{"version":"dev","backup_id":"` + id + `","created_at":"2026-09-07T20:00:00Z","backup_type":"full","databases":[{"name":"smoke","measurements":[{"name":"cpu","file_count":1,"size_bytes":1064}],"file_count":1,"size_bytes":1064}],"total_files":1,"total_size_bytes":1064,` + gaps + `"has_metadata":` + metadata + `,"has_config":` + config + `}`
 	}
 	publish := func(op, id string) {
 		time.Sleep(f.publishDelay)
@@ -280,19 +293,62 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 		case rest == "status":
 			_, _ = w.Write([]byte(f.status))
 		case rest == "restore" && r.Method == http.MethodPost:
-			var req struct {
-				BackupID string `json:"backup_id"`
-				Confirm  bool   `json:"confirm"`
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
-			_ = json.NewDecoder(r.Body).Decode(&req)
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(body, &raw); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var req struct {
+				BackupID        string `json:"backup_id"`
+				Confirm         bool   `json:"confirm"`
+				RestoreMetadata *bool  `json:"restore_metadata"`
+				RestoreConfig   *bool  `json:"restore_config"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.restoreRequests = append(f.restoreRequests, raw)
 			if !req.Confirm {
 				w.WriteHeader(400)
 				_, _ = w.Write([]byte(`{"error":"Restore is a destructive operation. Set confirm: true to proceed."}`))
 				return
 			}
+			if f.clustered && req.RestoreMetadata != nil && *req.RestoreMetadata {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"restore_metadata is not available on a cluster node: the SQLite database holds Raft-replicated tokens, the tier rows of this node and the audit log, so a copy from a backup would diverge this node from the cluster; restore data only (restore_metadata: false)"}`))
+				return
+			}
+			if f.clustered && req.RestoreConfig != nil && *req.RestoreConfig {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"restore_config is not available on a cluster node: arc.toml holds this node identity"}`))
+				return
+			}
+			restoreMetadata := !f.clustered
+			if req.RestoreMetadata != nil {
+				restoreMetadata = *req.RestoreMetadata
+			}
+			restoreConfig := false
+			if req.RestoreConfig != nil {
+				restoreConfig = *req.RestoreConfig
+			}
+			staged := restoreMetadata && f.hasMetadata
+			restartRequired := staged || restoreConfig && f.hasConfig
 			go publish("restore", req.BackupID)
 			w.WriteHeader(202)
-			_, _ = w.Write([]byte(`{"backup_id":"` + req.BackupID + `","message":"Restore started","status":"running","restart_required":true,"staged":true}`))
+			response := map[string]any{"backup_id": req.BackupID, "message": "Restore started", "status": "running"}
+			if restartRequired {
+				response["restart_required"] = true
+			}
+			if staged {
+				response["staged"] = true
+			}
+			_ = json.NewEncoder(w).Encode(response)
 		case r.Method == http.MethodGet:
 			m, ok := f.backups[rest]
 			if !ok {
@@ -314,6 +370,137 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+func newRestoreDefaultsServer(t *testing.T, clustered, hasMetadata bool) *fakeBackupServer {
+	t.Helper()
+	f := newFakeBackupServer(t)
+	f.clustered = clustered
+	f.hasMetadata = hasMetadata
+	f.hasConfig = true
+	metadata := "false"
+	if hasMetadata {
+		metadata = "true"
+	}
+	f.backups["backup-20260907-200009-00000009"] = `{"version":"dev","backup_id":"backup-20260907-200009-00000009","created_at":"2026-09-07T20:00:00Z","backup_type":"full","databases":[],"total_files":1,"total_size_bytes":10,"has_metadata":` + metadata + `,"has_config":true}`
+	writeTestConfig(t, f.srv.URL, "tok")
+	return f
+}
+
+func (f *fakeBackupServer) lastRestoreRequest() map[string]json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.restoreRequests) == 0 {
+		return nil
+	}
+	request := make(map[string]json.RawMessage, len(f.restoreRequests[len(f.restoreRequests)-1]))
+	for key, value := range f.restoreRequests[len(f.restoreRequests)-1] {
+		request[key] = append(json.RawMessage(nil), value...)
+	}
+	return request
+}
+
+func TestBackup_RestoreUsesServerDefaultsUnlessExplicit(t *testing.T) {
+	const id = "backup-20260907-200009-00000009"
+	t.Run("cluster default does not request metadata or config", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, true, true)
+		_, stderr, err := execCmd(t, newBackupRestoreCmd(), id, "--yes")
+		if err != nil {
+			t.Fatalf("restore using cluster defaults: %v (stderr %q)", err, stderr)
+		}
+		req := f.lastRestoreRequest()
+		if _, ok := req["restore_metadata"]; ok {
+			t.Errorf("default request must leave restore_metadata to the server: %s", req["restore_metadata"])
+		}
+		if _, ok := req["restore_config"]; ok {
+			t.Errorf("default request must leave restore_config to the server: %s", req["restore_config"])
+		}
+		if strings.Contains(stderr, "metadata store will be staged") {
+			t.Errorf("cluster default skips metadata, but stderr claimed it would be staged: %q", stderr)
+		}
+	})
+
+	t.Run("data-only explicitly disables metadata and config", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, true, true)
+		_, stderr, err := execCmd(t, newBackupRestoreCmd(), id, "--data-only", "--yes")
+		if err != nil {
+			t.Fatalf("data-only restore: %v (stderr %q)", err, stderr)
+		}
+		req := f.lastRestoreRequest()
+		for _, field := range []string{"restore_metadata", "restore_config"} {
+			var value bool
+			if err := json.Unmarshal(req[field], &value); err != nil || value {
+				t.Errorf("%s = %s, want false", field, req[field])
+			}
+		}
+	})
+
+	t.Run("metadata opt-in preserves the server refusal", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, true, true)
+		_, _, err := execCmd(t, newBackupRestoreCmd(), id, "--with-metadata", "--yes")
+		if err == nil || !strings.Contains(err.Error(), "restore_metadata is not available on a cluster node") {
+			t.Fatalf("err = %v; want the server's cluster metadata refusal", err)
+		}
+		var value bool
+		request := f.lastRestoreRequest()
+		if err := json.Unmarshal(request["restore_metadata"], &value); err != nil || !value {
+			t.Errorf("restore_metadata = %s, want true", request["restore_metadata"])
+		}
+	})
+
+	t.Run("standalone default stages metadata", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, false, true)
+		cmd := newBackupRestoreCmd()
+		cmd.SetIn(strings.NewReader("y\n"))
+		_, stderr, err := execCmd(t, cmd, id)
+		if err != nil {
+			t.Fatalf("restore using standalone defaults: %v (stderr %q)", err, stderr)
+		}
+		if _, ok := f.lastRestoreRequest()["restore_metadata"]; ok {
+			t.Errorf("standalone default request must leave restore_metadata to the server")
+		}
+		if !strings.Contains(stderr, "restored metadata or config requires a restart") {
+			t.Errorf("stderr = %q; want restart guidance for metadata staged by the server", stderr)
+		}
+	})
+
+	t.Run("config opt-in remains explicit", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, false, true)
+		_, _, err := execCmd(t, newBackupRestoreCmd(), id, "--with-config", "--yes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := f.lastRestoreRequest()
+		if _, ok := req["restore_metadata"]; ok {
+			t.Errorf("--with-config must not override the server metadata default")
+		}
+		var value bool
+		if err := json.Unmarshal(req["restore_config"], &value); err != nil || !value {
+			t.Errorf("restore_config = %s, want true", req["restore_config"])
+		}
+	})
+
+	t.Run("config-only restore reports the restart without claiming metadata was staged", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, false, false)
+		_, stderr, err := execCmd(t, newBackupRestoreCmd(), id, "--with-config", "--yes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(stderr, "restored metadata or config requires a restart") {
+			t.Errorf("stderr = %q; want restart guidance", stderr)
+		}
+		if strings.Contains(stderr, ".pending-restore") {
+			t.Errorf("stderr incorrectly says the config is staged as metadata: %q", stderr)
+		}
+		req := f.lastRestoreRequest()
+		if _, ok := req["restore_metadata"]; ok {
+			t.Errorf("config-only restore must leave metadata to the server: %s", req["restore_metadata"])
+		}
+		var config bool
+		if err := json.Unmarshal(req["restore_config"], &config); err != nil || !config {
+			t.Errorf("restore_config = %s, want true", req["restore_config"])
+		}
+	})
 }
 
 func TestBackup_MutatingCommandsDocumentPrimaryWriterRequirement(t *testing.T) {
@@ -396,12 +583,16 @@ func TestBackup_DeleteRestoreAndGuards(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("err = %v", err)
 	}
+	_, _, err = execCmd(t, newBackupRestoreCmd(), id, "--data-only", "--with-metadata", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("err = %v", err)
+	}
 	f.mu.Lock()
 	statusBefore := f.status
 	f.mu.Unlock()
 	c := newBackupRestoreCmd()
 	c.SetIn(strings.NewReader("n\n"))
-	_, errOut, err := execCmd(t, c, id)
+	_, errOut, err := execCmd(t, c, id, "--with-metadata")
 	if err == nil || err.Error() != "aborted" {
 		t.Errorf("err = %v", err)
 	}
@@ -420,11 +611,11 @@ func TestBackup_DeleteRestoreAndGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v stderr=%q", err, errOut)
 	}
-	if !strings.Contains(out, "Restore of "+id+" completed: 1 files") || !strings.Contains(errOut, "applied at the next server start") {
+	if !strings.Contains(out, "Restore of "+id+" completed: 1 files") || !strings.Contains(errOut, "restored metadata or config requires a restart") {
 		t.Errorf("out=%q stderr=%q", out, errOut)
 	}
 	_, errOut, err = execCmd(t, newBackupRestoreCmd(), id, "--data-only", "--yes")
-	if err != nil || strings.Contains(errOut, "applied at the next server start") {
+	if err != nil || strings.Contains(errOut, "restored metadata or config requires a restart") {
 		t.Errorf("data-only must not print the restart note: err=%v stderr=%q", err, errOut)
 	}
 	time.Sleep(f.publishDelay * 3)

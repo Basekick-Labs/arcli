@@ -693,6 +693,7 @@ func newBackupRestoreCmd() *cobra.Command {
 		f            connFlags
 		outputFormat string
 		dataOnly     bool
+		withMetadata bool
 		withConfig   bool
 		yes, wait    bool
 		waitTimeout  time.Duration
@@ -708,9 +709,11 @@ on a quiescent server: stop writers and compaction first. In cluster
 mode restored files are not registered in the cluster manifest.
 
 By default the metadata store (tokens, policies, continuous queries) is
-restored too, but it is only STAGED: the server applies it at its next
-start. --data-only skips metadata and config; --with-config also
-restores the server config file (staged as well). The restore runs in
+restored on a standalone node if the backup contains it, but skipped on a
+cluster. If restored, it is only STAGED: the server applies it at its next
+start. Use --with-metadata to request it explicitly; clusters refuse that
+request. --data-only explicitly skips metadata and config. --with-config
+also restores the server config file (staged as well). The restore runs in
 the background; --wait polls until it finishes (--wait-timeout defaults
 to 2h).
 
@@ -730,6 +733,9 @@ before the restore starts.`,
 			if dataOnly && withConfig {
 				return fmt.Errorf("--data-only and --with-config are mutually exclusive")
 			}
+			if dataOnly && withMetadata {
+				return fmt.Errorf("--data-only and --with-metadata are mutually exclusive")
+			}
 			id := args[0]
 			if err := client.ValidateBackupID(id); err != nil {
 				return err
@@ -745,8 +751,12 @@ before the restore starts.`,
 			if err != nil {
 				return err
 			}
-			restoreMeta := !dataOnly && m.HasMetadata
+			restoreMeta := withMetadata && m.HasMetadata
+			metadataMayRestoreByDefault := !dataOnly && !withMetadata && m.HasMetadata
 			restoreCfg := withConfig
+			if withMetadata && !m.HasMetadata {
+				return fmt.Errorf("backup %s does not contain the metadata store; drop --with-metadata", clean(id))
+			}
 			if withConfig && !m.HasConfig {
 				return fmt.Errorf("backup %s does not contain the server config; drop --with-config", clean(id))
 			}
@@ -765,6 +775,8 @@ before the restore starts.`,
 			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), fmtTimeVal(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
 			if restoreMeta {
 				parts = append(parts, "The metadata store will be staged and applied at the next server start.")
+			} else if metadataMayRestoreByDefault {
+				parts = append(parts, "Metadata restoration follows the server default: enabled on standalone nodes and disabled on clusters. If restored, it is staged until the next server start; use --with-metadata to request it explicitly.")
 			}
 			if restoreCfg {
 				parts = append(parts, "The server config will be staged as well.")
@@ -785,15 +797,14 @@ before the restore starts.`,
 			opts := client.RestoreOptions{}
 			t, fls := true, false
 			opts.RestoreData = &t
-			if restoreMeta {
-				opts.RestoreMetadata = &t
-			} else {
+			if dataOnly {
 				opts.RestoreMetadata = &fls
+				opts.RestoreConfig = &fls
+			} else if restoreMeta {
+				opts.RestoreMetadata = &t
 			}
 			if restoreCfg {
 				opts.RestoreConfig = &t
-			} else {
-				opts.RestoreConfig = &fls
 			}
 			ctx, cancel = f.ctx(cmd)
 			res, err := cli.RestoreBackup(ctx, id, opts)
@@ -808,8 +819,8 @@ before the restore starts.`,
 				return err
 			}
 			restartNote := func() {
-				if restoreMeta || restoreCfg {
-					fmt.Fprintln(stderr, "Metadata/config are staged in the server's metadata directory (.pending-restore) and applied at the next server start; data files are already overwritten. Restart the server to complete the restore.")
+				if res.RestartRequired || res.Staged {
+					fmt.Fprintln(stderr, "The server reports that restored metadata or config requires a restart. Restart the server after the restore completes.")
 				}
 			}
 			if started == nil {
@@ -859,6 +870,7 @@ before the restore starts.`,
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().BoolVar(&dataOnly, "data-only", false, "restore data files only (skip metadata and config)")
+	c.Flags().BoolVar(&withMetadata, "with-metadata", false, "also restore the metadata store (staged; unavailable on clusters)")
 	c.Flags().BoolVar(&withConfig, "with-config", false, "also restore the server config file (staged)")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	c.Flags().BoolVar(&wait, "wait", false, "poll until the restore has finished")
