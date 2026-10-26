@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,12 @@ func (e *ClusterDisabledError) Error() string {
 var (
 	ClusterNodeRoles  = []string{"writer", "reader", "compactor", "standalone"}
 	ClusterNodeStates = []string{"healthy", "unhealthy", "dead", "unknown", "joining", "leaving"}
+)
+
+const (
+	ClusterFilesDefaultLimit = 1000
+	ClusterFilesMaxLimit     = 10000
+	clusterFilesMaxCursorLen = 4096
 )
 
 // NodeStats is the per-node resource block (arc/internal/cluster/node.go#NodeStats).
@@ -108,6 +115,31 @@ type ClusterStatus struct {
 	Raft         RaftStatus      `json:"raft"`
 	License      *ClusterLicense `json:"license,omitempty"`
 	Raw          json.RawMessage `json:"-"`
+}
+
+// ClusterFile is one entry in the paginated cluster-wide file manifest.
+type ClusterFile struct {
+	Path              string    `json:"path"`
+	SHA256            string    `json:"sha256"`
+	SizeBytes         int64     `json:"size_bytes"`
+	Database          string    `json:"database"`
+	Measurement       string    `json:"measurement"`
+	PartitionTime     time.Time `json:"partition_time"`
+	OriginNodeID      string    `json:"origin_node_id"`
+	Tier              string    `json:"tier"`
+	CreatedAt         time.Time `json:"created_at"`
+	LSN               uint64    `json:"lsn"`
+	CoverageInherited bool      `json:"cov2_inherited,omitempty"`
+	CompactionJob     string    `json:"compaction_job,omitempty"`
+}
+
+// ClusterFilesPage is one bounded page from GET /api/v1/cluster/files.
+// Total is the number of files in this page, not the size of the full manifest.
+type ClusterFilesPage struct {
+	Files      []ClusterFile   `json:"files"`
+	Total      int             `json:"total"`
+	NextCursor string          `json:"next_cursor"`
+	Raw        json.RawMessage `json:"-"`
 }
 
 // ClusterHealth is GET /api/v1/cluster/health.
@@ -234,6 +266,69 @@ func (c *Client) ClusterNodes(ctx context.Context, role, state string) ([]Cluste
 		out.Nodes = []ClusterNode{}
 	}
 	return out.Nodes, body, nil
+}
+
+// ValidateClusterFilesArgs checks the client-side filters for the cluster
+// file manifest. Arc accepts database names in the same grammar used by other
+// database-scoped commands and supports page sizes from 1 through 10000.
+func ValidateClusterFilesArgs(database, cursor string, limit int) error {
+	if database != "" {
+		if err := ValidateDatabaseName(database); err != nil {
+			return err
+		}
+	}
+	if len(cursor) > clusterFilesMaxCursorLen {
+		return fmt.Errorf("cluster files cursor must be at most %d bytes", clusterFilesMaxCursorLen)
+	}
+	if limit < 1 || limit > ClusterFilesMaxLimit {
+		return fmt.Errorf("cluster files limit must be between 1 and %d", ClusterFilesMaxLimit)
+	}
+	return nil
+}
+
+// ClusterFiles returns one bounded page from the cluster-wide file manifest.
+// A non-empty next_cursor can be passed to the next call to continue after
+// this page. The raw response is retained for lossless JSON output.
+func (c *Client) ClusterFiles(ctx context.Context, database, cursor string, limit int) (*ClusterFilesPage, error) {
+	if err := ValidateClusterFilesArgs(database, cursor, limit); err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit))
+	if database != "" {
+		q.Set("database", database)
+	}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	path := "/api/v1/cluster/files?" + q.Encode()
+	body, err := c.getRaw(ctx, path, 64<<20)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStandalone(body); err != nil {
+		return nil, err
+	}
+	var response struct {
+		Files      []ClusterFile `json:"files"`
+		Total      int           `json:"total"`
+		NextCursor *string       `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("decode cluster files: %w", err)
+	}
+	if response.NextCursor == nil {
+		return nil, fmt.Errorf("cluster files response is missing next_cursor; this Arc version does not support paginated cluster files")
+	}
+	if response.Files == nil {
+		response.Files = []ClusterFile{}
+	}
+	return &ClusterFilesPage{
+		Files:      response.Files,
+		Total:      response.Total,
+		NextCursor: *response.NextCursor,
+		Raw:        body,
+	}, nil
 }
 
 // ValidateNodeID mirrors the server's 1..256 length rule and additionally

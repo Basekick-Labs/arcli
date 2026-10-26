@@ -39,7 +39,7 @@ disabled and exits 0; the other subcommands exit 1 with the server's
 reason. Node removal requires an admin token and must be sent to the
 raft leader.`,
 	}
-	c.AddCommand(newClusterStatusCmd(), newClusterNodesCmd(), newClusterNodeCmd(), newClusterHealthCmd())
+	c.AddCommand(newClusterStatusCmd(), newClusterFilesCmd(), newClusterNodesCmd(), newClusterNodeCmd(), newClusterHealthCmd())
 	return c
 }
 
@@ -115,6 +115,113 @@ unchanged in both cases; check "enabled" to branch in scripts.`,
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
+}
+
+func newClusterFilesCmd() *cobra.Command {
+	var (
+		f            connFlags
+		outputFormat string
+		database     string
+		cursor       string
+		limit        int
+	)
+	c := &cobra.Command{
+		Use:   "files",
+		Short: "Page through the cluster file manifest",
+		Long: `List one bounded page from the cluster file manifest (GET /api/v1/cluster/files).
+
+Each request is paginated; use --cursor with the previous page's next_cursor
+to continue. The server response must include next_cursor; older Arc versions
+without pagination support are rejected instead of treating a full manifest
+as one page. JSON preserves files, total, and next_cursor. CSV writes the
+page count and continuation cursor to stderr so stdout remains valid CSV.`,
+		Example: `  arcli cluster files
+  arcli cluster files --database metrics --limit 500 -o json
+  arcli cluster files --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validListFormat(outputFormat) {
+				return fmt.Errorf("invalid --output %q (valid: table, json, csv)", outputFormat)
+			}
+			if err := client.ValidateClusterFilesArgs(database, cursor, limit); err != nil {
+				return err
+			}
+			cli, _, err := f.client(cmd)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := f.ctx(cmd)
+			defer cancel()
+			page, err := cli.ClusterFiles(ctx, database, cursor, limit)
+			if err != nil {
+				return err
+			}
+			if outputFormat == output.FormatJSON {
+				return writeRawJSON(cmd.OutOrStdout(), page.Raw)
+			}
+			if err := renderClusterFiles(cmd.OutOrStdout(), page.Files, outputFormat == output.FormatCSV); err != nil {
+				return err
+			}
+			w := cmd.OutOrStdout()
+			if outputFormat == output.FormatCSV {
+				w = cmd.ErrOrStderr()
+			}
+			fmt.Fprintf(w, "files on this page: %d\n", page.Total)
+			if page.NextCursor != "" {
+				fmt.Fprintf(w, "next cursor: %s\n", clean(page.NextCursor))
+			}
+			return nil
+		},
+	}
+	f.add(c)
+	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
+	c.Flags().StringVar(&database, "database", "", "filter by database")
+	c.Flags().IntVar(&limit, "limit", client.ClusterFilesDefaultLimit, "maximum files in this page (1-10000)")
+	c.Flags().StringVar(&cursor, "cursor", "", "continue after a path returned as next_cursor")
+	return c
+}
+
+var clusterFileTableHeaders = []string{"PATH", "DATABASE", "MEASUREMENT", "TIER", "SIZE", "PARTITION TIME", "ORIGIN NODE", "SHA256"}
+
+var clusterFileCSVHeaders = []string{"path", "database", "measurement", "tier", "size_bytes", "sha256", "partition_time", "origin_node_id", "created_at", "lsn", "cov2_inherited", "compaction_job"}
+
+// renderClusterFiles preserves the server's manifest order, which is also
+// the order used by its path-based continuation cursor.
+func renderClusterFiles(w io.Writer, files []client.ClusterFile, asCSV bool) error {
+	if asCSV {
+		cw := csv.NewWriter(w)
+		if err := cw.Write(clusterFileCSVHeaders); err != nil {
+			return err
+		}
+		for _, file := range files {
+			row := []string{
+				clean(file.Path), clean(file.Database), clean(file.Measurement), clean(file.Tier),
+				strconv.FormatInt(file.SizeBytes, 10), clean(file.SHA256), clusterFileTime(file.PartitionTime, ""),
+				clean(file.OriginNodeID), clusterFileTime(file.CreatedAt, ""), strconv.FormatUint(file.LSN, 10),
+				strconv.FormatBool(file.CoverageInherited), clean(file.CompactionJob),
+			}
+			if err := cw.Write(row); err != nil {
+				return err
+			}
+		}
+		cw.Flush()
+		return cw.Error()
+	}
+	rows := make([][]string, 0, len(files))
+	for _, file := range files {
+		rows = append(rows, []string{
+			clean(file.Path), clean(file.Database), clean(file.Measurement), clean(file.Tier), humanBytes(file.SizeBytes),
+			clusterFileTime(file.PartitionTime, "-"), clean(file.OriginNodeID), clean(file.SHA256),
+		})
+	}
+	return output.Table(w, clusterFileTableHeaders, rows)
+}
+
+func clusterFileTime(t time.Time, zero string) string {
+	if t.IsZero() {
+		return zero
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // ---- nodes -----------------------------------------------------------------
