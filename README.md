@@ -129,6 +129,7 @@ If a download fails, queued downloads stop and arcli reports the original failur
 arcli db list
 arcli measurement list --database metrics
 arcli auth whoami
+arcli rbac organizations list
 arcli license status
 arcli license status -c prod -o json
 arcli compaction status
@@ -146,6 +147,8 @@ The command tree also covers API tokens, continuous queries, schedulers, predica
 Active, expired, invalid, and configured-but-unlicensed states retain the server's status. A missing or null license block is normal for OSS and is distinct from `unlicensed`: JSON returns `{"configured": false, "license": null}`. Present licenses use `{"configured": true, "license": {...}}`; optional fields are omitted when absent or null, while explicit zero days and `false` site-license values are retained. Unknown server status values are preserved. Successfully reading any of these states exits 0; configuration, request, decoding, and output failures exit nonzero. Installing licenses or configuring license keys/files belongs to the Arc server.
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
+
+`arcli rbac` manages Enterprise organizations, teams, roles, measurement permissions, and token team memberships. List commands support table, JSON, and CSV output; destructive operations prompt for confirmation and accept `--yes` for scripts. Token references accept a numeric id or an exact name.
 
 ## Output and automation
 
