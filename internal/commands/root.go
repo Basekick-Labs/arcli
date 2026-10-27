@@ -6,7 +6,8 @@
 // `compaction`; PR7 added `retention`, `cq`, `scheduler`; PR8 added
 // `delete` and `backup`; PR9 added `logs` and `import stats`; PR10a added
 // build metadata in --version and shell completion (completion.go);
-// PR11 added `sample` (sample.go + internal/sample).
+// PR11 added `sample` (sample.go + internal/sample); MQTT administration
+// lives in mqtt.go and the typed REST client in internal/client/mqtt.go.
 package commands
 
 import (
@@ -89,6 +90,7 @@ First-time setup:
 		newBackupCmd(),
 		newLogsCmd(),
 		newSampleCmd(),
+		newMQTTCmd(),
 	)
 	installCompletions(root)
 	return root
