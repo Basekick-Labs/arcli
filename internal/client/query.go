@@ -21,8 +21,8 @@ type QueryResult struct {
 
 	// Data is row-major: Data[rowIdx] is one row's cells, in the same
 	// order as Columns. Each cell is whatever JSON decoded into —
-	// typically string, float64, bool, nil, or json.Number depending
-	// on the column's source type.
+	// typically string, json.Number, bool, or nil. JSON numbers retain
+	// their original decimal representation so large integers stay exact.
 	Data [][]any `json:"data"`
 
 	// RowCount is the number of rows. The server sets this as
@@ -103,8 +103,17 @@ func (c *Client) QueryJSON(ctx context.Context, sql, database string) (*QueryRes
 		return nil, decodeServerError(resp.StatusCode, respBody)
 	}
 
+	dec := json.NewDecoder(bytes.NewReader(respBody))
+	dec.UseNumber()
 	var qr QueryResult
-	if err := json.Unmarshal(respBody, &qr); err != nil {
+	if err := dec.Decode(&qr); err != nil {
+		return nil, fmt.Errorf("decode query response: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode query response: unexpected additional JSON value")
+		}
 		return nil, fmt.Errorf("decode query response: %w", err)
 	}
 	return &qr, nil
