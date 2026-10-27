@@ -32,6 +32,18 @@ func (e *CompactionRunningError) Error() string {
 	return fmt.Sprintf("a compaction cycle is already running (cycle %d); wait for it to finish", e.CycleID)
 }
 
+// CompactionPausedError is Arc's 409 when compaction is paused cluster-wide.
+type CompactionPausedError struct {
+	Message string
+}
+
+func (e *CompactionPausedError) Error() string {
+	if e.Message == "" {
+		return "compaction is paused cluster-wide"
+	}
+	return scrubControls(e.Message)
+}
+
 // CompactionNotPermittedError is Arc's 503 response when the current node
 // cannot run a manually triggered compaction.
 type CompactionNotPermittedError struct {
@@ -311,9 +323,14 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 	}
 	if resp.StatusCode == http.StatusConflict {
 		var conflict struct {
-			CycleID int64 `json:"cycle_id"`
+			CycleID int64  `json:"cycle_id"`
+			Paused  bool   `json:"paused"`
+			Error   string `json:"error"`
 		}
 		_ = json.Unmarshal(body, &conflict)
+		if conflict.Paused {
+			return nil, &CompactionPausedError{Message: conflict.Error}
+		}
 		return nil, &CompactionRunningError{CycleID: conflict.CycleID}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

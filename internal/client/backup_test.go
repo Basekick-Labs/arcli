@@ -211,6 +211,20 @@ func TestBackup_StatusIdleAndRestoreBody(t *testing.T) {
 	}
 }
 
+func TestBackup_StatusDecodesCompactionPause(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"operation":"restore","backup_id":"backup-20260907-201105-a0f5e600","status":"running","compaction_pause":"waiting"}`))
+	})
+
+	st, err := cli.BackupStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Progress == nil || st.Progress.CompactionPause != "waiting" {
+		t.Fatalf("progress = %+v", st.Progress)
+	}
+}
+
 func TestBackup_DisabledServer(t *testing.T) {
 	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {

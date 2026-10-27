@@ -114,6 +114,50 @@ func TestBackup_RestorePreservesServerRejection(t *testing.T) {
 	}
 }
 
+func TestBackup_RestoreWaitReportsCompactionPauseTransitions(t *testing.T) {
+	fastPolls(t)
+	const id = "backup-20260907-200009-00000009"
+	var posted atomic.Bool
+	var polls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/backup/" + id:
+			_, _ = w.Write([]byte(`{"backup_id":"` + id + `","has_metadata":false,"has_config":false}`))
+		case "/api/v1/backup/status":
+			if !posted.Load() {
+				_, _ = w.Write([]byte(`{"status":"idle"}`))
+				return
+			}
+			state := polls.Add(1)
+			status, pause := "running", "waiting"
+			if state == 2 {
+				pause = "paused"
+			} else if state >= 3 {
+				status, pause = "completed", "released"
+			}
+			_, _ = w.Write([]byte(`{"operation":"restore","backup_id":"` + id + `","status":"` + status + `","compaction_pause":"` + pause + `","started_at":"2026-10-26T00:00:00Z"}`))
+		case "/api/v1/backup/restore":
+			posted.Store(true)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"status":"accepted"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+
+	_, stderr, err := execCmd(t, newBackupRestoreCmd(), id, "--yes", "--wait")
+	if err != nil {
+		t.Fatalf("restore failed: %v; stderr=%q", err, stderr)
+	}
+	for _, want := range []string{"compaction pause: waiting", "compaction pause: paused", "compaction pause: released"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("missing %q in stderr:\n%s", want, stderr)
+		}
+	}
+}
+
 func TestBackup_RestoreFlagBoundaries(t *testing.T) {
 	const id = "backup-20260907-200009-00000009"
 	for _, tc := range []struct {

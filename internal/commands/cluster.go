@@ -57,7 +57,8 @@ func newClusterStatusCmd() *cobra.Command {
 
 On a standalone server this prints "clustering: disabled" with the
 server's reason and exits 0. -o json passes the server body through
-unchanged in both cases; check "enabled" to branch in scripts.`,
+unchanged in both cases; check "enabled" to branch in scripts. An active
+cluster-wide compaction pause is included in the table output.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -103,6 +104,25 @@ unchanged in both cases; check "enabled" to branch in scripts.`,
 			}
 			if st.License != nil {
 				fmt.Fprintf(w, "license:     %s (valid: %t)\n", clean(st.License.Tier), st.License.Valid)
+			}
+			if pause := st.CompactionPause; pause != nil && pause.Active {
+				requestedBy := clean(pause.RequestedBy)
+				if requestedBy == "" {
+					requestedBy = "unknown"
+				}
+				reason := clean(pause.Reason)
+				if reason == "" {
+					reason = "unspecified"
+				}
+				pending := "none"
+				if len(pause.PendingAcks) > 0 {
+					nodes := make([]string, 0, len(pause.PendingAcks))
+					for _, node := range pause.PendingAcks {
+						nodes = append(nodes, clean(node))
+					}
+					pending = strings.Join(nodes, ", ")
+				}
+				fmt.Fprintf(w, "compaction:  paused by %s for %s until %s, waiting for %s\n", requestedBy, reason, fmtTimeVal(pause.ExpiresAt, "never"), pending)
 			}
 			if len(st.Nodes) == 0 {
 				_, err := fmt.Fprintln(w, "(no nodes)")

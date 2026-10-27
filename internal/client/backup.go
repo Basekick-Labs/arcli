@@ -129,6 +129,8 @@ type BackupProgress struct {
 	BackupSkippedFiles           int64 `json:"backup_skipped_files,omitempty"`
 	BackupUnaddressableFiles     int64 `json:"backup_unaddressable_files,omitempty"`
 	IcebergWarehouseFilesSkipped int64 `json:"iceberg_warehouse_files_skipped,omitempty"`
+	// CompactionPause tracks the cluster-wide compaction pause during a restore.
+	CompactionPause string `json:"compaction_pause,omitempty"`
 }
 
 // BackupStatus is the decoded status endpoint: Idle when the server has
