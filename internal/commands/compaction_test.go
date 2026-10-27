@@ -50,6 +50,11 @@ func fakeCompactionServer(t *testing.T, busyPolls int32) (*httptest.Server, *int
 			return
 		}
 		atomic.AddInt32(&triggers, 1)
+		if strings.Contains(r.URL.RawQuery, "database=paused") {
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"error":"compaction is paused cluster-wide","paused":true}`))
+			return
+		}
 		if strings.Contains(r.URL.RawQuery, "database=busy") {
 			w.WriteHeader(409)
 			_, _ = w.Write([]byte(`{"error":"Compaction cycle already running","cycle_id":41,"is_running":true}`))
@@ -172,6 +177,10 @@ func TestCompactionTrigger_ValidationWarningsAnd409(t *testing.T) {
 	_, _, err = execCmd(t, newCompactionTriggerCmd(), "--database", "busy")
 	if err == nil || !strings.Contains(err.Error(), "already running (cycle 41)") {
 		t.Errorf("err = %v", err)
+	}
+	_, _, err = execCmd(t, newCompactionTriggerCmd(), "--database", "paused")
+	if err == nil || err.Error() != "compaction is paused cluster-wide" {
+		t.Errorf("paused response should be preserved: err = %v", err)
 	}
 	writeTestConfig(t, srv.URL, "reader")
 	_, _, err = execCmd(t, newCompactionTriggerCmd())

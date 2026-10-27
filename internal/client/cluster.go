@@ -89,25 +89,40 @@ type ClusterLicense struct {
 	Features []string `json:"features"`
 }
 
+// CompactionPauseStatus is Arc's cluster-wide compaction pause summary.
+// PendingAcks lists nodes that have not quiesced yet.
+type CompactionPauseStatus struct {
+	Active      bool      `json:"active"`
+	Generation  uint64    `json:"generation"`
+	RequestedBy string    `json:"requested_by"`
+	Reason      string    `json:"reason"`
+	RequestedAt time.Time `json:"requested_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Expired     bool      `json:"expired"`
+	Acks        []string  `json:"acks"`
+	PendingAcks []string  `json:"pending_acks"`
+}
+
 // ClusterStatus is the typed view of GET /api/v1/cluster on a
 // cluster-enabled server. Raw holds the complete body for JSON output
 // so optional blocks (router, core counts) are never lost.
 type ClusterStatus struct {
-	Enabled      bool            `json:"enabled"`
-	Mode         string          `json:"mode"`
-	Running      bool            `json:"running"`
-	ClusterName  string          `json:"cluster_name"`
-	LocalNodeID  string          `json:"local_node_id"`
-	LocalRole    string          `json:"local_role"`
-	NodeCount    int             `json:"node_count"`
-	HealthyCount int             `json:"healthy_count"`
-	Writers      int             `json:"writers"`
-	Readers      int             `json:"readers"`
-	Compactors   int             `json:"compactors"`
-	Nodes        []ClusterNode   `json:"nodes"`
-	Raft         RaftStatus      `json:"raft"`
-	License      *ClusterLicense `json:"license,omitempty"`
-	Raw          json.RawMessage `json:"-"`
+	Enabled         bool                   `json:"enabled"`
+	Mode            string                 `json:"mode"`
+	Running         bool                   `json:"running"`
+	ClusterName     string                 `json:"cluster_name"`
+	LocalNodeID     string                 `json:"local_node_id"`
+	LocalRole       string                 `json:"local_role"`
+	NodeCount       int                    `json:"node_count"`
+	HealthyCount    int                    `json:"healthy_count"`
+	Writers         int                    `json:"writers"`
+	Readers         int                    `json:"readers"`
+	Compactors      int                    `json:"compactors"`
+	Nodes           []ClusterNode          `json:"nodes"`
+	Raft            RaftStatus             `json:"raft"`
+	License         *ClusterLicense        `json:"license,omitempty"`
+	CompactionPause *CompactionPauseStatus `json:"compaction_pause,omitempty"`
+	Raw             json.RawMessage        `json:"-"`
 }
 
 // ClusterHealth is GET /api/v1/cluster/health.
