@@ -135,11 +135,14 @@ arcli compaction status
 arcli retention list
 arcli backup create --wait
 arcli logs --level warn --since 6h
+arcli audit logs --since 2026-01-01T00:00:00Z --limit 100
 ```
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
+
+`audit logs` and `audit stats` query durable Enterprise audit records. They require an administrator token and an Enterprise license with audit logging enabled. Logs support event type, actor, database, time, and pagination filters in table, JSON, or CSV output; stats defaults to the last 24 hours. This is separate from `arcli logs`, which reads the server's in-memory application log buffer.
 
 `license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is normalized to UTC RFC3339 with fractional seconds when provided.
 
