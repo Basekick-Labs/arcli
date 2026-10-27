@@ -132,10 +132,14 @@ arcli auth whoami
 arcli license status
 arcli license status -c prod -o json
 arcli compaction status
+arcli governance policy list
+arcli governance usage batch
 arcli retention list
 arcli backup create --wait
 arcli logs --level warn --since 6h
 ```
+
+Query governance commands require an admin token and an Enterprise licence with the feature enabled. Policy limits accept `0` for unlimited; updates preserve fields whose flags are omitted.
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
