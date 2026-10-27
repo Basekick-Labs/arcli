@@ -304,10 +304,11 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 				return
 			}
 			var req struct {
-				BackupID        string `json:"backup_id"`
-				Confirm         bool   `json:"confirm"`
-				RestoreMetadata *bool  `json:"restore_metadata"`
-				RestoreConfig   *bool  `json:"restore_config"`
+				BackupID        string  `json:"backup_id"`
+				Confirm         bool    `json:"confirm"`
+				RestoreMetadata *bool   `json:"restore_metadata"`
+				RestoreConfig   *bool   `json:"restore_config"`
+				Mode            *string `json:"mode"`
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -329,6 +330,11 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 				_, _ = w.Write([]byte(`{"error":"restore_config is not available on a cluster node: arc.toml holds this node identity"}`))
 				return
 			}
+			if !f.clustered && req.Mode != nil && *req.Mode == "replace" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"replace mode is available only on cluster nodes"}`))
+				return
+			}
 			restoreMetadata := !f.clustered
 			if req.RestoreMetadata != nil {
 				restoreMetadata = *req.RestoreMetadata
@@ -341,7 +347,11 @@ func newFakeBackupServer(t *testing.T) *fakeBackupServer {
 			restartRequired := staged || restoreConfig && f.hasConfig
 			go publish("restore", req.BackupID)
 			w.WriteHeader(202)
-			response := map[string]any{"backup_id": req.BackupID, "message": "Restore started", "status": "running"}
+			mode := "merge"
+			if req.Mode != nil {
+				mode = *req.Mode
+			}
+			response := map[string]any{"backup_id": req.BackupID, "message": "Restore started", "status": "running", "mode": mode}
 			if restartRequired {
 				response["restart_required"] = true
 			}
@@ -404,7 +414,7 @@ func TestBackup_RestoreUsesServerDefaultsUnlessExplicit(t *testing.T) {
 	const id = "backup-20260907-200009-00000009"
 	t.Run("cluster default does not request metadata or config", func(t *testing.T) {
 		f := newRestoreDefaultsServer(t, true, true)
-		_, stderr, err := execCmd(t, newBackupRestoreCmd(), id, "--yes")
+		out, stderr, err := execCmd(t, newBackupRestoreCmd(), id, "--yes")
 		if err != nil {
 			t.Fatalf("restore using cluster defaults: %v (stderr %q)", err, stderr)
 		}
@@ -417,6 +427,28 @@ func TestBackup_RestoreUsesServerDefaultsUnlessExplicit(t *testing.T) {
 		}
 		if strings.Contains(stderr, "metadata store will be staged") {
 			t.Errorf("cluster default skips metadata, but stderr claimed it would be staged: %q", stderr)
+		}
+		if _, ok := f.lastRestoreRequest()["mode"]; ok {
+			t.Error("omitted --mode must leave the request mode to Arc")
+		}
+		if !strings.Contains(out, "Restore of "+id+" started (mode: merge)") {
+			t.Errorf("output omitted the server's effective default mode: %q", out)
+		}
+	})
+
+	t.Run("explains the scoped default before confirmation", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, true, true)
+		cmd := newBackupRestoreCmd()
+		cmd.SetIn(strings.NewReader("n\n"))
+		_, stderr, err := execCmd(t, cmd, id)
+		if err == nil || err.Error() != "aborted" {
+			t.Fatalf("err = %v; want declined confirmation", err)
+		}
+		if !strings.Contains(stderr, "restore mode follows Arc's default: merge for a full backup, or replace for a scoped backup on a cluster") {
+			t.Errorf("confirmation omitted the server's scoped mode default: %q", stderr)
+		}
+		if len(f.lastRestoreRequest()) != 0 {
+			t.Errorf("declined restore reached the server: %v", f.lastRestoreRequest())
 		}
 	})
 
@@ -499,6 +531,46 @@ func TestBackup_RestoreUsesServerDefaultsUnlessExplicit(t *testing.T) {
 		var config bool
 		if err := json.Unmarshal(req["restore_config"], &config); err != nil || !config {
 			t.Errorf("restore_config = %s, want true", req["restore_config"])
+		}
+	})
+}
+
+func TestBackup_RestoreMode(t *testing.T) {
+	const id = "backup-20260907-200009-00000009"
+
+	t.Run("rejects invalid mode before making a request", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, true, true)
+		_, _, err := execCmd(t, newBackupRestoreCmd(), id, "--mode", "replace-all", "--yes")
+		if err == nil || err.Error() != `invalid --mode "replace-all" (valid: merge, replace)` {
+			t.Fatalf("err = %v", err)
+		}
+		if len(f.lastRestoreRequest()) != 0 {
+			t.Errorf("invalid mode reached the server: %v", f.lastRestoreRequest())
+		}
+	})
+
+	t.Run("surfaces standalone replace refusal", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, false, true)
+		_, _, err := execCmd(t, newBackupRestoreCmd(), id, "--mode", "replace", "--yes")
+		if err == nil || !strings.Contains(err.Error(), "replace mode is available only on cluster nodes") {
+			t.Fatalf("err = %v", err)
+		}
+		if len(f.restoreRequests) != 1 || string(f.lastRestoreRequest()["mode"]) != `"replace"` {
+			t.Errorf("replace request = %v", f.lastRestoreRequest())
+		}
+	})
+
+	t.Run("prints the effective mode returned by the server", func(t *testing.T) {
+		f := newRestoreDefaultsServer(t, true, true)
+		out, _, err := execCmd(t, newBackupRestoreCmd(), id, "--mode", "replace", "--yes")
+		if err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if !strings.Contains(out, "Restore of "+id+" started (mode: replace)") {
+			t.Errorf("restore output does not include the server mode: %q", out)
+		}
+		if string(f.lastRestoreRequest()["mode"]) != `"replace"` {
+			t.Errorf("request mode = %s", f.lastRestoreRequest()["mode"])
 		}
 	})
 }

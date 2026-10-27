@@ -152,6 +152,7 @@ func describeProgress(w io.Writer, p *client.BackupProgress) {
 	if p.Error != "" {
 		fmt.Fprintf(w, "error:      %s\n", clean(p.Error))
 	}
+	writeRestoreDetails(w, p)
 	// What the counts above do not say: which files, what the restored backup
 	// already lacked, and warehouse files a restore had nowhere to put. The
 	// server already names the counts of a failed restore in its error, so
@@ -171,14 +172,40 @@ func describeProgress(w io.Writer, p *client.BackupProgress) {
 	writeSample(w, "unaddressable", p.UnaddressableSample)
 }
 
+// writeRestoreDetails prints the additional outcomes Arc reports for a
+// restore. Older servers omit these fields, so an otherwise empty line is
+// not emitted for them.
+func writeRestoreDetails(w io.Writer, p *client.BackupProgress) {
+	if p.Operation != "restore" {
+		return
+	}
+	if p.Mode != "" {
+		fmt.Fprintf(w, "mode:       %s\n", clean(p.Mode))
+	}
+	if p.Mode != "" || p.FilesRegistered > 0 || p.RegistrationFailed > 0 || p.SidecarMismatches > 0 || p.ReplacedFiles > 0 {
+		fmt.Fprintf(w, "restore:    %d files registered, %d registration failures, %d sidecar mismatches, %d files replaced\n",
+			p.FilesRegistered, p.RegistrationFailed, p.SidecarMismatches, p.ReplacedFiles)
+	}
+	writeSample(w, "registration-failed", p.RegistrationFailedSample)
+	writeSample(w, "sidecar-mismatch", p.SidecarMismatchSample)
+}
+
 // writeRestoreGaps prints what a restore's progress says about gaps that are
 // not the restore's own doing: what the restored backup already lacked when it
 // was taken, and warehouse files this node had nowhere to put. Printed for a
 // failed and a completed restore alike, since the latter is the only place the
 // warehouse gap shows when Iceberg is off on the node.
 func writeRestoreGaps(w io.Writer, p *client.BackupProgress) {
-	if p.BackupSkippedFiles > 0 || p.BackupUnaddressableFiles > 0 {
-		fmt.Fprintf(w, "backup had: %s when it was taken\n", describeIncomplete(p.BackupSkippedFiles, 0, p.BackupUnaddressableFiles))
+	backupGaps := incompleteCounts{
+		Skipped:       p.BackupSkippedFiles,
+		Unaddressable: p.BackupUnaddressableFiles,
+		ManifestOnly:  p.BackupManifestOnlyFiles,
+	}
+	if gaps := describeIncomplete(backupGaps); gaps != "" {
+		fmt.Fprintf(w, "backup had: %s when it was taken\n", gaps)
+	}
+	if p.BackupUnregisteredSkipped > 0 {
+		fmt.Fprintf(w, "backup info: %d files were not listed in the cluster manifest when it was taken\n", p.BackupUnregisteredSkipped)
 	}
 	if p.IcebergWarehouseFilesSkipped > 0 {
 		fmt.Fprintf(w, "iceberg:    %d warehouse files not restored (this node has no outside-root warehouse)\n", p.IcebergWarehouseFilesSkipped)
@@ -202,24 +229,81 @@ func wasWere(n int64) string {
 	return "were"
 }
 
-// describeIncomplete phrases a backup's incompleteness counts, each in its own
-// domain because the server keeps them apart: skipped data files are part of
-// the backup's file total, metadata skips (Iceberg metadata, compaction
-// recovery state) are not, and unaddressable files were never inventoried at
-// all, so the numbers are never summed. Returns "" when all are zero, which is
-// also what an Arc older than 26.09.3 reports: none, not necessarily complete.
-func describeIncomplete(skipped, metadata, unaddressable int64) string {
+type incompleteCounts struct {
+	Skipped           int64
+	SkippedReconciled int64
+	Metadata          int64
+	Unaddressable     int64
+	ManifestOnly      int64
+}
+
+func effectiveSkipped(skipped, reconciled int64) int64 {
+	if reconciled >= skipped {
+		return 0
+	}
+	return skipped - reconciled
+}
+
+// describeIncomplete keeps the server's distinct missing-file populations
+// separate. Skips later reconciled against the cluster manifest are not
+// missing data, and manifest-only files are a separate source of incompleteness.
+func describeIncomplete(c incompleteCounts) string {
 	var parts []string
-	if skipped > 0 {
+	if skipped := effectiveSkipped(c.Skipped, c.SkippedReconciled); skipped > 0 {
 		parts = append(parts, fmt.Sprintf("%d skipped", skipped))
 	}
-	if metadata > 0 {
-		parts = append(parts, fmt.Sprintf("%d metadata", metadata))
+	if c.Metadata > 0 {
+		parts = append(parts, fmt.Sprintf("%d metadata", c.Metadata))
 	}
-	if unaddressable > 0 {
-		parts = append(parts, fmt.Sprintf("%d unaddressable", unaddressable))
+	if c.Unaddressable > 0 {
+		parts = append(parts, fmt.Sprintf("%d unaddressable", c.Unaddressable))
+	}
+	if c.ManifestOnly > 0 {
+		parts = append(parts, fmt.Sprintf("%d manifest-only", c.ManifestOnly))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func describeClusterBackupInfo(reconciled, unregistered, leftManifest int64, checked *bool) string {
+	var parts []string
+	if reconciled > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped reconciled", reconciled))
+	}
+	if unregistered > 0 {
+		parts = append(parts, fmt.Sprintf("%d unregistered", unregistered))
+	}
+	if leftManifest > 0 {
+		parts = append(parts, fmt.Sprintf("%d left manifest during backup", leftManifest))
+	}
+	if checked != nil {
+		if *checked {
+			parts = append(parts, "cluster manifest checked")
+		} else {
+			parts = append(parts, "cluster manifest not checked")
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func backupListIncomplete(b client.BackupSummary) string {
+	incomplete := describeIncomplete(incompleteCounts{
+		Skipped:           b.SkippedFiles,
+		SkippedReconciled: b.SkippedReconciled,
+		Metadata:          b.SkippedMetadataFiles,
+		Unaddressable:     b.UnaddressableFiles,
+		ManifestOnly:      b.ManifestOnlyFiles,
+	})
+	info := describeClusterBackupInfo(b.SkippedReconciled, b.UnregisteredSkipped, b.LeftManifestDuringRun, b.ClusterManifestChecked)
+	if incomplete == "" {
+		if info == "" {
+			return "-"
+		}
+		return "info: " + info
+	}
+	if info != "" {
+		return incomplete + "; info: " + info
+	}
+	return incomplete
 }
 
 // writeSample prints one labelled line per path (up to the server's 32).
@@ -379,16 +463,14 @@ func newBackupListCmd() *cobra.Command {
 		Short: "List backups, newest first",
 		Long: `List backups (GET /api/v1/backup/), newest first.
 
-INCOMPLETE says what the backup lacks, as the server counts it (Arc
-26.09.3+): "skipped" data files that were inventoried but not stored,
-"metadata" files (Iceberg metadata, compaction recovery state) that were
-skipped, and "unaddressable" files whose key no listing can return, so
-they were never inventoried. "-" means none reported: a complete backup,
-or an Arc older than 26.09.3. "backup show" names the files.
+INCOMPLETE includes skipped data files that remain absent from the cluster
+manifest, manifest-only files, metadata skips, and unaddressable files.
+Reconciled skips, unregistered local files, and files removed from the
+manifest during backup are shown as information, not missing backup data.
+"-" means no gaps were reported; "backup show" names sampled files.
 
-Output formats: table (default) | json | csv. The csv columns
-skipped_files, skipped_metadata_files and unaddressable_files follow
-total_size_bytes.`,
+Output formats: table (default) | json | csv. The csv output includes the
+incompleteness and cluster-manifest counts returned by the server.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -412,12 +494,16 @@ total_size_bytes.`,
 			if outputFormat == output.FormatCSV {
 				cw := csv.NewWriter(w)
 				if !noHeader {
-					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files"}); err != nil {
+					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files", "skipped_reconciled", "unregistered_skipped", "manifest_only_files", "left_manifest_during_run", "cluster_manifest_checked"}); err != nil {
 						return err
 					}
 				}
 				for _, b := range list {
-					if err := cw.Write([]string{b.BackupID, fmtTimeVal(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10)}); err != nil {
+					checked := ""
+					if b.ClusterManifestChecked != nil {
+						checked = strconv.FormatBool(*b.ClusterManifestChecked)
+					}
+					if err := cw.Write([]string{b.BackupID, fmtTimeVal(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.SkippedReconciled, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10), checked}); err != nil {
 						return err
 					}
 				}
@@ -430,11 +516,7 @@ total_size_bytes.`,
 			}
 			rows := make([][]string, 0, len(list))
 			for _, b := range list {
-				incomplete := describeIncomplete(b.SkippedFiles, b.SkippedMetadataFiles, b.UnaddressableFiles)
-				if incomplete == "" {
-					incomplete = "-"
-				}
-				rows = append(rows, []string{clean(b.BackupID), fmtTimeVal(b.CreatedAt, "-"), clean(b.BackupType), strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), humanBytes(b.TotalBytes), incomplete})
+				rows = append(rows, []string{clean(b.BackupID), fmtTimeVal(b.CreatedAt, "-"), clean(b.BackupType), strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), humanBytes(b.TotalBytes), backupListIncomplete(b)})
 			}
 			headers := []string{"ID", "CREATED", "TYPE", "DATABASES", "FILES", "SIZE", "INCOMPLETE"}
 			if noHeader {
@@ -494,9 +576,13 @@ func writeManifest(w io.Writer, m *client.BackupManifest) error {
 	fmt.Fprintf(w, "contents:    %d files, %s, metadata %t, config %t\n", m.TotalFiles, humanBytes(m.TotalSizeBytes), m.HasMetadata, m.HasConfig)
 	if line := describeManifestIncomplete(m); line != "" {
 		fmt.Fprintf(w, "INCOMPLETE:  %s\n", line)
-		writeSample(w, "skipped", m.SkippedSample)
-		writeSample(w, "unaddressable", m.UnaddressableSample)
 	}
+	writeSample(w, "skipped", m.SkippedSample)
+	writeSample(w, "unaddressable", m.UnaddressableSample)
+	writeManifestClusterInfo(w, m)
+	writeSample(w, "unregistered", m.UnregisteredSample)
+	writeSample(w, "manifest-only", m.ManifestOnlySample)
+	writeSample(w, "left-manifest", m.LeftManifestSample)
 	if len(m.Databases) == 0 {
 		_, err := fmt.Fprintln(w, "(no databases)")
 		return err
@@ -514,6 +600,25 @@ func writeManifest(w io.Writer, m *client.BackupManifest) error {
 	return output.Table(w, []string{"DATABASE", "MEASUREMENT", "FILES", "SIZE"}, rows)
 }
 
+func writeManifestClusterInfo(w io.Writer, m *client.BackupManifest) {
+	if m.SkippedReconciled > 0 {
+		fmt.Fprintf(w, "reconciled:   %s later absent from the manifest; not incomplete\n", plural(m.SkippedReconciled, "skipped file was", "skipped files were"))
+	}
+	if m.UnregisteredSkipped > 0 {
+		fmt.Fprintf(w, "unregistered: %d local data files were not in the cluster manifest and were not backed up\n", m.UnregisteredSkipped)
+	}
+	if m.LeftManifestDuringRun > 0 {
+		fmt.Fprintf(w, "left manifest: %d files were copied then removed as the manifest changed during backup\n", m.LeftManifestDuringRun)
+	}
+	if m.ClusterManifestChecked != nil {
+		if *m.ClusterManifestChecked {
+			fmt.Fprintln(w, "cluster manifest: checked")
+		} else {
+			fmt.Fprintln(w, "cluster manifest: not checked")
+		}
+	}
+}
+
 // describeManifestIncomplete phrases a manifest's incompleteness, or returns
 // "" for a backup that reports none. The skipped clause counts data files
 // against the backup's file total and metadata files apart (they are not in
@@ -521,21 +626,22 @@ func writeManifest(w io.Writer, m *client.BackupManifest) error {
 func describeManifestIncomplete(m *client.BackupManifest) string {
 	var clauses []string
 	var skipped []string
-	if m.SkippedFiles > 0 {
+	missingSkipped := effectiveSkipped(m.SkippedFiles, m.SkippedReconciled)
+	if missingSkipped > 0 {
 		// A manifest written before the data/metadata split folded metadata
 		// skips into skipped_files, so the count can exceed the total; then
 		// "N of M" would read as nonsense.
-		if m.SkippedFiles > m.TotalFiles {
-			skipped = append(skipped, plural(m.SkippedFiles, "file", "files"))
+		if missingSkipped > m.TotalFiles {
+			skipped = append(skipped, plural(missingSkipped, "file", "files"))
 		} else {
-			skipped = append(skipped, fmt.Sprintf("%d of %d files", m.SkippedFiles, m.TotalFiles))
+			skipped = append(skipped, fmt.Sprintf("%d of %d files", missingSkipped, m.TotalFiles))
 		}
 	}
 	if m.SkippedMetadataFiles > 0 {
 		skipped = append(skipped, plural(m.SkippedMetadataFiles, "metadata file", "metadata files"))
 	}
 	if len(skipped) > 0 {
-		clause := strings.Join(skipped, " and ") + " " + wasWere(m.SkippedFiles+m.SkippedMetadataFiles) + " skipped while backing up"
+		clause := strings.Join(skipped, " and ") + " " + wasWere(missingSkipped+m.SkippedMetadataFiles) + " skipped while backing up"
 		if m.SkippedOverlongKeys > 0 {
 			clause += " (" + overlongClause(m.SkippedOverlongKeys) + ")"
 		}
@@ -543,6 +649,9 @@ func describeManifestIncomplete(m *client.BackupManifest) string {
 	}
 	if m.UnaddressableFiles > 0 {
 		clauses = append(clauses, plural(m.UnaddressableFiles, "file", "files")+" could not be listed (unaddressable)")
+	}
+	if m.ManifestOnlyFiles > 0 {
+		clauses = append(clauses, plural(m.ManifestOnlyFiles, "file was", "files were")+" present only in the cluster manifest")
 	}
 	if m.IcebergWarehouse != nil && m.IcebergWarehouse.SkippedFiles > 0 {
 		clauses = append(clauses, plural(m.IcebergWarehouse.SkippedFiles, "Iceberg warehouse file was", "Iceberg warehouse files were")+" skipped")
@@ -558,14 +667,15 @@ func describeManifestIncomplete(m *client.BackupManifest) string {
 func describeRestoreGaps(m *client.BackupManifest) string {
 	var clauses []string
 	var skipped []string
-	if m.SkippedFiles > 0 {
-		skipped = append(skipped, plural(m.SkippedFiles, "file", "files"))
+	missingSkipped := effectiveSkipped(m.SkippedFiles, m.SkippedReconciled)
+	if missingSkipped > 0 {
+		skipped = append(skipped, plural(missingSkipped, "file", "files"))
 	}
 	if m.SkippedMetadataFiles > 0 {
 		skipped = append(skipped, plural(m.SkippedMetadataFiles, "metadata file", "metadata files"))
 	}
 	if len(skipped) > 0 {
-		clause := strings.Join(skipped, " and ") + " " + wasWere(m.SkippedFiles+m.SkippedMetadataFiles) + " skipped when it was taken"
+		clause := strings.Join(skipped, " and ") + " " + wasWere(missingSkipped+m.SkippedMetadataFiles) + " skipped when it was taken"
 		if m.SkippedOverlongKeys > 0 {
 			clause += ", " + strings.Replace(overlongClause(m.SkippedOverlongKeys), " for ", " of them for ", 1)
 		}
@@ -573,6 +683,9 @@ func describeRestoreGaps(m *client.BackupManifest) string {
 	}
 	if m.UnaddressableFiles > 0 {
 		clauses = append(clauses, plural(m.UnaddressableFiles, "file", "files")+" could not be listed")
+	}
+	if m.ManifestOnlyFiles > 0 {
+		clauses = append(clauses, plural(m.ManifestOnlyFiles, "file was", "files were")+" present only in the cluster manifest")
 	}
 	if m.IcebergWarehouse != nil && m.IcebergWarehouse.SkippedFiles > 0 {
 		clauses = append(clauses, plural(m.IcebergWarehouse.SkippedFiles, "Iceberg warehouse file was", "Iceberg warehouse files were")+" skipped")
@@ -692,6 +805,7 @@ func newBackupRestoreCmd() *cobra.Command {
 	var (
 		f            connFlags
 		outputFormat string
+		mode         string
 		dataOnly     bool
 		withMetadata bool
 		withConfig   bool
@@ -705,8 +819,8 @@ func newBackupRestoreCmd() *cobra.Command {
 
 Data files from the backup are written over the server's storage
 unconditionally; existing files at the same paths are replaced. Run it
-on a quiescent server: stop writers and compaction first. In cluster
-mode restored files are not registered in the cluster manifest.
+on a quiescent server: stop writers and compaction first. On a cluster,
+Arc registers restored files in the cluster manifest and reports failures.
 
 By default the metadata store (tokens, policies, continuous queries) is
 restored on a standalone node if the backup contains it, but skipped on a
@@ -716,6 +830,12 @@ request. --data-only explicitly skips metadata and config. --with-config
 also restores the server config file (staged as well). The restore runs in
 the background; --wait polls until it finishes (--wait-timeout defaults
 to 2h).
+
+The restore mode is merge by default for a full backup. Arc may default a
+scoped cluster backup to replace; when --mode is omitted, arcli leaves that
+choice to the server. Use --mode merge or --mode replace to choose explicitly.
+Replace is available only on clusters and removes the current manifest entries
+for the backup's databases before restoring them.
 
 On a cluster, only the primary writer can restore a backup. A node
 that is not the primary writer returns HTTP 503 after confirmation,
@@ -729,6 +849,9 @@ before the restore starts.`,
 			}
 			if waitTimeout <= 0 {
 				return fmt.Errorf("--wait-timeout must be > 0")
+			}
+			if mode != "merge" && mode != "replace" {
+				return fmt.Errorf("invalid --mode %q (valid: merge, replace)", mode)
 			}
 			if dataOnly && withConfig {
 				return fmt.Errorf("--data-only and --with-config are mutually exclusive")
@@ -773,6 +896,11 @@ before the restore starts.`,
 				scope = "the live storage of database(s) " + strings.Join(dbs, ", ")
 			}
 			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), fmtTimeVal(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
+			if cmd.Flags().Changed("mode") && mode == "replace" {
+				parts = append(parts, "The current cluster manifest entries for these databases will be removed before restoring.")
+			} else if !cmd.Flags().Changed("mode") {
+				parts = append(parts, "The restore mode follows Arc's default: merge for a full backup, or replace for a scoped backup on a cluster.")
+			}
 			if restoreMeta {
 				parts = append(parts, "The metadata store will be staged and applied at the next server start.")
 			} else if metadataMayRestoreByDefault {
@@ -806,6 +934,9 @@ before the restore starts.`,
 			if restoreCfg {
 				opts.RestoreConfig = &t
 			}
+			if cmd.Flags().Changed("mode") {
+				opts.Mode = &mode
+			}
 			ctx, cancel = f.ctx(cmd)
 			res, err := cli.RestoreBackup(ctx, id, opts)
 			cancel()
@@ -829,6 +960,8 @@ before the restore starts.`,
 					if err := writeRawJSON(cmd.OutOrStdout(), res.Raw); err != nil {
 						return err
 					}
+				} else if res.Mode != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s accepted (mode: %s)\n", clean(id), clean(res.Mode))
 				}
 				restartNote()
 				return nil
@@ -839,7 +972,15 @@ before the restore starts.`,
 						return err
 					}
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s started\n", clean(id))
+					startedMode := res.Mode
+					if startedMode == "" && cmd.Flags().Changed("mode") {
+						startedMode = mode
+					}
+					if startedMode == "" {
+						fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s started\n", clean(id))
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s started (mode: %s)\n", clean(id), clean(startedMode))
+					}
 				}
 				fmt.Fprintln(stderr, "It runs in the background; follow it with `arcli backup status` or re-run with --wait.")
 				restartNote()
@@ -855,8 +996,20 @@ before the restore starts.`,
 					return err
 				}
 			} else if final.Status == "completed" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes))
+				completedMode := final.Mode
+				if completedMode == "" {
+					completedMode = res.Mode
+				}
+				if completedMode == "" && cmd.Flags().Changed("mode") {
+					completedMode = mode
+				}
+				if completedMode == "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written (mode: %s)\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes), clean(completedMode))
+				}
 				writeRestoreGaps(cmd.OutOrStdout(), final)
+				writeRestoreDetails(cmd.OutOrStdout(), final)
 			} else {
 				describeProgress(cmd.OutOrStdout(), final)
 			}
@@ -869,6 +1022,7 @@ before the restore starts.`,
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	c.Flags().StringVar(&mode, "mode", "merge", "restore mode: merge|replace (default: merge)")
 	c.Flags().BoolVar(&dataOnly, "data-only", false, "restore data files only (skip metadata and config)")
 	c.Flags().BoolVar(&withMetadata, "with-metadata", false, "also restore the metadata store (staged; unavailable on clusters)")
 	c.Flags().BoolVar(&withConfig, "with-config", false, "also restore the server config file (staged)")

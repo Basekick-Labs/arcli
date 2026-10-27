@@ -38,22 +38,26 @@ func (e *BackupBusyError) Error() string {
 
 // BackupSummary is one entry of GET /api/v1/backup/.
 //
-// The three incompleteness counts arrive from Arc 26.09.3 on and are absent
-// (zero) from older servers; each is its own population on the server:
-// SkippedFiles are data files inside TotalFiles that were not stored,
-// SkippedMetadataFiles are Iceberg metadata or compaction recovery state
-// (not inside TotalFiles), UnaddressableFiles were never inventoried because
-// no listing can return their key.
+// Older Arc servers omit the incompleteness counts. SkippedFiles are data
+// files inside TotalFiles that were not stored, SkippedMetadataFiles are
+// Iceberg metadata or compaction recovery state (not inside TotalFiles), and
+// UnaddressableFiles were never inventoried because no listing can return
+// their key. Cluster manifest counts arrive on Arc 27.01.1+.
 type BackupSummary struct {
-	BackupID             string    `json:"backup_id"`
-	CreatedAt            time.Time `json:"created_at"`
-	BackupType           string    `json:"backup_type"`
-	TotalFiles           int64     `json:"total_files"`
-	TotalBytes           int64     `json:"total_size_bytes"`
-	DatabaseCount        int       `json:"database_count"`
-	SkippedFiles         int64     `json:"skipped_files,omitempty"`
-	SkippedMetadataFiles int64     `json:"skipped_metadata_files,omitempty"`
-	UnaddressableFiles   int64     `json:"unaddressable_files,omitempty"`
+	BackupID               string    `json:"backup_id"`
+	CreatedAt              time.Time `json:"created_at"`
+	BackupType             string    `json:"backup_type"`
+	TotalFiles             int64     `json:"total_files"`
+	TotalBytes             int64     `json:"total_size_bytes"`
+	DatabaseCount          int       `json:"database_count"`
+	SkippedFiles           int64     `json:"skipped_files,omitempty"`
+	SkippedMetadataFiles   int64     `json:"skipped_metadata_files,omitempty"`
+	UnaddressableFiles     int64     `json:"unaddressable_files,omitempty"`
+	SkippedReconciled      int64     `json:"skipped_reconciled,omitempty"`
+	UnregisteredSkipped    int64     `json:"unregistered_skipped,omitempty"`
+	ManifestOnlyFiles      int64     `json:"manifest_only_files,omitempty"`
+	LeftManifestDuringRun  int64     `json:"left_manifest_during_run,omitempty"`
+	ClusterManifestChecked *bool     `json:"cluster_manifest_checked,omitempty"`
 }
 
 // BackupMeasurement / BackupDatabase / BackupManifest mirror
@@ -81,24 +85,32 @@ type BackupIcebergWarehouse struct {
 }
 
 type BackupManifest struct {
-	Version              string                  `json:"version"`
-	BackupID             string                  `json:"backup_id"`
-	CreatedAt            time.Time               `json:"created_at"`
-	BackupType           string                  `json:"backup_type"`
-	Databases            []BackupDatabase        `json:"databases"`
-	TotalFiles           int64                   `json:"total_files"`
-	TotalSizeBytes       int64                   `json:"total_size_bytes"`
-	SkippedFiles         int64                   `json:"skipped_files,omitempty"`
-	SkippedMetadataFiles int64                   `json:"skipped_metadata_files,omitempty"`
-	SkippedSample        []string                `json:"skipped_sample,omitempty"`
-	SkippedOverlongKeys  int64                   `json:"skipped_overlong_keys,omitempty"`
-	UnaddressableFiles   int64                   `json:"unaddressable_files,omitempty"`
-	UnaddressableSample  []string                `json:"unaddressable_sample,omitempty"`
-	IcebergWarehouse     *BackupIcebergWarehouse `json:"iceberg_warehouse,omitempty"`
-	HasMetadata          bool                    `json:"has_metadata"`
-	HasIcebergCatalog    bool                    `json:"has_iceberg_catalog,omitempty"`
-	HasConfig            bool                    `json:"has_config"`
-	Raw                  json.RawMessage         `json:"-"`
+	Version                string                  `json:"version"`
+	BackupID               string                  `json:"backup_id"`
+	CreatedAt              time.Time               `json:"created_at"`
+	BackupType             string                  `json:"backup_type"`
+	Databases              []BackupDatabase        `json:"databases"`
+	TotalFiles             int64                   `json:"total_files"`
+	TotalSizeBytes         int64                   `json:"total_size_bytes"`
+	SkippedFiles           int64                   `json:"skipped_files,omitempty"`
+	SkippedMetadataFiles   int64                   `json:"skipped_metadata_files,omitempty"`
+	SkippedSample          []string                `json:"skipped_sample,omitempty"`
+	SkippedOverlongKeys    int64                   `json:"skipped_overlong_keys,omitempty"`
+	UnaddressableFiles     int64                   `json:"unaddressable_files,omitempty"`
+	UnaddressableSample    []string                `json:"unaddressable_sample,omitempty"`
+	SkippedReconciled      int64                   `json:"skipped_reconciled,omitempty"`
+	UnregisteredSkipped    int64                   `json:"unregistered_skipped,omitempty"`
+	UnregisteredSample     []string                `json:"unregistered_sample,omitempty"`
+	ManifestOnlyFiles      int64                   `json:"manifest_only_files,omitempty"`
+	ManifestOnlySample     []string                `json:"manifest_only_sample,omitempty"`
+	LeftManifestDuringRun  int64                   `json:"left_manifest_during_run,omitempty"`
+	LeftManifestSample     []string                `json:"left_manifest_sample,omitempty"`
+	ClusterManifestChecked *bool                   `json:"cluster_manifest_checked,omitempty"`
+	IcebergWarehouse       *BackupIcebergWarehouse `json:"iceberg_warehouse,omitempty"`
+	HasMetadata            bool                    `json:"has_metadata"`
+	HasIcebergCatalog      bool                    `json:"has_iceberg_catalog,omitempty"`
+	HasConfig              bool                    `json:"has_config"`
+	Raw                    json.RawMessage         `json:"-"`
 }
 
 // BackupProgress is GET /api/v1/backup/status when an operation has run
@@ -125,10 +137,20 @@ type BackupProgress struct {
 	UnaddressableSample []string `json:"unaddressable_sample,omitempty"`
 	// Restore only: what the restored backup already lacked when it was taken,
 	// and warehouse files left out because this node has no outside-root
-	// Iceberg warehouse.
-	BackupSkippedFiles           int64 `json:"backup_skipped_files,omitempty"`
-	BackupUnaddressableFiles     int64 `json:"backup_unaddressable_files,omitempty"`
-	IcebergWarehouseFilesSkipped int64 `json:"iceberg_warehouse_files_skipped,omitempty"`
+	// Iceberg warehouse. Newer Arc versions also report the selected mode,
+	// cluster registration outcomes, and files replaced by the restore.
+	BackupSkippedFiles           int64    `json:"backup_skipped_files,omitempty"`
+	BackupUnaddressableFiles     int64    `json:"backup_unaddressable_files,omitempty"`
+	IcebergWarehouseFilesSkipped int64    `json:"iceberg_warehouse_files_skipped,omitempty"`
+	Mode                         string   `json:"mode,omitempty"`
+	FilesRegistered              int64    `json:"files_registered,omitempty"`
+	RegistrationFailed           int64    `json:"registration_failed,omitempty"`
+	RegistrationFailedSample     []string `json:"registration_failed_sample,omitempty"`
+	SidecarMismatches            int64    `json:"sidecar_mismatches,omitempty"`
+	SidecarMismatchSample        []string `json:"sidecar_mismatch_sample,omitempty"`
+	ReplacedFiles                int64    `json:"replaced_files,omitempty"`
+	BackupUnregisteredSkipped    int64    `json:"backup_unregistered_skipped,omitempty"`
+	BackupManifestOnlyFiles      int64    `json:"backup_manifest_only_files,omitempty"`
 }
 
 // BackupStatus is the decoded status endpoint: Idle when the server has
@@ -147,11 +169,13 @@ type BackupCreateOptions struct {
 }
 
 // RestoreOptions is the body of POST /api/v1/backup/restore. Confirm is
-// always sent true by the client; the command layer owns the prompt.
+// always sent true by the client; the command layer owns the prompt. A nil
+// Mode leaves the effective mode to Arc, including its scoped-backup default.
 type RestoreOptions struct {
 	RestoreData     *bool
 	RestoreMetadata *bool
 	RestoreConfig   *bool
+	Mode            *string
 }
 
 // RestoreStarted is the 202 body of POST /api/v1/backup/restore.
@@ -160,6 +184,7 @@ type RestoreStarted struct {
 	Message         string          `json:"message"`
 	BackupID        string          `json:"backup_id"`
 	Status          string          `json:"status"`
+	Mode            string          `json:"mode,omitempty"`
 	RestartRequired bool            `json:"restart_required"`
 	Staged          bool            `json:"staged"`
 	Raw             json.RawMessage `json:"-"`
@@ -276,12 +301,13 @@ func (c *Client) RestoreBackup(ctx context.Context, id string, opts RestoreOptio
 		return nil, err
 	}
 	req := struct {
-		BackupID        string `json:"backup_id"`
-		RestoreData     *bool  `json:"restore_data,omitempty"`
-		RestoreMetadata *bool  `json:"restore_metadata,omitempty"`
-		RestoreConfig   *bool  `json:"restore_config,omitempty"`
-		Confirm         bool   `json:"confirm"`
-	}{id, opts.RestoreData, opts.RestoreMetadata, opts.RestoreConfig, true}
+		BackupID        string  `json:"backup_id"`
+		RestoreData     *bool   `json:"restore_data,omitempty"`
+		RestoreMetadata *bool   `json:"restore_metadata,omitempty"`
+		RestoreConfig   *bool   `json:"restore_config,omitempty"`
+		Mode            *string `json:"mode,omitempty"`
+		Confirm         bool    `json:"confirm"`
+	}{id, opts.RestoreData, opts.RestoreMetadata, opts.RestoreConfig, opts.Mode, true}
 	var out RestoreStarted
 	body, err := c.backupJSON(ctx, http.MethodPost, backupBase+"restore", req, 64<<10, &out)
 	if err != nil {
