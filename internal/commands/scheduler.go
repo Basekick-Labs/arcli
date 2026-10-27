@@ -1,13 +1,12 @@
-// scheduler subcommand: show the state of Arc's background schedulers
-// (continuous queries and retention). On Arc OSS neither scheduler runs
-// (Enterprise feature); this command is the quickest way to explain why
-// a new CQ or policy never fires.
+// scheduler subcommand: inspect and administer Arc's background schedulers
+// for continuous queries and retention.
 package commands
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,7 +19,116 @@ func newSchedulerCmd() *cobra.Command {
 		Use:   "scheduler",
 		Short: "Inspect the continuous-query and retention schedulers",
 	}
-	c.AddCommand(newSchedulerStatusCmd())
+	c.AddCommand(newSchedulerStatusCmd(), newSchedulerCQCmd(), newSchedulerRetentionCmd())
+	return c
+}
+
+func newSchedulerCQCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "cq",
+		Short: "Administer the continuous-query scheduler",
+	}
+	c.AddCommand(newSchedulerCQReloadCmd())
+	return c
+}
+
+func newSchedulerCQReloadCmd() *cobra.Command {
+	var (
+		f            connFlags
+		outputFormat string
+	)
+	c := &cobra.Command{
+		Use:   "reload",
+		Short: "Reload all active continuous queries into the scheduler (admin)",
+		Long: `Reload all active continuous queries into the scheduler
+(POST /api/v1/schedulers/cq/reload). This refreshes scheduled jobs; it does
+not execute a query. Use "arcli cq execute <id|name>" to run one query now.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validObjectFormat(outputFormat) {
+				return fmt.Errorf("invalid --output %q (valid: table, json)", outputFormat)
+			}
+			cli, _, err := f.client(cmd)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := f.ctx(cmd)
+			defer cancel()
+			res, err := cli.ReloadCQScheduler(ctx)
+			if err != nil {
+				return err
+			}
+			if outputFormat == output.FormatJSON {
+				return writeRawJSON(cmd.OutOrStdout(), res.Raw)
+			}
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), clean(res.Message)); err != nil {
+				return err
+			}
+			if res.JobCount != nil {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "scheduled jobs: %d\n", *res.JobCount)
+				return err
+			}
+			return nil
+		},
+	}
+	f.addWithTimeout(c, 10*time.Minute)
+	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	return c
+}
+
+func newSchedulerRetentionCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "retention",
+		Short: "Administer the retention scheduler",
+	}
+	c.AddCommand(newSchedulerRetentionTriggerCmd())
+	return c
+}
+
+func newSchedulerRetentionTriggerCmd() *cobra.Command {
+	var (
+		f            connFlags
+		outputFormat string
+		yes          bool
+	)
+	c := &cobra.Command{
+		Use:   "trigger",
+		Short: "Run all active retention policies now (admin; may delete data)",
+		Long: `Run all active retention policies on this server immediately
+(POST /api/v1/schedulers/retention/trigger). Policies may permanently delete
+old data. This is different from "arcli retention execute <id|name>", which
+runs one selected policy. The server does not provide a dry run for this
+scheduler action, so arcli asks for confirmation; pass --yes for scripts.`,
+		Example: `  arcli scheduler retention trigger
+  arcli scheduler retention trigger --yes -o json`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validObjectFormat(outputFormat) {
+				return fmt.Errorf("invalid --output %q (valid: table, json)", outputFormat)
+			}
+			cli, _, err := f.client(cmd)
+			if err != nil {
+				return err
+			}
+			if err := confirmOrAbort(cmd, "Run every active retention policy now? This may permanently delete data.", yes); err != nil {
+				return err
+			}
+			ctx, cancel := f.ctx(cmd)
+			defer cancel()
+			res, err := cli.TriggerRetentionScheduler(ctx)
+			if err != nil {
+				return err
+			}
+			if outputFormat == output.FormatJSON {
+				return writeRawJSON(cmd.OutOrStdout(), res.Raw)
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), clean(res.Message))
+			return err
+		},
+	}
+	f.addWithTimeout(c, 30*time.Minute)
+	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return c
 }
 

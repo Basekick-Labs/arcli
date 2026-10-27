@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 )
 
 // SchedulerBlock is one of the two entries of GET /api/v1/schedulers/.
@@ -57,6 +59,51 @@ func (c *Client) SchedulerStatus(ctx context.Context) (*SchedulersStatus, error)
 	}
 	if out.CQ.Jobs == nil {
 		out.CQ.Jobs = []CQJob{}
+	}
+	out.Raw = body
+	return &out, nil
+}
+
+// SchedulerActionResult is the response from a scheduler administration
+// endpoint. JobCount is present only for CQ reloads.
+type SchedulerActionResult struct {
+	Message  string          `json:"message"`
+	JobCount *int            `json:"job_count,omitempty"`
+	Raw      json.RawMessage `json:"-"`
+}
+
+// ReloadCQScheduler reloads every active continuous query into the scheduler.
+func (c *Client) ReloadCQScheduler(ctx context.Context) (*SchedulerActionResult, error) {
+	return c.schedulerAction(ctx, "/api/v1/schedulers/cq/reload", "reload CQ scheduler")
+}
+
+// TriggerRetentionScheduler runs every active retention policy immediately.
+func (c *Client) TriggerRetentionScheduler(ctx context.Context) (*SchedulerActionResult, error) {
+	return c.schedulerAction(ctx, "/api/v1/schedulers/retention/trigger", "trigger retention scheduler")
+}
+
+func (c *Client) schedulerAction(ctx context.Context, path, action string) (*SchedulerActionResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.Endpoint+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.setCrossDBHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", action, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, decodeWriteError(resp.StatusCode, body)
+	}
+	var out SchedulerActionResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode %s response: %w", action, err)
 	}
 	out.Raw = body
 	return &out, nil
