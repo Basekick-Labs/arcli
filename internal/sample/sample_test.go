@@ -629,3 +629,32 @@ func TestManifestValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestManifestValidationRejectsUnsafePartKeys(t *testing.T) {
+	for _, key := range []string{
+		`../outside.parquet`,
+		`dataset/../outside.parquet`,
+		`..\outside.parquet`,
+		`/absolute/outside.parquet`,
+	} {
+		t.Run(key, func(t *testing.T) {
+			m := &Manifest{Datasets: map[string]Dataset{
+				"d": {Months: map[string]Month{
+					"2025-12": {Parts: []Part{{Key: key}}},
+				}},
+			}}
+			if err := m.validate(); err == nil {
+				t.Fatalf("validate accepted unsafe part key %q", key)
+			}
+		})
+	}
+
+	valid := &Manifest{Datasets: map[string]Dataset{
+		"citibike": {Months: map[string]Month{
+			"2025-12": {Parts: []Part{{Key: "citibike/2025-12/part-001.parquet"}}},
+		}},
+	}}
+	if err := valid.validate(); err != nil {
+		t.Fatalf("validate rejected a clean relative part key: %v", err)
+	}
+}
