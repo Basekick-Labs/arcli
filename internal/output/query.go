@@ -141,8 +141,8 @@ func formatCell(v any) string {
 		}
 		return "false"
 	case float64:
-		// JSON numbers decode as float64. Integers up to 2^53 round-trip
-		// losslessly; print whole numbers without ".000000" tail.
+		// Callers may supply floats directly. QueryJSON uses json.Number
+		// for wire values so large integers retain their exact precision.
 		if x == float64(int64(x)) {
 			return strconv.FormatInt(int64(x), 10)
 		}

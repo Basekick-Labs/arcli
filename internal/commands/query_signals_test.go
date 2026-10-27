@@ -57,6 +57,55 @@ func TestQueryJSON_ReportsRowCapWithoutFailing(t *testing.T) {
 	}
 }
 
+func TestQueryJSON_PreservesLargeIntegerValues(t *testing.T) {
+	// 2^53+1 cannot be represented exactly as a float64.
+	const exact = "9007199254740993"
+	for _, format := range []string{"json", "csv", "table"} {
+		t.Run(format, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, `{"columns":["n"],"data":[[9007199254740993]],"row_count":1}`)
+			}))
+			defer srv.Close()
+			writeTestConfig(t, srv.URL, "tok")
+
+			out, _, err := execCmd(t, newQueryCmd(), "-o", format, "SELECT n")
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			switch format {
+			case "json":
+				var result struct {
+					Data [][]json.Number `json:"data"`
+				}
+				if err := json.Unmarshal([]byte(out), &result); err != nil {
+					t.Fatalf("decode JSON output: %v", err)
+				}
+				if len(result.Data) != 1 || len(result.Data[0]) != 1 {
+					t.Fatalf("JSON data shape = %v, want one cell", result.Data)
+				}
+				if got := result.Data[0][0].String(); got != exact {
+					t.Errorf("JSON value = %s, want %s", got, exact)
+				}
+			case "csv":
+				records, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+				if err != nil {
+					t.Fatalf("decode CSV output: %v", err)
+				}
+				if len(records) != 2 || len(records[1]) != 1 {
+					t.Fatalf("CSV data shape = %v, want one header and one cell", records)
+				}
+				if got := records[1][0]; got != exact {
+					t.Errorf("CSV value = %s, want %s", got, exact)
+				}
+			case "table":
+				if !strings.Contains(out, exact) {
+					t.Errorf("table output %q does not contain %s", out, exact)
+				}
+			}
+		})
+	}
+}
+
 func TestQuerySignals_SanitizeDiagnosticsPreserveJSON(t *testing.T) {
 	reason := "disk \x1b[2J\r\n\t\u202eread failed\u2069"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
