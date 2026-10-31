@@ -89,6 +89,7 @@ First-time setup:
 		newBackupCmd(),
 		newLogsCmd(),
 		newSampleCmd(),
+		newTieringCmd(),
 	)
 	installCompletions(root)
 	return root
