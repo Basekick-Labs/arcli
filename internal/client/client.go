@@ -110,6 +110,18 @@ func New(cfg Config) (*Client, error) {
 		http: &http.Client{
 			Transport: transport,
 			Timeout:   cfg.Timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Keep net/http's default redirect limit when overriding its policy.
+				if len(via) >= 10 {
+					return fmt.Errorf("stopped after 10 redirects")
+				}
+				// 301/302/303 can turn a write into a GET and report success
+				// without applying it. Leave method-preserving redirects alone.
+				if req.Method != via[0].Method {
+					return fmt.Errorf("refusing redirect from %s to %s", via[0].Method, req.Method)
+				}
+				return nil
+			},
 		},
 	}, nil
 }
