@@ -106,7 +106,7 @@ func awaitOperationStart(ctx context.Context, cli *client.Client, want opStart) 
 
 // waitForOperation polls until the tracked operation leaves "running"
 // and returns the final progress with the raw status body it came in.
-func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expectID string, waitTimeout time.Duration) (*client.BackupProgress, []byte, error) {
+func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expected *client.BackupProgress, waitTimeout time.Duration) (*client.BackupProgress, []byte, error) {
 	deadline := time.Now().Add(waitTimeout)
 	interval := waitPollInterval
 	for {
@@ -120,8 +120,10 @@ func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expe
 			return nil, nil, fmt.Errorf("the operation is no longer tracked by the server (restarted?); check `arcli backup list`")
 		}
 		p := st.Progress
-		if expectID != "" && p.BackupID != expectID {
-			return nil, nil, fmt.Errorf("the server is now tracking a different operation (%s %s); ours has finished — see `arcli backup show %s` or `arcli backup list`", clean(p.Operation), clean(p.BackupID), clean(expectID))
+		// Restoring the same backup again reuses its id, so the kind and
+		// start time are also needed to identify the operation we started.
+		if p.BackupID != expected.BackupID || p.Operation != expected.Operation || !p.StartedAt.Equal(expected.StartedAt) {
+			return nil, nil, fmt.Errorf("the server is now tracking a different operation (%s %s); our result could not be confirmed — see `arcli backup show %s` or `arcli backup list`", clean(p.Operation), clean(p.BackupID), clean(expected.BackupID))
 		}
 		if p.Status != "running" {
 			return p, st.Raw, nil
@@ -322,7 +324,7 @@ nodes receive HTTP 503 before the operation starts.`,
 				return nil
 			}
 			fmt.Fprintf(stderr, "Backup %s started; waiting...\n", clean(id))
-			final, raw, err := waitForOperation(cmd, &f, cli, id, waitTimeout)
+			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout)
 			if err != nil {
 				return err
 			}
@@ -858,7 +860,7 @@ before the restore starts.`,
 				return nil
 			}
 			fmt.Fprintf(stderr, "Restore of %s started; waiting...\n", clean(id))
-			final, raw, err := waitForOperation(cmd, &f, cli, id, waitTimeout)
+			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout)
 			if err != nil {
 				return err
 			}
