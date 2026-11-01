@@ -38,6 +38,45 @@ func TestQueryJSON_ReportsTruncatedResultAfterRendering(t *testing.T) {
 	}
 }
 
+func TestQueryTable_SanitizesTextPreservesExports(t *testing.T) {
+	const column = "column\x1b[2J\u202e\u2069"
+	const cell = "value\x07\r\u009b\u202e\u2069日本語"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"columns": []string{column}, "data": [][]string{{cell}}, "row_count": 1,
+		})
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "")
+	for _, format := range []string{"table", "csv", "json"} {
+		t.Run(format, func(t *testing.T) {
+			out, _, err := execCmd(t, newQueryCmd(), "-o", format, "SELECT * FROM cpu")
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch format {
+			case "table":
+				if strings.ContainsAny(out, "\x07\x1b\r\u009b\u202e\u2069") || !strings.Contains(out, "value日本語") {
+					t.Errorf("unsafe or corrupted table: %q", out)
+				}
+			case "csv":
+				rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+				if err != nil || !reflect.DeepEqual(rows, [][]string{{column}, {cell}}) {
+					t.Errorf("CSV changed query text: %q, error=%v", rows, err)
+				}
+			case "json":
+				var result struct {
+					Columns []string   `json:"columns"`
+					Data    [][]string `json:"data"`
+				}
+				if err := json.Unmarshal([]byte(out), &result); err != nil || !reflect.DeepEqual(result.Columns, []string{column}) || !reflect.DeepEqual(result.Data, [][]string{{cell}}) {
+					t.Errorf("JSON changed query text: %+v, error=%v", result, err)
+				}
+			}
+		})
+	}
+}
+
 func TestQueryJSON_ReportsRowCapWithoutFailing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"columns":["n"],"data":[[1]],"row_count":1,"rows_capped":true,"row_cap":100}`))

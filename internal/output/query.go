@@ -126,7 +126,7 @@ func buildRows(qr *client.QueryResult, limit int) [][]string {
 }
 
 // formatCell converts a cell value (from JSON-decoded `any`) into a
-// terminal-safe string. Special-cases the common types so we don't
+// string for table and CSV output. Special-cases the common types so we don't
 // fall through to "%v" for every cell (which formats float64 as
 // "1.23e+09" and slices/maps awkwardly).
 func formatCell(v any) string {
