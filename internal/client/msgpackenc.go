@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -442,20 +443,58 @@ func convertScalar(v any, where string, isTime bool) (any, error) {
 			}
 			return i, nil
 		}
+		if isTime {
+			i, ok := parseIntegerEpoch(s)
+			if !ok {
+				return nil, fmt.Errorf("%s: timestamp %s is not an integer epoch", where, s)
+			}
+			return i, nil
+		}
 		f, err := x.Float64()
 		if err != nil {
 			return nil, fmt.Errorf("%s: invalid number %s", where, s)
-		}
-		if isTime {
-			if f != math.Trunc(f) || math.Abs(f) >= 1<<63 {
-				return nil, fmt.Errorf("%s: timestamp %s is not an integer epoch", where, s)
-			}
-			return int64(f), nil
 		}
 		return f, nil
 	default:
 		return nil, fmt.Errorf("%s: nested objects and arrays are not valid values", where)
 	}
+}
+
+// parseIntegerEpoch converts a valid JSON number to int64 without rounding
+// or expanding large powers of ten.
+func parseIntegerEpoch(s string) (int64, bool) {
+	mantissa, exponentText := s, "0"
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mantissa, exponentText = s[:i], s[i+1:]
+	}
+	negative := strings.HasPrefix(mantissa, "-")
+	digits := strings.TrimPrefix(mantissa, "-")
+	fractionDigits := 0
+	if i := strings.IndexByte(digits, '.'); i >= 0 {
+		fractionDigits = len(digits) - i - 1
+		digits = digits[:i] + digits[i+1:]
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return 0, true
+	}
+	exponent, err := strconv.ParseInt(exponentText, 10, 64)
+	// A larger exponent cannot yield an int64 from this many input digits.
+	// Bound it before arithmetic and before allocating any zero padding.
+	if err != nil || exponent > int64(len(s))+19 || exponent < -int64(len(s)) {
+		return 0, false
+	}
+	significant := strings.TrimRight(digits, "0")
+	scale := exponent - int64(fractionDigits) + int64(len(digits)-len(significant))
+	if scale < 0 || int64(len(significant))+scale > 19 {
+		return 0, false
+	}
+	integer := significant + strings.Repeat("0", int(scale))
+	if negative {
+		integer = "-" + integer
+	}
+	n, err := strconv.ParseInt(integer, 10, 64)
+	return n, err == nil
 }
 
 // MsgPackFirstByteOK reports whether b can begin a document the server
