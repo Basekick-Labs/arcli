@@ -251,6 +251,9 @@ func convertItem(m map[string]any, where string, sum *MsgPackDocSummary) (any, e
 		outCols := make(map[string]any, len(cm))
 		n := -1
 		for col, v := range cm {
+			if col != "time" && strings.EqualFold(col, "time") {
+				return nil, fmt.Errorf(`%s: column name %q is reserved for the timestamp; use "time"`, where, col)
+			}
 			arr, ok := v.([]any)
 			if !ok {
 				return nil, fmt.Errorf("%s: column %q must be an array (the server would drop it)", where, col)
@@ -285,6 +288,9 @@ func convertItem(m map[string]any, where string, sum *MsgPackDocSummary) (any, e
 	}
 	outFields := make(map[string]any, len(fields))
 	for k, v := range fields {
+		if strings.EqualFold(k, "time") {
+			return nil, fmt.Errorf(`%s: field name %q is reserved for the timestamp; use "t" for row timestamps`, where, k)
+		}
 		cv, err := convertScalar(v, fmt.Sprintf("%s: field %q", where, k), false)
 		if err != nil {
 			return nil, err
@@ -316,6 +322,9 @@ func convertItem(m map[string]any, where string, sum *MsgPackDocSummary) (any, e
 		}
 		outTags := make(map[string]any, len(tm))
 		for k, v := range tm {
+			if strings.EqualFold(k, "time") {
+				return nil, fmt.Errorf(`%s: tag name %q is reserved for the timestamp`, where, k)
+			}
 			switch tv := v.(type) {
 			case string:
 				outTags[k] = tv
