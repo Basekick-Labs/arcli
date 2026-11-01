@@ -396,10 +396,12 @@ func convertColumn(col string, arr []any, where string) ([]any, error) {
 	if !isTime && hasInt && hasFloat {
 		for i, v := range out {
 			if iv, ok := v.(int64); ok {
-				if iv > 1<<53 || iv < -(1<<53) {
+				f := float64(iv)
+				// MaxInt64 rounds to 2^63; reject that before converting back.
+				if f >= 1<<63 || int64(f) != iv {
 					return nil, fmt.Errorf("%s: column %q mixes integers and floats and %d cannot be represented exactly as a float", where, col, iv)
 				}
-				out[i] = float64(iv)
+				out[i] = f
 			}
 		}
 	}
