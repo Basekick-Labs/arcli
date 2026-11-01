@@ -173,6 +173,11 @@ func JSONToMsgPack(r io.Reader) ([]byte, MsgPackDocSummary, error) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, sum, fmt.Errorf("invalid JSON: trailing content after the document")
 	}
+	// LimitReader also reports EOF after consuming its bound. Count
+	// trailing whitespace so that EOF cannot hide oversize input.
+	if cr.n > JSONDocMaxBytes {
+		return nil, sum, tooBig()
+	}
 	converted, err := convertTop(root, &sum)
 	if err != nil {
 		return nil, sum, err

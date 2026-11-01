@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"strings"
@@ -91,6 +92,36 @@ func TestJSONToMsgPack_RowBatchAndTags(t *testing.T) {
 	// Top-level array of items is accepted too.
 	if _, s2, err := JSONToMsgPack(strings.NewReader(`[{"m":"a","fields":{"x":1}},{"m":"b","fields":{"y":2}}]`)); err != nil || s2.Items != 2 {
 		t.Errorf("array: err=%v sum=%+v", err, s2)
+	}
+}
+
+func TestJSONToMsgPack_TrailingWhitespaceSizeLimit(t *testing.T) {
+	const document = `{"m":"cpu","fields":{"x":1}}`
+	padding := strings.Repeat(" ", JSONDocMaxBytes-len(document))
+	for _, tc := range []struct {
+		name, suffix string
+		wantError    bool
+	}{
+		{"at limit", "", false},
+		{"one byte over", " ", true},
+		{"trailing document beyond limit", " {}", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := io.MultiReader(strings.NewReader(document), strings.NewReader(padding), strings.NewReader(tc.suffix))
+			out, sum, err := JSONToMsgPack(in)
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "JSON document exceeds") {
+					t.Fatalf("error = %v, want size-limit error", err)
+				}
+				if out != nil || sum != (MsgPackDocSummary{}) {
+					t.Errorf("oversize input produced output: %x, summary: %+v", out, sum)
+				}
+				return
+			}
+			if err != nil || len(out) == 0 || sum.Items != 1 || sum.Rows != 1 {
+				t.Errorf("input at limit: output=%x summary=%+v error=%v", out, sum, err)
+			}
+		})
 	}
 }
 
