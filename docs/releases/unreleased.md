@@ -25,3 +25,4 @@ License installation and key/file configuration remain server responsibilities. 
 - Preserve connection profile names when reading and writing config files. Mixed-case names remain selectable, dots are treated literally, and profiles whose names differ only in case no longer overwrite each other.
 - Report token-secret output errors from `auth token create` and `rotate`. Rotation still attempts an explicitly requested `--save` when stdout fails, including in JSON mode, and reports both errors if output and config saving fail.
 - Report stdin read errors from `config create/update --token-stdin` instead of saving a partial token or replacing the error with an empty-input message.
+- Reject day-based token expiries above 106751 days before creating or updating a token. These values could overflow to a negative or incorrectly short duration.
