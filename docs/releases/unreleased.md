@@ -28,3 +28,4 @@ License installation and key/file configuration remain server responsibilities. 
 - Reject day-based token expiries above 106751 days before creating or updating a token. These values could overflow to a negative or incorrectly short duration.
 - Strip terminal control characters and bidi overrides from table headers and cells, including query results. Printable Unicode and multiline cells are retained, and rendering leaves source values available unchanged for JSON and CSV exports.
 - Track backup and restore operations by their kind and start time as well as backup ID when using `--wait`, so a later restore of the same backup cannot supply the result of the operation being awaited.
+- Honour `compaction trigger --wait-timeout` during status requests and poll delays, even when the request timeout or poll interval is longer than the remaining wait budget.

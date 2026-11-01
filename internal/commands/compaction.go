@@ -502,11 +502,13 @@ var (
 // deadline in either case, give up once the server has sat idle below
 // the expected id for a few polls.
 func waitForCycle(parent context.Context, cli *client.Client, cycleID int64, reqTimeout, waitTimeout time.Duration) (*client.CompactionStats, error) {
-	deadline := time.Now().Add(waitTimeout)
+	// The overall deadline must also bound in-flight requests and poll delays.
+	waitCtx, stopWaiting := context.WithTimeout(parent, waitTimeout)
+	defer stopWaiting()
 	interval := waitPollInterval
 	idleBelow := 0
 	for {
-		ctx, cancel := context.WithTimeout(parent, reqTimeout)
+		ctx, cancel := context.WithTimeout(waitCtx, reqTimeout)
 		st, err := cli.CompactionStats(ctx)
 		cancel()
 		if err != nil {
@@ -523,15 +525,15 @@ func waitForCycle(parent context.Context, cli *client.Client, cycleID int64, req
 		} else {
 			idleBelow = 0
 		}
-		if time.Now().After(deadline) {
-			if st.CycleRunning {
-				return nil, fmt.Errorf("cycle %d still running after %s; it continues on the server", st.CurrentCycleID, waitTimeout)
-			}
-			return nil, fmt.Errorf("gave up after %s waiting for cycle %d (server at cycle %d, idle)", waitTimeout, cycleID, st.CurrentCycleID)
-		}
 		select {
-		case <-parent.Done():
-			return nil, parent.Err()
+		case <-waitCtx.Done():
+			if parent.Err() != nil {
+				return nil, parent.Err()
+			}
+			if st.CycleRunning {
+				return nil, fmt.Errorf("cycle %d still running after %s; it continues on the server: %w", st.CurrentCycleID, waitTimeout, waitCtx.Err())
+			}
+			return nil, fmt.Errorf("gave up after %s waiting for cycle %d (server at cycle %d, idle): %w", waitTimeout, cycleID, st.CurrentCycleID, waitCtx.Err())
 		case <-time.After(interval):
 		}
 		if interval < waitPollMax {
