@@ -22,3 +22,4 @@ License installation and key/file configuration remain server responsibilities. 
 - Reject reserved `time` field and tag names, including letter-case variants, before sending JSON writes. Timestamp columns must use lowercase `time`; row timestamps continue to use `t`. This prevents invalid names from causing a partially applied batch on the server.
 - Enforce the 64 MiB JSON write input limit when a document ends with whitespace. Oversize input is rejected before upload, including when the bounded read would hide further trailing content.
 - Reject HTTP redirects that change the request method, preventing writes and database deletions from reporting success after being redirected to a GET request.
+- Preserve connection profile names when reading and writing config files. Mixed-case names remain selectable, dots are treated literally, and profiles whose names differ only in case no longer overwrite each other.
