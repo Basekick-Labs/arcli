@@ -3,7 +3,9 @@ package commands
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -118,5 +120,46 @@ func TestClusterFiles_DefaultRequestIsBounded(t *testing.T) {
 	}
 	if !strings.Contains(out, "files on this page: 0") {
 		t.Errorf("empty page output = %q", out)
+	}
+}
+
+type clusterFilesFailWriter struct {
+	prefix string
+	err    error
+}
+
+func (w clusterFilesFailWriter) Write(p []byte) (int, error) {
+	if strings.HasPrefix(string(p), w.prefix) {
+		return 0, w.err
+	}
+	return len(p), nil
+}
+
+func TestClusterFiles_PropagatesPaginationOutputErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"files":[],"total":0,"next_cursor":"next.parquet"}`)
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "token")
+	for _, format := range []string{"table", "csv"} {
+		for _, prefix := range []string{"files on this page:", "next cursor:"} {
+			t.Run(format+"/"+prefix, func(t *testing.T) {
+				want := errors.New("pagination output failed")
+				cmd := newClusterFilesCmd()
+				cmd.SilenceUsage, cmd.SilenceErrors = true, true
+				cmd.SetArgs([]string{"-o", format})
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+				writer := clusterFilesFailWriter{prefix: prefix, err: want}
+				if format == "csv" {
+					cmd.SetErr(writer)
+				} else {
+					cmd.SetOut(writer)
+				}
+				if err := cmd.Execute(); !errors.Is(err, want) {
+					t.Fatalf("error = %v, want %v", err, want)
+				}
+			})
+		}
 	}
 }

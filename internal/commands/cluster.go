@@ -168,9 +168,12 @@ page count and continuation cursor to stderr so stdout remains valid CSV.`,
 			if outputFormat == output.FormatCSV {
 				w = cmd.ErrOrStderr()
 			}
-			fmt.Fprintf(w, "files on this page: %d\n", page.Total)
+			if _, err := fmt.Fprintf(w, "files on this page: %d\n", page.Total); err != nil {
+				return err
+			}
 			if page.NextCursor != "" {
-				fmt.Fprintf(w, "next cursor: %s\n", clean(page.NextCursor))
+				_, err := fmt.Fprintf(w, "next cursor: %s\n", clean(page.NextCursor))
+				return err
 			}
 			return nil
 		},
