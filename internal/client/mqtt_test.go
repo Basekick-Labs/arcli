@@ -165,3 +165,36 @@ func TestMQTTClientPreservesDisabledPermissionAndNotFoundErrors(t *testing.T) {
 		t.Errorf("missing route error = %v", err)
 	}
 }
+
+func TestMQTTClientRejectsDotSegmentIDsBeforeRequest(t *testing.T) {
+	for _, id := range []string{".", ".."} {
+		for _, action := range []string{"get", "update", "delete", "action", "stats"} {
+			t.Run(id+"/"+action, func(t *testing.T) {
+				var paths []string
+				mux := http.NewServeMux()
+				mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					_, _ = w.Write([]byte(`{"success":true,"subscription":{"id":"other"},"stats":{},"message":"done"}`))
+				})
+				cli, _ := newAuthTestClient(t, mux.ServeHTTP)
+				ctx := context.Background()
+				var err error
+				switch action {
+				case "get":
+					_, err = cli.GetMQTTSubscription(ctx, id)
+				case "update":
+					_, err = cli.UpdateMQTTSubscription(ctx, id, MQTTSubscriptionUpdateRequest{})
+				case "delete":
+					err = cli.DeleteMQTTSubscription(ctx, id)
+				case "action":
+					_, err = cli.MQTTSubscriptionAction(ctx, id, "start")
+				case "stats":
+					_, err = cli.MQTTSubscriptionStats(ctx, id)
+				}
+				if err == nil || len(paths) != 0 {
+					t.Fatalf("error=%v, request paths=%v; want rejected ID without requests", err, paths)
+				}
+			})
+		}
+	}
+}

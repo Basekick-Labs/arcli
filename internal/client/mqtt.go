@@ -277,5 +277,8 @@ func validateMQTTSubscriptionID(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("subscription id is required")
 	}
+	if id == "." || id == ".." {
+		return fmt.Errorf("subscription id %q is not valid", id)
+	}
 	return nil
 }
