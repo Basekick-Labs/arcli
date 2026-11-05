@@ -82,14 +82,14 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 		{
 			name:   "disabled scheduler",
 			status: http.StatusServiceUnavailable,
-			body:   `{"error":"Retention scheduler is not running - enterprise license required"}`,
+			body:   `{"error":"Retention scheduler is not running"}`,
 			args:   []string{"--yes"},
 			newCmd: newSchedulerRetentionTriggerCmd,
-			want:   "enterprise license required",
+			want:   "HTTP 503",
 		},
 		{
 			name:   "role gate",
-			status: http.StatusInternalServerError,
+			status: http.StatusConflict,
 			body:   `{"error":"Retention trigger failed: retention: node role is not primary writer"}`,
 			args:   []string{"--yes"},
 			newCmd: newSchedulerRetentionTriggerCmd,

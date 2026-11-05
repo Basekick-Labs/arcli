@@ -1,6 +1,6 @@
 ### Added
 
-- `arcli scheduler cq reload` refreshes all active continuous queries, and `arcli scheduler retention trigger` runs all active retention policies with a confirmation prompt. Both preserve Arc's admin, licence, disabled-scheduler, and role-gating errors. Closes [arcli#33](https://github.com/Basekick-Labs/arcli/issues/33).
+- `arcli scheduler cq reload` refreshes all active continuous queries, and `arcli scheduler retention trigger` runs all active retention policies with a confirmation prompt. Both preserve Arc's error status and message, including HTTP 403 for missing scheduler entitlement, 503 for a licensed but unavailable scheduler, and 409 for retention role restrictions or an already-running operation. Closes [arcli#33](https://github.com/Basekick-Labs/arcli/issues/33).
 
 - `arcli license status` inspects the public `/health` license block on standalone and clustered Arc deployments, with table and JSON output. Reports tier, server status, source, and optional expiry, days remaining, and site-license state. Table expiry uses UTC RFC3339 in whole seconds, like every other arcli timestamp (`--time-output rfc3339nano` shows fractional seconds); JSON keeps the fractional seconds.
 - Absent/null license blocks succeed as normal OSS behavior and produce `{"configured":false,"license":null}` in JSON. Present licenses produce `{"configured":true,"license":{...}}`, preserving active, expired, invalid, unlicensed, and unknown server statuses. Optional absent/null fields are omitted; explicit zero days and false site-license values are retained.

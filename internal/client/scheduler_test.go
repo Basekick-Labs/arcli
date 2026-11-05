@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -35,53 +36,40 @@ func TestSchedulerActions_Success(t *testing.T) {
 }
 
 func TestSchedulerActions_PreserveDistinctArcErrors(t *testing.T) {
-	cases := []struct {
-		name   string
-		status int
-		body   string
-		want   string
-		call   func(*Client) error
+	actions := []struct {
+		name string
+		call func(*Client) error
 	}{
-		{
-			name:   "admin permission",
-			status: http.StatusForbidden,
-			body:   `{"error":"Permission denied: admin permission required"}`,
-			want:   "admin permission required",
-			call:   func(c *Client) error { _, err := c.ReloadCQScheduler(context.Background()); return err },
-		},
-		{
-			name:   "disabled CQ scheduler",
-			status: http.StatusServiceUnavailable,
-			body:   `{"error":"CQ scheduler is not running - enterprise license required"}`,
-			want:   "CQ scheduler is not running",
-			call:   func(c *Client) error { _, err := c.ReloadCQScheduler(context.Background()); return err },
-		},
-		{
-			name:   "disabled retention scheduler",
-			status: http.StatusServiceUnavailable,
-			body:   `{"error":"Retention scheduler is not running - enterprise license required"}`,
-			want:   "Retention scheduler is not running",
-			call:   func(c *Client) error { _, err := c.TriggerRetentionScheduler(context.Background()); return err },
-		},
-		{
-			name:   "retention role gate",
-			status: http.StatusInternalServerError,
-			body:   `{"error":"Retention trigger failed: retention: node role is not primary writer"}`,
-			want:   "not primary writer",
-			call:   func(c *Client) error { _, err := c.TriggerRetentionScheduler(context.Background()); return err },
-		},
+		{"CQ reload", func(c *Client) error { _, err := c.ReloadCQScheduler(context.Background()); return err }},
+		{"retention trigger", func(c *Client) error { _, err := c.TriggerRetentionScheduler(context.Background()); return err }},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(tc.body))
+	cases := []struct {
+		name    string
+		status  int
+		message string
+	}{
+		{"admin permission", http.StatusForbidden, "Permission denied: admin permission required"},
+		{"missing entitlement", http.StatusForbidden, "Enterprise license required for scheduler controls"},
+		{"licensed scheduler unavailable", http.StatusServiceUnavailable, "Scheduler is not running"},
+		{"retention role restriction", http.StatusConflict, "Retention trigger failed: retention: node role is not primary writer"},
+		{"already running", http.StatusConflict, "Scheduler operation is already running"},
+	}
+	for _, action := range actions {
+		for _, tc := range cases {
+			t.Run(action.name+"/"+tc.name, func(t *testing.T) {
+				cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": tc.message})
+				})
+				err := action.call(cli)
+				var he *HTTPError
+				if !errors.As(err, &he) {
+					t.Fatalf("error type = %T, want *HTTPError: %v", err, err)
+				}
+				if he.Status != tc.status || he.Message != tc.message {
+					t.Errorf("HTTPError = %+v, want status %d and message %q", he, tc.status, tc.message)
+				}
 			})
-			err := tc.call(cli)
-			var he *HTTPError
-			if !errors.As(err, &he) || he.Status != tc.status || !strings.Contains(he.Message, tc.want) {
-				t.Errorf("error=%v", err)
-			}
-		})
+		}
 	}
 }
