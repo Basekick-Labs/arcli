@@ -126,9 +126,10 @@ func newClusterFilesCmd() *cobra.Command {
 		database     string
 		cursor       string
 		limit        int
+		noHeader     bool
 	)
 	c := &cobra.Command{
-		Use:   "files",
+		Use:   "file",
 		Short: "Page through the cluster file manifest",
 		Long: `List one bounded page from the cluster file manifest (GET /api/v1/cluster/files).
 
@@ -136,10 +137,12 @@ Each request is paginated; use --cursor with the previous page's next_cursor
 to continue. The server response must include next_cursor; older Arc versions
 without pagination support are rejected instead of treating a full manifest
 as one page. JSON preserves files, total, and next_cursor. CSV writes the
-page count and continuation cursor to stderr so stdout remains valid CSV.`,
-		Example: `  arcli cluster files
-  arcli cluster files --database metrics --limit 500 -o json
-  arcli cluster files --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
+page count and continuation cursor to stderr so stdout remains valid CSV.
+Table and CSV timestamps use UTC RFC3339Nano with fractional seconds.
+CSV preserves original field values. Use --no-header to omit column headers.`,
+		Example: `  arcli cluster file
+  arcli cluster file --database metrics --limit 500 -o json
+  arcli cluster file --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -161,7 +164,7 @@ page count and continuation cursor to stderr so stdout remains valid CSV.`,
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), page.Raw)
 			}
-			if err := renderClusterFiles(cmd.OutOrStdout(), page.Files, outputFormat == output.FormatCSV); err != nil {
+			if err := renderClusterFiles(cmd.OutOrStdout(), page.Files, noHeader, outputFormat == output.FormatCSV); err != nil {
 				return err
 			}
 			w := cmd.OutOrStdout()
@@ -180,6 +183,7 @@ page count and continuation cursor to stderr so stdout remains valid CSV.`,
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
+	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().StringVar(&database, "database", "", "filter by database")
 	c.Flags().IntVar(&limit, "limit", client.ClusterFilesDefaultLimit, "maximum files in this page (1-10000)")
 	c.Flags().StringVar(&cursor, "cursor", "", "continue after a path returned as next_cursor")
@@ -192,18 +196,20 @@ var clusterFileCSVHeaders = []string{"path", "database", "measurement", "tier", 
 
 // renderClusterFiles preserves the server's manifest order, which is also
 // the order used by its path-based continuation cursor.
-func renderClusterFiles(w io.Writer, files []client.ClusterFile, asCSV bool) error {
+func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV bool) error {
 	if asCSV {
 		cw := csv.NewWriter(w)
-		if err := cw.Write(clusterFileCSVHeaders); err != nil {
-			return err
+		if !noHeader {
+			if err := cw.Write(clusterFileCSVHeaders); err != nil {
+				return err
+			}
 		}
 		for _, file := range files {
 			row := []string{
-				clean(file.Path), clean(file.Database), clean(file.Measurement), clean(file.Tier),
-				strconv.FormatInt(file.SizeBytes, 10), clean(file.SHA256), clusterFileTime(file.PartitionTime, ""),
-				clean(file.OriginNodeID), clusterFileTime(file.CreatedAt, ""), strconv.FormatUint(file.LSN, 10),
-				strconv.FormatBool(file.CoverageInherited), clean(file.CompactionJob),
+				file.Path, file.Database, file.Measurement, file.Tier,
+				strconv.FormatInt(file.SizeBytes, 10), file.SHA256, clusterFileTime(file.PartitionTime, ""),
+				file.OriginNodeID, clusterFileTime(file.CreatedAt, ""), strconv.FormatUint(file.LSN, 10),
+				strconv.FormatBool(file.CoverageInherited), file.CompactionJob,
 			}
 			if err := cw.Write(row); err != nil {
 				return err
@@ -219,7 +225,11 @@ func renderClusterFiles(w io.Writer, files []client.ClusterFile, asCSV bool) err
 			clusterFileTime(file.PartitionTime, "-"), clean(file.OriginNodeID), clean(file.SHA256),
 		})
 	}
-	return output.Table(w, clusterFileTableHeaders, rows)
+	headers := clusterFileTableHeaders
+	if noHeader {
+		headers = nil
+	}
+	return output.Table(w, headers, rows)
 }
 
 func clusterFileTime(t time.Time, zero string) string {
