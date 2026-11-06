@@ -35,7 +35,7 @@ func TestRBACOrganizationListJSON(t *testing.T) {
 	writeTestConfig(t, srv.URL, "admin-secret")
 
 	root := NewRoot(BuildInfo{Version: "test"})
-	out, stderr, err := execCmd(t, root, "rbac", "organizations", "list", "--output", "json")
+	out, stderr, err := execCmd(t, root, "rbac", "organization", "list", "--output", "json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestRBACOrganizationUpdateJSON(t *testing.T) {
 	writeTestConfig(t, srv.URL, "admin-secret")
 
 	root := NewRoot(BuildInfo{Version: "test"})
-	out, stderr, err := execCmd(t, root, "rbac", "organizations", "update", "2", "--enabled=false", "--output", "json")
+	out, stderr, err := execCmd(t, root, "rbac", "organization", "update", "2", "--enabled=false", "--output", "json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestRBACTokenTeamsResolvesExactTokenName(t *testing.T) {
 	writeTestConfig(t, srv.URL, "admin-secret")
 
 	root := NewRoot(BuildInfo{Version: "test"})
-	out, stderr, err := execCmd(t, root, "rbac", "tokens", "teams", "list", "release", "--output", "csv")
+	out, stderr, err := execCmd(t, root, "rbac", "token", "team", "list", "release", "--output", "csv")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,11 +140,11 @@ func TestRBACDestructiveCommandsNeedConfirmation(t *testing.T) {
 		args             []string
 		wantLookupBefore bool
 	}{
-		{"organization", []string{"rbac", "organizations", "delete", "2"}, false},
-		{"team", []string{"rbac", "teams", "delete", "3"}, false},
-		{"role", []string{"rbac", "roles", "delete", "4"}, false},
-		{"measurement permission", []string{"rbac", "measurements", "delete", "5"}, false},
-		{"token membership", []string{"rbac", "tokens", "teams", "remove", "8", "3"}, true},
+		{"organization", []string{"rbac", "organization", "delete", "2"}, false},
+		{"team", []string{"rbac", "team", "delete", "3"}, false},
+		{"role", []string{"rbac", "role", "delete", "4"}, false},
+		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, false},
+		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,11 +185,11 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"organization", []string{"rbac", "organizations", "delete", "2"}, http.MethodDelete, "/api/v1/rbac/organizations/2"},
-		{"team", []string{"rbac", "teams", "delete", "3"}, http.MethodDelete, "/api/v1/rbac/teams/3"},
-		{"role", []string{"rbac", "roles", "delete", "4"}, http.MethodDelete, "/api/v1/rbac/roles/4"},
-		{"measurement permission", []string{"rbac", "measurements", "delete", "5"}, http.MethodDelete, "/api/v1/rbac/measurement-permissions/5"},
-		{"token membership", []string{"rbac", "tokens", "teams", "remove", "8", "3"}, http.MethodDelete, "/api/v1/auth/tokens/8/teams/3"},
+		{"organization", []string{"rbac", "organization", "delete", "2"}, http.MethodDelete, "/api/v1/rbac/organizations/2"},
+		{"team", []string{"rbac", "team", "delete", "3"}, http.MethodDelete, "/api/v1/rbac/teams/3"},
+		{"role", []string{"rbac", "role", "delete", "4"}, http.MethodDelete, "/api/v1/rbac/roles/4"},
+		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, http.MethodDelete, "/api/v1/rbac/measurement-permissions/5"},
+		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, http.MethodDelete, "/api/v1/auth/tokens/8/teams/3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -231,8 +231,46 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 func TestRBACInvalidIDDoesNotReachServer(t *testing.T) {
 	writeTestConfig(t, unreachable, "admin")
 	root := NewRoot(BuildInfo{Version: "test"})
-	_, _, err := execCmd(t, root, "rbac", "teams", "list", "0")
+	_, _, err := execCmd(t, root, "rbac", "team", "list", "0")
 	if err == nil || !strings.Contains(err.Error(), "organization id must be a positive integer") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRBACSingularResources(t *testing.T) {
+	for _, resource := range []string{"organization", "team", "role", "measurement", "token team"} {
+		args := append([]string{"rbac"}, strings.Fields(resource)...)
+		args = append(args, "list")
+		cmd, _, err := NewRoot(BuildInfo{}).Find(args)
+		if err != nil || cmd.CommandPath() != "arcli "+strings.Join(args, " ") {
+			t.Fatalf("%v: %v %v", args, cmd, err)
+		}
+	}
+	for _, old := range []string{"organizations", "teams", "roles", "measurements", "tokens"} {
+		for _, cmd := range newRBACCmd().Commands() {
+			if cmd.Name() == old {
+				t.Errorf("legacy command %s registered", old)
+			}
+		}
+	}
+}
+
+func TestRBACTimestampPrecision(t *testing.T) {
+	const stamp = "2026-10-27T03:04:05.123456789+02:30"
+	const utc = "2026-10-27T00:34:05.123456789Z"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"organizations":[{"id":2,"name":"test","enabled":true,"created_at":"` + stamp + `","updated_at":"` + stamp + `"}]}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin-secret")
+	for _, format := range []string{"table", "csv", "json"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "rbac", "organization", "list", "-o", format)
+		want := utc
+		if format == "json" {
+			want = stamp
+		}
+		if err != nil || !strings.Contains(out, want) {
+			t.Errorf("%s: out=%q err=%v", format, out, err)
+		}
 	}
 }

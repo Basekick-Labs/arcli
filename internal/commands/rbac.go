@@ -19,7 +19,7 @@ func newRBACCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "rbac",
 		Short: "Administer Arc Enterprise RBAC",
-		Long:  "Administer organizations, teams, roles, measurement permissions, and token memberships. All commands require an admin token. Arc Enterprise RBAC is required for organization, team, role, and measurement-permission operations and for adding token memberships; listing or removing memberships also works when an existing RBAC configuration remains after a licence lapse.\n\nToken references accept a numeric id or an exact token name. IDs are tried first, so a token named with digits must be addressed by id.",
+		Long:  "Administer organizations, teams, roles, measurement permissions, and token memberships. All commands require an admin token. Arc Enterprise RBAC is required for organization, team, role, and measurement-permission operations and for adding token memberships; listing or removing memberships also works when an existing RBAC configuration remains after a licence lapse.\n\nTable and CSV timestamps use UTC RFC3339Nano with fractional seconds. JSON retains timestamp precision.\n\nToken references accept a numeric id or an exact token name. IDs are tried first, so a token named with digits must be addressed by id.",
 	}
 	c.AddCommand(
 		newRBACOrganizationsCmd(),
@@ -122,7 +122,7 @@ func rbacTime(t time.Time) string {
 	if t.IsZero() {
 		return "never"
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 func sortOrganizations(items []client.Organization) {
@@ -142,7 +142,7 @@ func sortMeasurementPermissions(items []client.MeasurementPermission) {
 }
 
 func newRBACOrganizationsCmd() *cobra.Command {
-	c := &cobra.Command{Use: "organizations", Short: "Manage RBAC organizations"}
+	c := &cobra.Command{Use: "organization", Short: "Manage RBAC organizations"}
 	c.AddCommand(
 		newRBACOrganizationListCmd(),
 		newRBACOrganizationShowCmd(),
@@ -337,7 +337,7 @@ func newRBACOrganizationDeleteCmd() *cobra.Command {
 }
 
 func newRBACTeamsCmd() *cobra.Command {
-	c := &cobra.Command{Use: "teams", Short: "Manage organization teams"}
+	c := &cobra.Command{Use: "team", Short: "Manage organization teams"}
 	c.AddCommand(newRBACTeamListCmd(), newRBACTeamShowCmd(), newRBACTeamCreateCmd(), newRBACTeamUpdateCmd(), newRBACTeamDeleteCmd())
 	return c
 }
@@ -536,7 +536,7 @@ func newRBACTeamDeleteCmd() *cobra.Command {
 }
 
 func newRBACRolesCmd() *cobra.Command {
-	c := &cobra.Command{Use: "roles", Short: "Manage team roles"}
+	c := &cobra.Command{Use: "role", Short: "Manage team roles"}
 	c.AddCommand(newRBACRoleListCmd(), newRBACRoleShowCmd(), newRBACRoleCreateCmd(), newRBACRoleUpdateCmd(), newRBACRoleDeleteCmd())
 	return c
 }
@@ -734,7 +734,7 @@ func newRBACRoleDeleteCmd() *cobra.Command {
 }
 
 func newRBACMeasurementsCmd() *cobra.Command {
-	c := &cobra.Command{Use: "measurements", Short: "Manage role measurement permissions"}
+	c := &cobra.Command{Use: "measurement", Short: "Manage role measurement permissions"}
 	c.AddCommand(newRBACMeasurementListCmd(), newRBACMeasurementCreateCmd(), newRBACMeasurementDeleteCmd())
 	return c
 }
@@ -854,13 +854,13 @@ func newRBACMeasurementDeleteCmd() *cobra.Command {
 }
 
 func newRBACTokensCmd() *cobra.Command {
-	c := &cobra.Command{Use: "tokens", Short: "Manage token RBAC memberships"}
+	c := &cobra.Command{Use: "token", Short: "Manage token RBAC memberships"}
 	c.AddCommand(newRBACTokenTeamsCmd())
 	return c
 }
 
 func newRBACTokenTeamsCmd() *cobra.Command {
-	c := &cobra.Command{Use: "teams", Short: "Manage a token's team memberships"}
+	c := &cobra.Command{Use: "team", Short: "Manage a token's team memberships"}
 	c.AddCommand(newRBACTokenTeamsListCmd(), newRBACTokenTeamsAddCmd(), newRBACTokenTeamsRemoveCmd())
 	return c
 }
