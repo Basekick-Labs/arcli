@@ -1,4 +1,4 @@
-// queries exposes Arc Enterprise query-management endpoints.
+// admin query exposes Arc Enterprise query-management endpoints.
 package commands
 
 import (
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -13,12 +14,28 @@ import (
 	"github.com/basekick-labs/arcli/internal/output"
 )
 
+func newAdminCmd() *cobra.Command {
+	c := &cobra.Command{Use: "admin", Short: "Administer Arc Enterprise features"}
+	c.AddCommand(newQueriesCmd())
+	return c
+}
+
+func managedQueryTime(t time.Time, zero string) string {
+	if t.IsZero() {
+		return zero
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
 func newQueriesCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "queries",
+		Use:   "query",
 		Short: "Inspect and manage running and completed queries (Arc Enterprise)",
 		Long: `Inspect and manage Arc query activity. These endpoints require an admin
 token and an Arc Enterprise licence with the query_management feature enabled.
+
+Table and CSV timestamps use UTC RFC3339Nano with fractional seconds.
+JSON preserves the original response. CSV retains multiline SQL unchanged.
 
 Cancelling a query prompts for confirmation unless --yes is supplied.`,
 	}
@@ -39,9 +56,9 @@ func newQueriesActiveCmd() *cobra.Command {
 
 Output includes the query id, status, token, client address, start time,
 duration, and SQL. Supports table, JSON, and CSV output.`,
-		Example: `  arcli queries active
-  arcli queries active -o json
-  arcli queries active -o csv`,
+		Example: `  arcli admin query active
+  arcli admin query active -o json
+  arcli admin query active -o csv`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -80,8 +97,8 @@ func newQueriesHistoryCmd() *cobra.Command {
 
 Arc returns the most recent 50 queries by default. Use --limit to request
 between 1 and 1000 entries. Supports table, JSON, and CSV output.`,
-		Example: `  arcli queries history
-  arcli queries history --limit 200 -o csv`,
+		Example: `  arcli admin query history
+  arcli admin query history --limit 200 -o csv`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -123,7 +140,7 @@ func newQueriesShowCmd() *cobra.Command {
 		Use:     "show <query-id>",
 		Short:   "Show query details",
 		Long:    "Show full metadata for a query (GET /api/v1/queries/:id). Supports table and JSON output.",
-		Example: "  arcli queries show 8f14e45fceea -o json",
+		Example: "  arcli admin query show 8f14e45fceea -o json",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -163,7 +180,7 @@ func newQueriesCancelCmd() *cobra.Command {
 		Use:     "cancel <query-id>",
 		Short:   "Cancel an active query",
 		Long:    "Cancel an active query (DELETE /api/v1/queries/:id). Prompts before sending the request unless --yes is supplied.",
-		Example: "  arcli queries cancel 8f14e45fceea --yes",
+		Example: "  arcli admin query cancel 8f14e45fceea --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -215,7 +232,7 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 			}
 		}
 		for _, query := range list.Queries {
-			if err := w.Write(managedQueryListRow(query, history)); err != nil {
+			if err := w.Write(managedQueryListRow(query, history, false)); err != nil {
 				return err
 			}
 		}
@@ -236,7 +253,7 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 	}
 	rows := make([][]string, 0, len(list.Queries))
 	for _, query := range list.Queries {
-		rows = append(rows, managedQueryListRow(query, history))
+		rows = append(rows, managedQueryListRow(query, history, true))
 	}
 	return output.Table(cmd.OutOrStdout(), headers, rows)
 }
@@ -248,20 +265,20 @@ func managedQueryListHeaders(history bool) []string {
 	return []string{"ID", "STATUS", "TOKEN", "CLIENT", "STARTED", "DURATION MS", "SQL"}
 }
 
-func managedQueryListRow(query client.ManagedQuery, history bool) []string {
+func managedQueryListRow(query client.ManagedQuery, history, terminal bool) []string {
 	row := []string{
-		clean(query.ID), clean(query.Status), managedQueryToken(query), clean(query.RemoteAddr),
-		fmtTimeVal(query.StartTime, "-"),
+		query.ID, query.Status, managedQueryToken(query), query.RemoteAddr,
+		managedQueryTime(query.StartTime, "-"),
 	}
 	if history {
 		ended := "-"
 		if query.EndTime != nil {
-			ended = fmtTimeVal(*query.EndTime, "-")
+			ended = managedQueryTime(*query.EndTime, "-")
 		}
-		row = append(row, ended, formatQueryDuration(query.DurationMs), strconv.Itoa(query.RowCount), clean(query.SQL))
-		return row
+		row = append(row, ended, formatQueryDuration(query.DurationMs), strconv.Itoa(query.RowCount), query.SQL)
+		return managedQueryCleanRow(row, terminal)
 	}
-	return append(row, formatQueryDuration(query.DurationMs), clean(query.SQL))
+	return managedQueryCleanRow(append(row, formatQueryDuration(query.DurationMs), query.SQL), terminal)
 }
 
 func managedQueryToken(query client.ManagedQuery) string {
@@ -272,9 +289,18 @@ func managedQueryToken(query client.ManagedQuery) string {
 		return strconv.FormatInt(query.TokenID, 10)
 	}
 	if query.TokenID == 0 {
-		return clean(query.TokenName)
+		return query.TokenName
 	}
-	return fmt.Sprintf("%s (%d)", clean(query.TokenName), query.TokenID)
+	return fmt.Sprintf("%s (%d)", query.TokenName, query.TokenID)
+}
+
+func managedQueryCleanRow(row []string, terminal bool) []string {
+	if terminal {
+		for i := range row {
+			row[i] = clean(row[i])
+		}
+	}
+	return row
 }
 
 func formatQueryDuration(ms float64) string {
@@ -284,15 +310,15 @@ func formatQueryDuration(ms float64) string {
 func renderManagedQuery(w io.Writer, query client.ManagedQuery) error {
 	end := "-"
 	if query.EndTime != nil {
-		end = fmtTimeVal(*query.EndTime, "-")
+		end = managedQueryTime(*query.EndTime, "-")
 	}
 	rows := [][]string{
 		{"id", clean(query.ID)},
 		{"status", clean(query.Status)},
 		{"sql", clean(query.SQL)},
-		{"token", managedQueryToken(query)},
+		{"token", clean(managedQueryToken(query))},
 		{"client", cleanOrDash(query.RemoteAddr)},
-		{"start time", fmtTimeVal(query.StartTime, "-")},
+		{"start time", managedQueryTime(query.StartTime, "-")},
 		{"end time", end},
 		{"duration ms", formatQueryDuration(query.DurationMs)},
 		{"rows", strconv.Itoa(query.RowCount)},

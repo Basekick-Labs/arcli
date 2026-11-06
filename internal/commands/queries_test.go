@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,5 +152,68 @@ func TestQueriesServerErrorsRemainDistinct(t *testing.T) {
 				t.Errorf("licence error lost its reason: %v", err)
 			}
 		})
+	}
+}
+
+func TestAdminQueryRegistration(t *testing.T) {
+	root := NewRoot(BuildInfo{})
+	for _, action := range []string{"active", "history", "show", "cancel"} {
+		cmd, _, err := root.Find([]string{"admin", "query", action})
+		if err != nil || cmd.CommandPath() != "arcli admin query "+action {
+			t.Fatalf("%s: cmd=%v err=%v", action, cmd, err)
+		}
+	}
+	cmd, _, err := root.Find([]string{"query"})
+	if err != nil || cmd.Use != newQueryCmd().Use {
+		t.Errorf("SQL query command changed: %v %v", cmd, err)
+	}
+	for _, cmd := range root.Commands() {
+		if cmd.Name() == "queries" {
+			t.Error("legacy queries registered")
+		}
+	}
+}
+
+func TestManagedQueryPrecisionAndMultilineCSV(t *testing.T) {
+	const stamp = "2026-10-27T03:04:05.123456789+02:30"
+	const utc = "2026-10-27T00:34:05.123456789Z"
+	const sql = "SELECT 1, 'quoted'\nFROM metrics\tWHERE x = 1"
+	query := map[string]any{"id": commandTestQueryID, "sql": sql, "token_name": "admin", "status": "completed", "start_time": stamp, "end_time": stamp}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, commandTestQueryID) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"query": query})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"queries": []any{query}, "count": 1})
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin")
+	for _, action := range []string{"active", "history"} {
+		for _, format := range []string{"table", "csv", "json"} {
+			out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", action, "-o", format)
+			want := utc
+			if format == "json" {
+				want = stamp
+			}
+			if err != nil || !strings.Contains(out, want) {
+				t.Fatalf("%s/%s: %q %v", action, format, out, err)
+			}
+			if format == "csv" {
+				rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+				if err != nil || len(rows) != 2 || rows[1][len(rows[1])-1] != sql {
+					t.Errorf("CSV changed SQL: %v %v", rows, err)
+				}
+			}
+		}
+	}
+	for _, format := range []string{"table", "json"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", "show", commandTestQueryID, "-o", format)
+		want := utc
+		if format == "json" {
+			want = stamp
+		}
+		if err != nil || !strings.Contains(out, want) {
+			t.Errorf("show/%s: %q %v", format, out, err)
+		}
 	}
 }

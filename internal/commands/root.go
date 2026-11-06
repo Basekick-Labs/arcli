@@ -88,7 +88,7 @@ First-time setup:
 		newDeleteCmd(),
 		newBackupCmd(),
 		newLogsCmd(),
-		newQueriesCmd(),
+		newAdminCmd(),
 		newSampleCmd(),
 	)
 	installCompletions(root)
