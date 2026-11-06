@@ -27,7 +27,10 @@ func newMQTTCmd() *cobra.Command {
 		Short: "Inspect and manage Arc MQTT subscriptions",
 		Long: `Inspect MQTT health and manage subscriptions through Arc's MQTT API.
 All MQTT endpoints require an admin token. Create and update requests read JSON
-from a file or stdin so broker credentials do not need to be passed as flags.`,
+from a file or stdin so broker credentials do not need to be passed as flags.
+CSV preserves non-secret field values without terminal sanitization. Table and
+CSV timestamps use UTC RFC3339Nano; JSON preserves timestamp precision.
+Subscription output redacts credentials in every format.`,
 	}
 	c.AddCommand(newMQTTHealthCmd(), newMQTTStatsCmd(), newMQTTSubscriptionCmd())
 	return c
@@ -494,13 +497,20 @@ func renderMQTTSubscriptionList(w io.Writer, list []client.MQTTSubscription, noH
 	}
 	rows := make([][]string, 0, len(list))
 	for _, sub := range list {
-		rows = append(rows, mqttSubscriptionRow(sub))
+		row := mqttSubscriptionRow(sub)
+		if !asCSV {
+			for i := range row {
+				row[i] = clean(row[i])
+			}
+			row[11], row[12] = fmtMQTTTimeValue(sub.CreatedAt), fmtMQTTTimeValue(sub.UpdatedAt)
+		}
+		rows = append(rows, row)
 	}
-	headers := []string{"ID", "NAME", "STATUS", "BROKER", "CLIENT ID", "TOPICS", "QOS", "DATABASE", "TLS", "AUTO START", "PASSWORD"}
+	headers := []string{"ID", "NAME", "STATUS", "BROKER", "CLIENT ID", "TOPICS", "QOS", "DATABASE", "TLS", "AUTO START", "PASSWORD", "CREATED AT", "UPDATED AT"}
 	if asCSV {
 		cw := csv.NewWriter(w)
 		if !noHeader {
-			if err := cw.Write([]string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password"}); err != nil {
+			if err := cw.Write([]string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password", "created_at", "updated_at"}); err != nil {
 				return err
 			}
 		}
@@ -524,9 +534,10 @@ func mqttSubscriptionRow(s client.MQTTSubscription) []string {
 		password = "set"
 	}
 	return []string{
-		clean(s.ID), clean(s.Name), clean(s.Status), scrubMQTTBroker(s.Broker), clean(s.ClientID),
-		clean(strings.Join(s.Topics, ",")), fmt.Sprint(s.QoS), clean(s.Database),
+		s.ID, s.Name, s.Status, scrubMQTTBroker(s.Broker), s.ClientID,
+		strings.Join(s.Topics, ","), fmt.Sprint(s.QoS), s.Database,
 		fmt.Sprint(s.TLSEnabled), fmt.Sprint(s.AutoStart), password,
+		s.CreatedAt.UTC().Format(time.RFC3339Nano), s.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
@@ -534,7 +545,7 @@ func writeMQTTSubscriptionInfo(w io.Writer, sub *client.MQTTSubscription) {
 	fmt.Fprintf(w, "id:                       %s\n", clean(sub.ID))
 	fmt.Fprintf(w, "name:                     %s\n", clean(sub.Name))
 	fmt.Fprintf(w, "status:                   %s\n", clean(sub.Status))
-	fmt.Fprintf(w, "broker:                   %s\n", scrubMQTTBroker(sub.Broker))
+	fmt.Fprintf(w, "broker:                   %s\n", clean(scrubMQTTBroker(sub.Broker)))
 	fmt.Fprintf(w, "client id:                %s\n", clean(sub.ClientID))
 	fmt.Fprintf(w, "topics:                   %s\n", clean(strings.Join(sub.Topics, ", ")))
 	fmt.Fprintf(w, "qos:                      %d\n", sub.QoS)
@@ -584,12 +595,13 @@ func scrubMQTTBroker(broker string) string {
 		if strings.Contains(broker, "@") {
 			return "<redacted>"
 		}
-		return clean(broker)
+		return broker
 	}
-	if u.User != nil {
-		u.User = nil
+	if u.User == nil {
+		return broker
 	}
-	return clean(u.String())
+	u.User = nil
+	return u.String()
 }
 
 func mqttBrokerHasCredentials(broker string) bool {
@@ -604,12 +616,12 @@ func fmtMQTTTime(t *time.Time) string {
 	if t == nil || t.IsZero() {
 		return "never"
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 func fmtMQTTTimeValue(t time.Time) string {
 	if t.IsZero() {
 		return "never"
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }

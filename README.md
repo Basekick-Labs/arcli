@@ -159,6 +159,8 @@ Active, expired, invalid, and configured-but-unlicensed states retain the server
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
 
+MQTT CSV output preserves non-secret values, including whitespace and control characters, separately from terminal sanitization. Subscription credentials remain redacted in every output format. Subscription lists include created_at and updated_at timestamps. Table and CSV timestamps use UTC RFC3339Nano; JSON retains fractional-second precision. Route-missing 404, subscription-not-found 404, and server-reported MQTT-disabled 503 errors retain their HTTP status and message.
+
 ## Output and automation
 
 Commands support the formats appropriate to their API:

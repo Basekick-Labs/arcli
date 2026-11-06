@@ -1,13 +1,18 @@
 package commands
 
 import (
+	"bytes"
+	"encoding/csv"
 	"encoding/json"
+	"github.com/basekick-labs/arcli/internal/client"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const mqttConfigWithCredentials = `{"name":"ingest","broker":"mqtts://broker.example:8883","client_id":"arcli-test","topics":["sensors/#"],"qos":1,"database":"metrics","username":"broker-user","password":"broker-secret"}`
@@ -159,5 +164,86 @@ func TestMQTTDeleteRequiresConfirmation(t *testing.T) {
 	stdout, _, err = runMQTTCommand(t, "", "mqtt", "subscription", "start", "s1", "--endpoint", srv.URL, "--token", "tok")
 	if err != nil || calls != 3 || !strings.Contains(stdout, "Subscription started") {
 		t.Fatalf("start stdout=%q err=%v requests=%d", stdout, err, calls)
+	}
+}
+
+func TestMQTTCSVPreservesNonSecretValuesAndTimestamps(t *testing.T) {
+	stamp, _ := time.Parse(time.RFC3339Nano, "2026-10-31T12:34:56.123456789+05:30")
+	utc := "2026-10-31T07:04:56.123456789Z"
+	sub := client.MQTTSubscription{ID: " id\t", Name: " a,\"b\"\n\x1b[31m ", Status: "running\t", Broker: "mqtts://broker-user:broker-secret@host:8883", ClientID: " c\n", Topics: []string{"sensors/\t#", "other,topic"}, Database: " db ", HasPassword: true, CreatedAt: stamp, UpdatedAt: stamp}
+	for _, noHeader := range []bool{false, true} {
+		var out bytes.Buffer
+		if err := renderMQTTSubscriptionList(&out, []client.MQTTSubscription{sub}, noHeader, true); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := csv.NewReader(&out).ReadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !noHeader {
+			if !reflect.DeepEqual(rows[0], []string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password", "created_at", "updated_at"}) {
+				t.Fatalf("headers=%q", rows[0])
+			}
+			rows = rows[1:]
+		}
+		want := []string{sub.ID, sub.Name, sub.Status, "mqtts://host:8883", sub.ClientID, strings.Join(sub.Topics, ","), "0", sub.Database, "false", "false", "set", utc, utc}
+		if len(rows) != 1 || !reflect.DeepEqual(rows[0], want) {
+			t.Fatalf("CSV=%q want=%q", rows, want)
+		}
+	}
+	var table bytes.Buffer
+	if err := renderMQTTSubscriptionList(&table, []client.MQTTSubscription{sub}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(table.String(), utc) || strings.Contains(table.String(), "\x1b") || strings.Contains(table.String(), "broker-secret") {
+		t.Fatalf("table=%q", table.String())
+	}
+	var detail bytes.Buffer
+	writeMQTTSubscriptionInfo(&detail, &sub)
+	if !strings.Contains(detail.String(), utc) || strings.Contains(detail.String(), "broker-secret") {
+		t.Fatalf("detail=%s", detail.String())
+	}
+	data, err := json.Marshal(safeMQTTSubscription(sub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got client.MQTTSubscription
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != sub.Name || !got.CreatedAt.Equal(stamp) || got.CreatedAt.Nanosecond() != 123456789 || strings.Contains(string(data), "broker-secret") || strings.Contains(string(data), "broker-user") {
+		t.Fatalf("JSON=%s", data)
+	}
+}
+
+func TestMQTTBrokerRedactionDoesNotSanitizeNonSecrets(t *testing.T) {
+	for _, broker := range []string{"mqtt://host/a%2fb", "mqtt://host/path?x=a,b", "invalid\tbroker"} {
+		if got := scrubMQTTBroker(broker); got != broker {
+			t.Errorf("broker=%q got=%q", broker, got)
+		}
+	}
+	if got := scrubMQTTBroker("mqtt://user:secret@host/\n"); got != "<redacted>" {
+		t.Errorf("malformed credential URL=%q", got)
+	}
+}
+
+func TestMQTTStatsTimestampsPreserveNanoseconds(t *testing.T) {
+	stamp, _ := time.Parse(time.RFC3339Nano, "2026-10-31T02:03:04.123456789-03:30")
+	stats := client.MQTTSubscriptionStats{LastMessageAt: &stamp, ConnectedSince: &stamp}
+	for _, object := range []bool{false, true} {
+		var out bytes.Buffer
+		if err := renderMQTTStats(&out, []client.MQTTSubscriptionStats{stats}, object); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(out.String(), "2026-10-31T05:33:04.123456789Z") != 2 {
+			t.Fatalf("stats=%s", out.String())
+		}
+	}
+	data, err := json.Marshal(stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "2026-10-31T02:03:04.123456789-03:30") != 2 {
+		t.Fatalf("JSON=%s", data)
 	}
 }

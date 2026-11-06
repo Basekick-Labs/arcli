@@ -155,13 +155,13 @@ func TestMQTTClientPreservesDisabledPermissionAndNotFoundErrors(t *testing.T) {
 	} {
 		_, err := cli.GetMQTTSubscription(context.Background(), tc.id)
 		var he *HTTPError
-		if !errors.As(err, &he) || he.Status != tc.status || !strings.Contains(err.Error(), tc.text) {
+		if !errors.As(err, &he) || he.Status != tc.status || !strings.Contains(he.Message, tc.text) {
 			t.Errorf("%s error = %v", tc.id, err)
 		}
 	}
 	_, err := cli.ListMQTTSubscriptions(context.Background())
-	var disabled *FeatureDisabledError
-	if !errors.As(err, &disabled) || disabled.ConfigKey != "mqtt.enabled" {
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Message != "Cannot GET /api/v1/mqtt/subscriptions/" || strings.Contains(err.Error(), "mqtt.enabled=false") {
 		t.Errorf("missing route error = %v", err)
 	}
 }
