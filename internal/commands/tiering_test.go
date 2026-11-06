@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -26,16 +28,16 @@ func TestTieringFilesFormatsAndFilters(t *testing.T) {
 		want    string
 	}{
 		{"table", []string{"--tier", "cold"}, "PATH"},
-		{"csv", []string{"--database", "metrics"}, "PATH,DATABASE,MEASUREMENT,TIER,SIZE BYTES"},
+		{"csv", []string{"--database", "metrics"}, "path,database,measurement,tier,size_bytes"},
 	} {
-		args := append([]string{"tiering", "files"}, tc.filters...)
+		args := append([]string{"tiering", "file"}, tc.filters...)
 		args = append(args, "--limit", "2", "--output", tc.format)
 		out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
 		if err != nil || !strings.Contains(out, tc.want) || !strings.Contains(out, "metrics/cpu/1.parquet") {
 			t.Errorf("%s output=%q err=%v", tc.format, out, err)
 		}
 	}
-	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "files", "--output", "json", "--limit", "2")
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "--output", "json", "--limit", "2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +99,7 @@ func TestTieringObjectCommandsRenderEndpointResponses(t *testing.T) {
 		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run"}, "would migrate"},
 		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run", "--output", "json"}, `"would_migrate": 2`},
 		{[]string{"tiering", "scan"}, "files scanned"},
-		{[]string{"tiering", "policy", "list", "--output", "csv"}, "DATABASE,HOT ONLY,HOT MAX AGE DAYS"},
+		{[]string{"tiering", "policy", "list", "--output", "csv"}, "database,hot_only,hot_max_age_days"},
 		{[]string{"tiering", "policy", "list", "--output", "json"}, `"count": 1`},
 		{[]string{"tiering", "policy", "show", "metrics"}, "hot max age days"},
 		{[]string{"tiering", "policy", "show", "metrics", "--output", "json"}, `"hot_max_age_days": 30`},
@@ -188,7 +190,7 @@ func TestTieringPolicyDeleteRefusesNonInteractiveStdin(t *testing.T) {
 func TestTieringCommandsRegistered(t *testing.T) {
 	root := NewRoot(BuildInfo{Version: "test"})
 	for _, path := range [][]string{
-		{"tiering", "status"}, {"tiering", "files"}, {"tiering", "stats"},
+		{"tiering", "status"}, {"tiering", "file"}, {"tiering", "stats"},
 		{"tiering", "migrate"}, {"tiering", "scan"}, {"tiering", "policy", "list"},
 		{"tiering", "policy", "show"}, {"tiering", "policy", "set"},
 		{"tiering", "policy", "delete"}, {"tiering", "policy", "effective"},
@@ -196,5 +198,107 @@ func TestTieringCommandsRegistered(t *testing.T) {
 		if _, _, err := root.Find(path); err != nil {
 			t.Errorf("missing command %v: %v", path, err)
 		}
+	}
+}
+
+func TestTieringFileCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
+	stamp := "2026-10-31T12:34:56.123456789+05:30"
+	utc := "2026-10-31T07:04:56.123456789Z"
+	raw := `{"files":[{"path":"a,\"b\"\n\t\u001b[31m","database":" db ","measurement":"cpu\tload","tier":"cold","size_bytes":1024,"partition_time":"` + stamp + `","created_at":"` + stamp + `","migrated_at":"` + stamp + `","quarantined_at":"` + stamp + `","quarantine_reason":""}],"count":1,"future":9007199254740993}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, noHeader := range []bool{false, true} {
+		args := []string{"tiering", "file", "--output", "csv"}
+		if noHeader {
+			args = append(args, "--no-header")
+		}
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !noHeader {
+			want := []string{"path", "database", "measurement", "tier", "size_bytes", "partition_time", "created_at", "migrated_at", "quarantined_at", "quarantine_reason"}
+			if !reflect.DeepEqual(records[0], want) {
+				t.Fatalf("headers=%q", records[0])
+			}
+			records = records[1:]
+		}
+		want := []string{"a,\"b\"\n\t\x1b[31m", " db ", "cpu\tload", "cold", "1024", utc, utc, utc, utc, ""}
+		if len(records) != 1 || !reflect.DeepEqual(records[0], want) {
+			t.Fatalf("CSV=%q want=%q", records, want)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file")
+	if err != nil || !strings.Contains(out, utc) || strings.Contains(out, "\x1b") {
+		t.Fatalf("table=%q err=%v", out, err)
+	}
+	out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "--output", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	dec := json.NewDecoder(strings.NewReader(out))
+	dec.UseNumber()
+	if err := dec.Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	dec = json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("JSON changed: %s", out)
+	}
+}
+
+func TestTieringPolicyCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
+	raw := `{"policies":[{"database":" db,\"x\"\n\t\u001b[31m ","hot_only":false,"created_at":"2026-10-31T02:03:04.123456789-03:30","updated_at":"2026-10-31T02:03:04.123456789-03:30"}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, noHeader := range []bool{false, true} {
+		args := []string{"tiering", "policy", "list", "--output", "csv"}
+		if noHeader {
+			args = append(args, "--no-header")
+		}
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !noHeader {
+			if !reflect.DeepEqual(rows[0], []string{"database", "hot_only", "hot_max_age_days", "created_at", "updated_at"}) {
+				t.Fatalf("headers=%q", rows[0])
+			}
+			rows = rows[1:]
+		}
+		want := []string{" db,\"x\"\n\t\x1b[31m ", "false", "", "2026-10-31T05:33:04.123456789Z", "2026-10-31T05:33:04.123456789Z"}
+		if len(rows) != 1 || !reflect.DeepEqual(rows[0], want) {
+			t.Fatalf("CSV=%q", rows)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "list")
+	if err != nil || !strings.Contains(out, "2026-10-31T05:33:04.123456789Z") || strings.Contains(out, "\x1b") {
+		t.Fatalf("table=%q err=%v", out, err)
+	}
+}
+
+func TestTieringSingularFileHelp(t *testing.T) {
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "--help")
+	if err != nil || !strings.Contains(out, "arcli tiering file") {
+		t.Fatalf("help=%q err=%v", out, err)
+	}
+	cmd, _, _ := NewRoot(BuildInfo{}).Find([]string{"tiering", "files"})
+	if cmd != nil && cmd.Name() == "files" {
+		t.Fatal("plural files command still registered")
 	}
 }

@@ -25,11 +25,13 @@ func newTieringCmd() *cobra.Command {
 
 These endpoints require an administrator token and an Enterprise licence
 with the tiering feature enabled. File listings are bounded by --limit;
-the current Arc API does not expose an offset or cursor for this endpoint.`,
+the current Arc API does not expose an offset or cursor for this endpoint.
+CSV preserves original field values with lowercase snake_case headers.
+Table and CSV timestamps use UTC RFC3339Nano; JSON retains the server response.`,
 	}
 	c.AddCommand(
 		newTieringStatusCmd(),
-		newTieringFilesCmd(),
+		newTieringFileCmd(),
 		newTieringStatsCmd(),
 		newTieringMigrateCmd(),
 		newTieringScanCmd(),
@@ -72,7 +74,7 @@ func newTieringStatusCmd() *cobra.Command {
 	return c
 }
 
-func newTieringFilesCmd() *cobra.Command {
+func newTieringFileCmd() *cobra.Command {
 	var (
 		f            connFlags
 		outputFormat string
@@ -82,7 +84,7 @@ func newTieringFilesCmd() *cobra.Command {
 		limit        int
 	)
 	c := &cobra.Command{
-		Use:   "files",
+		Use:   "file",
 		Short: "List indexed files in tiered storage",
 		Long: `List indexed files (GET /api/v1/tiering/files).
 
@@ -483,12 +485,12 @@ func renderTieringStatus(w io.Writer, status *client.TieringStatus) error {
 			[]string{"scheduler running", strconv.FormatBool(status.Scheduler.Running)},
 			[]string{"schedule", valueOrDash(status.Scheduler.Schedule)},
 			[]string{"role gated", strconv.FormatBool(status.Scheduler.RoleGated)},
-			[]string{"next run", fmtServerTimePtr(status.Scheduler.NextRun, "-")},
-			[]string{"last run", fmtServerTimePtr(status.Scheduler.LastRun, "-")},
+			[]string{"next run", fmtTieringTimePtr(status.Scheduler.NextRun, "-")},
+			[]string{"last run", fmtTieringTimePtr(status.Scheduler.LastRun, "-")},
 		)
 	}
 	if status.LastScanAt != nil {
-		rows = append(rows, []string{"last scan at", fmtServerTimePtr(status.LastScanAt, "-")})
+		rows = append(rows, []string{"last scan at", fmtTieringTimePtr(status.LastScanAt, "-")})
 	}
 	if err := output.Table(w, []string{"FIELD", "VALUE"}, rows); err != nil {
 		return err
@@ -529,16 +531,25 @@ func renderTieringStatus(w io.Writer, status *client.TieringStatus) error {
 func renderTieringFiles(w io.Writer, files []client.TieringFile, noHeader, asCSV bool) error {
 	rows := make([][]string, 0, len(files))
 	for _, f := range files {
-		rows = append(rows, []string{
-			clean(f.Path), clean(f.Database), clean(f.Measurement), clean(f.Tier),
-			strconv.FormatInt(f.SizeBytes, 10), fmtServerTime(f.PartitionTime, "-"),
-			fmtServerTime(f.CreatedAt, "-"), fmtServerTimePtr(f.MigratedAt, "-"),
-			fmtServerTimePtr(f.QuarantinedAt, "-"), valueOrDash(f.QuarantineReason),
-		})
+		row := []string{
+			f.Path, f.Database, f.Measurement, f.Tier,
+			strconv.FormatInt(f.SizeBytes, 10), tieringTimeValue(f.PartitionTime),
+			tieringTimeValue(f.CreatedAt), tieringTimePointer(f.MigratedAt),
+			tieringTimePointer(f.QuarantinedAt), f.QuarantineReason,
+		}
+		if !asCSV {
+			for i := range row {
+				row[i] = clean(row[i])
+			}
+			row[5], row[6] = fmtTieringTime(f.PartitionTime, "-"), fmtTieringTime(f.CreatedAt, "-")
+			row[7], row[8] = fmtTieringTimePtr(f.MigratedAt, "-"), fmtTieringTimePtr(f.QuarantinedAt, "-")
+			row[9] = valueOrDash(f.QuarantineReason)
+		}
+		rows = append(rows, row)
 	}
 	headers := []string{"PATH", "DATABASE", "MEASUREMENT", "TIER", "SIZE BYTES", "PARTITION TIME", "CREATED AT", "MIGRATED AT", "QUARANTINED AT", "QUARANTINE REASON"}
 	if asCSV {
-		return writeTieringCSV(w, headers, rows, noHeader)
+		return writeTieringCSV(w, []string{"path", "database", "measurement", "tier", "size_bytes", "partition_time", "created_at", "migrated_at", "quarantined_at", "quarantine_reason"}, rows, noHeader)
 	}
 	if noHeader {
 		headers = nil
@@ -567,7 +578,7 @@ func renderTieringStats(w io.Writer, stats *client.TieringMigrationStats) error 
 	for _, m := range stats.RecentMigrations {
 		rows = append(rows, []string{
 			strconv.FormatInt(m.ID, 10), clean(m.Database), clean(m.FilePath), clean(m.FromTier), clean(m.ToTier),
-			strconv.FormatInt(m.SizeBytes, 10), fmtServerTime(m.StartedAt, "-"), fmtServerTimePtr(m.CompletedAt, "-"), valueOrDash(m.Error),
+			strconv.FormatInt(m.SizeBytes, 10), fmtTieringTime(m.StartedAt, "-"), fmtTieringTimePtr(m.CompletedAt, "-"), valueOrDash(m.Error),
 		})
 	}
 	return output.Table(w, []string{"ID", "DATABASE", "FILE", "FROM", "TO", "SIZE BYTES", "STARTED AT", "COMPLETED AT", "ERROR"}, rows)
@@ -620,11 +631,16 @@ func renderTieringPolicyList(w io.Writer, policies []client.TieringPolicy, noHea
 		if p.HotMaxAgeDays != nil {
 			age = strconv.Itoa(*p.HotMaxAgeDays)
 		}
-		rows = append(rows, []string{clean(p.Database), strconv.FormatBool(p.HotOnly), age, fmtServerTime(p.CreatedAt, "-"), fmtServerTime(p.UpdatedAt, "-")})
+		row := []string{p.Database, strconv.FormatBool(p.HotOnly), age, tieringTimeValue(p.CreatedAt), tieringTimeValue(p.UpdatedAt)}
+		if !asCSV {
+			row[0] = clean(p.Database)
+			row[3], row[4] = fmtTieringTime(p.CreatedAt, "-"), fmtTieringTime(p.UpdatedAt, "-")
+		}
+		rows = append(rows, row)
 	}
 	headers := []string{"DATABASE", "HOT ONLY", "HOT MAX AGE DAYS", "CREATED AT", "UPDATED AT"}
 	if asCSV {
-		return writeTieringCSV(w, headers, rows, noHeader)
+		return writeTieringCSV(w, []string{"database", "hot_only", "hot_max_age_days", "created_at", "updated_at"}, rows, noHeader)
 	}
 	if noHeader {
 		headers = nil
@@ -642,8 +658,8 @@ func renderTieringPolicy(w io.Writer, policy *client.TieringPolicy) error {
 		{"database", clean(policy.Database)},
 		{"hot only", strconv.FormatBool(policy.HotOnly)},
 		{"hot max age days", age},
-		{"created at", fmtServerTime(policy.CreatedAt, "-")},
-		{"updated at", fmtServerTime(policy.UpdatedAt, "-")},
+		{"created at", fmtTieringTime(policy.CreatedAt, "-")},
+		{"updated at", fmtTieringTime(policy.UpdatedAt, "-")},
 	})
 }
 
@@ -677,4 +693,37 @@ func valueOrDash(s string) string {
 		return "-"
 	}
 	return clean(s)
+}
+
+// tieringTimeValue normalizes timestamps without applying terminal sanitization
+// or display placeholders to machine-readable CSV values.
+func tieringTimeValue(s string) string {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UTC().Format(time.RFC3339Nano)
+	}
+	return s
+}
+
+func tieringTimePointer(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return tieringTimeValue(*p)
+}
+
+func fmtTieringTime(s, none string) string {
+	if s == "" {
+		return none
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil && t.IsZero() {
+		return none
+	}
+	return clean(tieringTimeValue(s))
+}
+
+func fmtTieringTimePtr(p *string, none string) string {
+	if p == nil {
+		return none
+	}
+	return fmtTieringTime(*p, none)
 }

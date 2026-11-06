@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -217,7 +216,6 @@ func (c *Client) ListTieringFiles(ctx context.Context, tier, database string, li
 	}
 	if out.Files == nil {
 		out.Files = []TieringFile{}
-		body = normalizeTieringArrayFields(body, "files")
 	}
 	return out.Files, body, nil
 }
@@ -231,11 +229,9 @@ func (c *Client) TieringStats(ctx context.Context) (*TieringMigrationStats, erro
 	}
 	if out.TierStats == nil {
 		out.TierStats = []TieringStats{}
-		body = normalizeTieringArrayFields(body, "tier_stats")
 	}
 	if out.RecentMigrations == nil {
 		out.RecentMigrations = []TieringMigrationRecord{}
-		body = normalizeTieringArrayFields(body, "recent_migrations")
 	}
 	out.Raw = body
 	return &out, nil
@@ -287,7 +283,6 @@ func (c *Client) ListTieringPolicies(ctx context.Context) (*TieringPolicyList, e
 	}
 	if out.Policies == nil {
 		out.Policies = []TieringPolicy{}
-		body = normalizeTieringArrayFields(body, "policies")
 	}
 	out.Raw = body
 	return &out, nil
@@ -348,30 +343,4 @@ func (c *Client) EffectiveTieringPolicy(ctx context.Context, database string) (*
 		return nil, nil, err
 	}
 	return &out, body, nil
-}
-
-// normalizeTieringArrayFields keeps JSON list output useful when Arc encodes
-// an empty collection as null, while retaining any fields added by newer Arc
-// versions.
-func normalizeTieringArrayFields(body []byte, fields ...string) []byte {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(body, &object); err != nil || object == nil {
-		return body
-	}
-	changed := false
-	for _, field := range fields {
-		raw, ok := object[field]
-		if ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			object[field] = json.RawMessage("[]")
-			changed = true
-		}
-	}
-	if !changed {
-		return body
-	}
-	normalized, err := json.Marshal(object)
-	if err != nil {
-		return body
-	}
-	return normalized
 }

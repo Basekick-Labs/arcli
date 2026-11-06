@@ -179,7 +179,7 @@ func TestTieringValidationRejectsBeforeRequest(t *testing.T) {
 	}
 }
 
-func TestTieringNullListsBecomeEmptyArraysInJSON(t *testing.T) {
+func TestTieringNullListsPreserveOriginalJSON(t *testing.T) {
 	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/tiering/files":
@@ -195,15 +195,15 @@ func TestTieringNullListsBecomeEmptyArraysInJSON(t *testing.T) {
 	})
 	ctx := context.Background()
 	files, rawFiles, err := cli.ListTieringFiles(ctx, "", "", 100)
-	if err != nil || files == nil || len(files) != 0 || !strings.Contains(string(rawFiles), `"files":[]`) || !strings.Contains(string(rawFiles), `"future":true`) {
+	if err != nil || files == nil || len(files) != 0 || !strings.Contains(string(rawFiles), `"files":null`) || !strings.Contains(string(rawFiles), `"future":true`) {
 		t.Errorf("files=%#v raw=%s err=%v", files, rawFiles, err)
 	}
 	stats, err := cli.TieringStats(ctx)
-	if err != nil || stats.TierStats == nil || stats.RecentMigrations == nil || !strings.Contains(string(stats.Raw), `"tier_stats":[]`) || !strings.Contains(string(stats.Raw), `"future":true`) {
+	if err != nil || stats.TierStats == nil || stats.RecentMigrations == nil || !strings.Contains(string(stats.Raw), `"tier_stats":null`) || !strings.Contains(string(stats.Raw), `"future":true`) {
 		t.Errorf("stats=%+v err=%v", stats, err)
 	}
 	policies, err := cli.ListTieringPolicies(ctx)
-	if err != nil || policies.Policies == nil || len(policies.Policies) != 0 || !strings.Contains(string(policies.Raw), `"policies":[]`) || !strings.Contains(string(policies.Raw), `"future":true`) {
+	if err != nil || policies.Policies == nil || len(policies.Policies) != 0 || !strings.Contains(string(policies.Raw), `"policies":null`) || !strings.Contains(string(policies.Raw), `"future":true`) {
 		t.Errorf("policies=%+v err=%v", policies, err)
 	}
 }
@@ -227,5 +227,24 @@ func TestTieringLicenseAndAdminErrorsRemainVisible(t *testing.T) {
 	_, _, err = cli.ListTieringFiles(context.Background(), "", "", 100)
 	if !errors.As(err, &he) || he.Status != http.StatusForbidden || !strings.Contains(err.Error(), "admin token required") {
 		t.Fatalf("admin error = %v", err)
+	}
+}
+
+func TestTieringRouteMissingPreservesHTTPError(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"Cannot GET /api/v1/tiering/status"}`))
+	})
+	_, err := cli.TieringStatus(context.Background())
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Message != "Cannot GET /api/v1/tiering/status" {
+		t.Fatalf("HTTP error=%v", err)
+	}
+	if strings.Contains(err.Error(), "enabled=false") {
+		t.Fatalf("inferred disabled: %v", err)
 	}
 }

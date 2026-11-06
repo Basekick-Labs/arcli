@@ -134,7 +134,7 @@ arcli license status -c prod -o json
 arcli compaction status
 arcli retention list
 arcli tiering status
-arcli tiering files --tier cold --limit 100 --output csv
+arcli tiering file --tier cold --limit 100 --output csv
 arcli tiering policy list
 arcli backup create --wait
 arcli logs --level warn --since 6h
@@ -151,6 +151,8 @@ The command tree also covers API tokens, continuous queries, schedulers, predica
 Active, expired, invalid, and configured-but-unlicensed states retain the server's status. A missing or null license block is normal for OSS and is distinct from `unlicensed`: JSON returns `{"configured": false, "license": null}`. Present licenses use `{"configured": true, "license": {...}}`; optional fields are omitted when absent or null, while explicit zero days and `false` site-license values are retained. Unknown server status values are preserved. Successfully reading any of these states exits 0; configuration, request, decoding, and output failures exit nonzero. Installing licenses or configuring license keys/files belongs to the Arc server.
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
+
+Tiering file and policy CSV output preserves original values with lowercase snake_case headers. Table and CSV timestamps use UTC RFC3339Nano, including fractional seconds; JSON retains the original response, including null arrays. A missing route preserves the HTTP status and server message and does not imply that tiering is disabled.
 
 ## Output and automation
 
