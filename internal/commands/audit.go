@@ -24,11 +24,11 @@ These endpoints require an administrator token and an Enterprise license
 with audit logging enabled. This is separate from "arcli logs", which reads
 the server's in-memory application log buffer.`,
 	}
-	c.AddCommand(newAuditLogsCmd(), newAuditStatsCmd())
+	c.AddCommand(newAuditLogCmd(), newAuditStatsCmd())
 	return c
 }
 
-func newAuditLogsCmd() *cobra.Command {
+func newAuditLogCmd() *cobra.Command {
 	var (
 		f            connFlags
 		outputFormat string
@@ -36,15 +36,17 @@ func newAuditLogsCmd() *cobra.Command {
 		filter       client.AuditLogsOptions
 	)
 	c := &cobra.Command{
-		Use:   "logs",
+		Use:   "log",
 		Short: "Query audit records with filters and pagination",
 		Long: `Query durable audit records, newest first.
 
 Filters are applied on Arc. --since and --until use RFC3339 timestamps;
 --limit defaults to the server's 100-entry limit and --offset supports
-pagination. Output formats: table (default) | json | csv.`,
-		Example: `  arcli audit logs --since 2026-01-01T00:00:00Z --limit 100 --offset 100
-  arcli audit logs --event-type auth.login --actor admin -o json`,
+pagination. Output formats: table (default) | json | csv.
+Table and CSV timestamps use UTC RFC3339Nano with fractional seconds.
+JSON preserves the original server response.`,
+		Example: `  arcli audit log --since 2026-01-01T00:00:00Z --limit 100 --offset 100
+  arcli audit log --event-type auth.login --actor admin -o json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -138,7 +140,9 @@ func newAuditStatsCmd() *cobra.Command {
 		Short: "Show audit event counts",
 		Long: `Show audit event counts (GET /api/v1/audit/stats).
 
---since uses an RFC3339 timestamp. When omitted, Arc reports the last 24 hours.`,
+--since uses an RFC3339 timestamp. When omitted, Arc reports the last 24 hours.
+The displayed since timestamp uses UTC RFC3339Nano with fractional seconds.
+JSON preserves the original server response.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -167,7 +171,7 @@ func renderAuditStats(w io.Writer, res *client.AuditStatsResult, format string) 
 	if format == output.FormatJSON {
 		return writeRawJSON(w, res.Raw)
 	}
-	if _, err := fmt.Fprintf(w, "since: %s\n", clean(res.Since)); err != nil {
+	if _, err := fmt.Fprintf(w, "since: %s\n", fmtServerTime(res.Since, "-")); err != nil {
 		return err
 	}
 	if len(res.Data) == 0 {
