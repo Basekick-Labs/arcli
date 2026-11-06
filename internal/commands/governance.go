@@ -22,7 +22,10 @@ func newGovernanceCmd() *cobra.Command {
 		Long: `Manage query-governance policies and per-token usage.
 
 The governance endpoints require an admin token and an Enterprise licence
-with query governance enabled. A limit of 0 means unlimited.`,
+with query governance enabled. A limit of 0 means unlimited.
+Displayed timestamps use UTC RFC3339Nano, preserving fractional seconds;
+JSON retains the available timestamp precision. Unavailable routes retain
+the server HTTP error without inferring configuration or license causes.`,
 	}
 	c.AddCommand(newGovernancePolicyCmd(), newGovernanceUsageCmd())
 	return c
