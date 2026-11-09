@@ -82,7 +82,9 @@ func TestBackupWaitTracksOperationIdentity(t *testing.T) {
 								t.Errorf("tracked failure: err=%v out=%q", err, out)
 							}
 						default:
-							if err == nil || !strings.Contains(err.Error(), "different operation") {
+							// The published message is kept: the server tracks one
+							// operation at a time, so a different one means ours ended.
+							if err == nil || !strings.Contains(err.Error(), "different operation") || !strings.Contains(err.Error(), "ours has finished") {
 								t.Errorf("replacement operation: err=%v out=%q", err, out)
 							}
 							if out != "" {

@@ -123,7 +123,7 @@ func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expe
 		// Restoring the same backup again reuses its id, so the kind and
 		// start time are also needed to identify the operation we started.
 		if p.BackupID != expected.BackupID || p.Operation != expected.Operation || !p.StartedAt.Equal(expected.StartedAt) {
-			return nil, nil, fmt.Errorf("the server is now tracking a different operation (%s %s); our result could not be confirmed — see `arcli backup show %s` or `arcli backup list`", clean(p.Operation), clean(p.BackupID), clean(expected.BackupID))
+			return nil, nil, fmt.Errorf("the server is now tracking a different operation (%s %s); ours has finished — see `arcli backup show %s` or `arcli backup list`", clean(p.Operation), clean(p.BackupID), clean(expected.BackupID))
 		}
 		if p.Status != "running" {
 			return p, st.Raw, nil
