@@ -169,8 +169,9 @@ func TestMQTTDeleteRequiresConfirmation(t *testing.T) {
 
 func TestMQTTCSVPreservesNonSecretValuesAndTimestamps(t *testing.T) {
 	stamp, _ := time.Parse(time.RFC3339Nano, "2026-10-31T12:34:56.123456789+05:30")
-	utc := "2026-10-31T07:04:56.123456789Z"
 	sub := client.MQTTSubscription{ID: " id\t", Name: " a,\"b\"\n\x1b[31m ", Status: "running\t", Broker: "mqtts://broker-user:broker-secret@host:8883", ClientID: " c\n", Topics: []string{"sensors/\t#", "other,topic"}, Database: " db ", HasPassword: true, CreatedAt: stamp, UpdatedAt: stamp}
+	// The list (table and CSV) carries no timestamp columns; created/updated
+	// are shown by `subscription show` and kept in JSON.
 	for _, noHeader := range []bool{false, true} {
 		var out bytes.Buffer
 		if err := renderMQTTSubscriptionList(&out, []client.MQTTSubscription{sub}, noHeader, true); err != nil {
@@ -181,12 +182,12 @@ func TestMQTTCSVPreservesNonSecretValuesAndTimestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !noHeader {
-			if !reflect.DeepEqual(rows[0], []string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password", "created_at", "updated_at"}) {
+			if !reflect.DeepEqual(rows[0], []string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password"}) {
 				t.Fatalf("headers=%q", rows[0])
 			}
 			rows = rows[1:]
 		}
-		want := []string{sub.ID, sub.Name, sub.Status, "mqtts://host:8883", sub.ClientID, strings.Join(sub.Topics, ","), "0", sub.Database, "false", "false", "set", utc, utc}
+		want := []string{sub.ID, sub.Name, sub.Status, "mqtts://host:8883", sub.ClientID, strings.Join(sub.Topics, ","), "0", sub.Database, "false", "false", "set"}
 		if len(rows) != 1 || !reflect.DeepEqual(rows[0], want) {
 			t.Fatalf("CSV=%q want=%q", rows, want)
 		}
@@ -195,13 +196,25 @@ func TestMQTTCSVPreservesNonSecretValuesAndTimestamps(t *testing.T) {
 	if err := renderMQTTSubscriptionList(&table, []client.MQTTSubscription{sub}, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(table.String(), utc) || strings.Contains(table.String(), "\x1b") || strings.Contains(table.String(), "broker-secret") {
+	if strings.Contains(table.String(), "\x1b") || strings.Contains(table.String(), "broker-secret") || strings.Contains(table.String(), "2026") || strings.Contains(table.String(), "CREATED") || strings.Contains(table.String(), "UPDATED") {
 		t.Fatalf("table=%q", table.String())
 	}
-	var detail bytes.Buffer
-	writeMQTTSubscriptionInfo(&detail, &sub)
-	if !strings.Contains(detail.String(), utc) || strings.Contains(detail.String(), "broker-secret") {
-		t.Fatalf("detail=%s", detail.String())
+	for _, mode := range []struct {
+		name string
+		to   timeOutput
+		utc  string
+	}{
+		{"default", timeOutput{}, "2026-10-31T07:04:56Z"},
+		{"rfc3339nano", timeOutput{nano: true}, "2026-10-31T07:04:56.123456789Z"},
+	} {
+		var detail bytes.Buffer
+		writeMQTTSubscriptionInfo(&detail, &sub, mode.to)
+		if !strings.Contains(detail.String(), mode.utc) || strings.Contains(detail.String(), "broker-secret") {
+			t.Fatalf("%s: detail=%s", mode.name, detail.String())
+		}
+		if !mode.to.nano && strings.Contains(detail.String(), ".123") {
+			t.Fatalf("default output kept fractional seconds:\n%s", detail.String())
+		}
 	}
 	data, err := json.Marshal(safeMQTTSubscription(sub))
 	if err != nil {
@@ -216,6 +229,27 @@ func TestMQTTCSVPreservesNonSecretValuesAndTimestamps(t *testing.T) {
 	}
 }
 
+// Unset timestamps keep the "never" placeholder in the detail view; the
+// list has no timestamp columns, so it neither shows "never" nor a zero time.
+func TestMQTTZeroTimestamps(t *testing.T) {
+	sub := client.MQTTSubscription{ID: "s1"}
+	var out bytes.Buffer
+	if err := renderMQTTSubscriptionList(&out, []client.MQTTSubscription{sub}, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.String(), ",no\n") || strings.Contains(out.String(), "0001") {
+		t.Fatalf("CSV=%q", out.String())
+	}
+	var table, detail bytes.Buffer
+	if err := renderMQTTSubscriptionList(&table, []client.MQTTSubscription{sub}, false, false); err != nil {
+		t.Fatal(err)
+	}
+	writeMQTTSubscriptionInfo(&detail, &sub, timeOutput{})
+	if strings.Contains(table.String(), "never") || strings.Contains(table.String(), "0001") || strings.Count(detail.String(), "never") != 2 {
+		t.Fatalf("table=%s\ndetail=%s", table.String(), detail.String())
+	}
+}
+
 func TestMQTTBrokerRedactionDoesNotSanitizeNonSecrets(t *testing.T) {
 	for _, broker := range []string{"mqtt://host/a%2fb", "mqtt://host/path?x=a,b", "invalid\tbroker"} {
 		if got := scrubMQTTBroker(broker); got != broker {
@@ -227,16 +261,24 @@ func TestMQTTBrokerRedactionDoesNotSanitizeNonSecrets(t *testing.T) {
 	}
 }
 
-func TestMQTTStatsTimestampsPreserveNanoseconds(t *testing.T) {
+func TestMQTTStatsTimestamps(t *testing.T) {
 	stamp, _ := time.Parse(time.RFC3339Nano, "2026-10-31T02:03:04.123456789-03:30")
 	stats := client.MQTTSubscriptionStats{LastMessageAt: &stamp, ConnectedSince: &stamp}
-	for _, object := range []bool{false, true} {
-		var out bytes.Buffer
-		if err := renderMQTTStats(&out, []client.MQTTSubscriptionStats{stats}, object); err != nil {
-			t.Fatal(err)
-		}
-		if strings.Count(out.String(), "2026-10-31T05:33:04.123456789Z") != 2 {
-			t.Fatalf("stats=%s", out.String())
+	for _, mode := range []struct {
+		to   timeOutput
+		want string
+	}{
+		{timeOutput{}, "2026-10-31T05:33:04Z"},
+		{timeOutput{nano: true}, "2026-10-31T05:33:04.123456789Z"},
+	} {
+		for _, object := range []bool{false, true} {
+			var out bytes.Buffer
+			if err := renderMQTTStats(&out, []client.MQTTSubscriptionStats{stats}, object, mode.to); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(out.String(), mode.want) != 2 {
+				t.Fatalf("stats=%s", out.String())
+			}
 		}
 	}
 	data, err := json.Marshal(stats)

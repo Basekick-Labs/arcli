@@ -161,8 +161,18 @@ func TestMQTTClientPreservesDisabledPermissionAndNotFoundErrors(t *testing.T) {
 	}
 	_, err := cli.ListMQTTSubscriptions(context.Background())
 	var he *HTTPError
-	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Message != "Cannot GET /api/v1/mqtt/subscriptions/" || strings.Contains(err.Error(), "mqtt.enabled=false") {
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Message != "Cannot GET /api/v1/mqtt/subscriptions/" || strings.Contains(err.Error(), "mqtt.enabled") {
 		t.Errorf("missing route error = %v", err)
+	}
+	var fde *FeatureDisabledError
+	if errors.As(err, &fde) {
+		t.Errorf("MQTT must not report FeatureDisabledError: %v", err)
+	}
+	// Arc registers the MQTT routes even when MQTT is disabled (that answers
+	// 503), so the hint names no config key.
+	const want = "Cannot GET /api/v1/mqtt/subscriptions/ (HTTP 404); Arc is reachable but did not register this route; check the license, the server log, and that this Arc version supports this command"
+	if err == nil || !strings.HasSuffix(err.Error(), want) {
+		t.Errorf("missing route error = %v\nwant suffix %q", err, want)
 	}
 }
 

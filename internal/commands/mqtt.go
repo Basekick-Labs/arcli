@@ -11,7 +11,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -29,7 +28,8 @@ func newMQTTCmd() *cobra.Command {
 All MQTT endpoints require an admin token. Create and update requests read JSON
 from a file or stdin so broker credentials do not need to be passed as flags.
 CSV preserves non-secret field values without terminal sanitization. Table and
-CSV timestamps use UTC RFC3339Nano; JSON preserves timestamp precision.
+text timestamps use UTC RFC3339 by default; --time-output rfc3339nano shows
+fractional seconds. JSON preserves timestamp precision.
 Subscription output redacts credentials in every format.`,
 	}
 	c.AddCommand(newMQTTHealthCmd(), newMQTTStatsCmd(), newMQTTSubscriptionCmd())
@@ -79,6 +79,7 @@ func newMQTTHealthCmd() *cobra.Command {
 func newMQTTStatsCmd() *cobra.Command {
 	var f connFlags
 	var outputFormat string
+	var to timeOutput
 	c := &cobra.Command{
 		Use:   "stats",
 		Short: "Show aggregate MQTT subscription statistics",
@@ -105,11 +106,12 @@ func newMQTTStatsCmd() *cobra.Command {
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout())
-			return renderMQTTStats(cmd.OutOrStdout(), stats.Subscriptions, false)
+			return renderMQTTStats(cmd.OutOrStdout(), stats.Subscriptions, false, to)
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
@@ -173,6 +175,7 @@ func newMQTTSubscriptionListCmd() *cobra.Command {
 func newMQTTSubscriptionShowCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -196,18 +199,20 @@ func newMQTTSubscriptionShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), safeMQTTSubscription(*sub))
 			}
-			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub)
+			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub, to)
 			return nil
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
 func newMQTTSubscriptionCreateCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		configFile   string
 		configStdin  bool
@@ -242,7 +247,7 @@ only by you (chmod 600), or --config-stdin to read from a pipe.`,
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), safeMQTTSubscription(*sub))
 			}
-			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub)
+			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub, to)
 			return nil
 		},
 	}
@@ -251,12 +256,14 @@ only by you (chmod 600), or --config-stdin to read from a pipe.`,
 	c.Flags().BoolVar(&configStdin, "config-stdin", false, "read the JSON subscription config from stdin")
 	c.MarkFlagsMutuallyExclusive("config-file", "config-stdin")
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
 func newMQTTSubscriptionUpdateCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		configFile   string
 		configStdin  bool
@@ -291,7 +298,7 @@ file readable only by you (chmod 600), or --config-stdin to read from a pipe.`,
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), safeMQTTSubscription(*sub))
 			}
-			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub)
+			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub, to)
 			return nil
 		},
 	}
@@ -300,6 +307,7 @@ file readable only by you (chmod 600), or --config-stdin to read from a pipe.`,
 	c.Flags().BoolVar(&configStdin, "config-stdin", false, "read the JSON subscription config from stdin")
 	c.MarkFlagsMutuallyExclusive("config-file", "config-stdin")
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
@@ -378,6 +386,7 @@ func newMQTTSubscriptionActionCmd(action, short string, confirm bool) *cobra.Com
 func newMQTTSubscriptionStatsCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -401,11 +410,12 @@ func newMQTTSubscriptionStatsCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), stats)
 			}
-			return renderMQTTStats(cmd.OutOrStdout(), []client.MQTTSubscriptionStats{*stats}, true)
+			return renderMQTTStats(cmd.OutOrStdout(), []client.MQTTSubscriptionStats{*stats}, true, to)
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
@@ -462,7 +472,7 @@ func writeMQTTStatsSummary(w io.Writer, s client.MQTTStatsSummary) {
 	fmt.Fprintf(w, "bytes received: %s\n", humanBytes(s.TotalBytes))
 }
 
-func renderMQTTStats(w io.Writer, stats []client.MQTTSubscriptionStats, object bool) error {
+func renderMQTTStats(w io.Writer, stats []client.MQTTSubscriptionStats, object bool, to timeOutput) error {
 	if object {
 		if len(stats) == 0 {
 			return nil
@@ -475,8 +485,8 @@ func renderMQTTStats(w io.Writer, stats []client.MQTTSubscriptionStats, object b
 		fmt.Fprintf(w, "messages failed:   %d\n", s.MessagesFailed)
 		fmt.Fprintf(w, "bytes received:    %s\n", humanBytes(s.BytesReceived))
 		fmt.Fprintf(w, "reconnects:        %d\n", s.Reconnects)
-		fmt.Fprintf(w, "last message:      %s\n", fmtMQTTTime(s.LastMessageAt))
-		fmt.Fprintf(w, "connected since:   %s\n", fmtMQTTTime(s.ConnectedSince))
+		fmt.Fprintf(w, "last message:      %s\n", to.Ptr(s.LastMessageAt, "never"))
+		fmt.Fprintf(w, "connected since:   %s\n", to.Ptr(s.ConnectedSince, "never"))
 		return nil
 	}
 	rows := make([][]string, 0, len(stats))
@@ -484,7 +494,7 @@ func renderMQTTStats(w io.Writer, stats []client.MQTTSubscriptionStats, object b
 		rows = append(rows, []string{
 			clean(s.ID), clean(s.Name), clean(s.Status), fmt.Sprint(s.MessagesReceived),
 			fmt.Sprint(s.MessagesFailed), humanBytes(s.BytesReceived), fmt.Sprint(s.Reconnects),
-			fmtMQTTTime(s.LastMessageAt), fmtMQTTTime(s.ConnectedSince),
+			to.Ptr(s.LastMessageAt, "never"), to.Ptr(s.ConnectedSince, "never"),
 		})
 	}
 	return output.Table(w, []string{"ID", "NAME", "STATUS", "RECEIVED", "FAILED", "BYTES", "RECONNECTS", "LAST MESSAGE", "CONNECTED SINCE"}, rows)
@@ -502,15 +512,14 @@ func renderMQTTSubscriptionList(w io.Writer, list []client.MQTTSubscription, noH
 			for i := range row {
 				row[i] = clean(row[i])
 			}
-			row[11], row[12] = fmtMQTTTimeValue(sub.CreatedAt), fmtMQTTTimeValue(sub.UpdatedAt)
 		}
 		rows = append(rows, row)
 	}
-	headers := []string{"ID", "NAME", "STATUS", "BROKER", "CLIENT ID", "TOPICS", "QOS", "DATABASE", "TLS", "AUTO START", "PASSWORD", "CREATED AT", "UPDATED AT"}
+	headers := []string{"ID", "NAME", "STATUS", "BROKER", "CLIENT ID", "TOPICS", "QOS", "DATABASE", "TLS", "AUTO START", "PASSWORD"}
 	if asCSV {
 		cw := csv.NewWriter(w)
 		if !noHeader {
-			if err := cw.Write([]string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password", "created_at", "updated_at"}); err != nil {
+			if err := cw.Write([]string{"id", "name", "status", "broker", "client_id", "topics", "qos", "database", "tls", "auto_start", "password"}); err != nil {
 				return err
 			}
 		}
@@ -537,11 +546,10 @@ func mqttSubscriptionRow(s client.MQTTSubscription) []string {
 		s.ID, s.Name, s.Status, scrubMQTTBroker(s.Broker), s.ClientID,
 		strings.Join(s.Topics, ","), fmt.Sprint(s.QoS), s.Database,
 		fmt.Sprint(s.TLSEnabled), fmt.Sprint(s.AutoStart), password,
-		s.CreatedAt.UTC().Format(time.RFC3339Nano), s.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
-func writeMQTTSubscriptionInfo(w io.Writer, sub *client.MQTTSubscription) {
+func writeMQTTSubscriptionInfo(w io.Writer, sub *client.MQTTSubscription, to timeOutput) {
 	fmt.Fprintf(w, "id:                       %s\n", clean(sub.ID))
 	fmt.Fprintf(w, "name:                     %s\n", clean(sub.Name))
 	fmt.Fprintf(w, "status:                   %s\n", clean(sub.Status))
@@ -571,8 +579,8 @@ func writeMQTTSubscriptionInfo(w io.Writer, sub *client.MQTTSubscription) {
 	fmt.Fprintf(w, "connect timeout:          %ds\n", sub.ConnectTimeoutSeconds)
 	fmt.Fprintf(w, "reconnect max:            %ds\n", sub.ReconnectMaxSeconds)
 	fmt.Fprintf(w, "clean session:            %t\n", sub.CleanSession)
-	fmt.Fprintf(w, "created:                  %s\n", fmtMQTTTimeValue(sub.CreatedAt))
-	fmt.Fprintf(w, "updated:                  %s\n", fmtMQTTTimeValue(sub.UpdatedAt))
+	fmt.Fprintf(w, "created:                  %s\n", to.Val(sub.CreatedAt, "never"))
+	fmt.Fprintf(w, "updated:                  %s\n", to.Val(sub.UpdatedAt, "never"))
 }
 
 func safeMQTTSubscriptions(list []client.MQTTSubscription) []client.MQTTSubscription {
@@ -610,18 +618,4 @@ func mqttBrokerHasCredentials(broker string) bool {
 		return strings.Contains(broker, "@")
 	}
 	return u.User != nil
-}
-
-func fmtMQTTTime(t *time.Time) string {
-	if t == nil || t.IsZero() {
-		return "never"
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func fmtMQTTTimeValue(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-	return t.UTC().Format(time.RFC3339Nano)
 }

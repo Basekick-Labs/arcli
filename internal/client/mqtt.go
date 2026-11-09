@@ -136,8 +136,12 @@ type MQTTSubscriptionUpdateRequest struct {
 	CleanSession          *bool              `json:"clean_session,omitempty"`
 }
 
+// mqttJSON passes no config key: Arc registers the MQTT routes whether or
+// not MQTT is enabled (a disabled subsystem answers 503 with its own
+// message), so a route-missing 404 is not explained by mqtt.enabled and the
+// hint must not name it.
 func (c *Client) mqttJSON(ctx context.Context, method, path string, reqBody any, limit int64, out any) ([]byte, error) {
-	return c.featureJSON(ctx, "MQTT", "mqtt.enabled", method, path, reqBody, limit, out)
+	return c.featureJSON(ctx, "MQTT", "", method, path, reqBody, limit, out)
 }
 
 // MQTTHealth calls GET /api/v1/mqtt/health.
