@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -167,6 +168,32 @@ func TestFormatCell(t *testing.T) {
 		got := formatCell(c.in)
 		if got != c.want {
 			t.Errorf("formatCell(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestFormatCell_JSONNumberMatchesFloatLegacy pins that a json.Number cell
+// prints exactly what the same value printed when QueryJSON decoded it as
+// float64, except integers above 2^53, which now keep every digit. Arc
+// writes DOUBLEs with strconv 'f' formatting, so the inputs are in that form.
+func TestFormatCell_JSONNumberMatchesFloatLegacy(t *testing.T) {
+	for _, s := range []string{
+		"0", "-0", "42", "42.5", "-3.25", "1234567.5", "0.0000001",
+		"100000000000000000", "1234567890123456768",
+		"10000000000000000000", "150000000000000000000", "1180591620717411303424",
+		"0.1", "123456789.123",
+	} {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, legacy := formatCell(json.Number(s)), formatCell(f); got != legacy {
+			t.Errorf("formatCell(json.Number(%q)) = %q, legacy float64 output %q", s, got, legacy)
+		}
+	}
+	for _, s := range []string{"9007199254740993", "-9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+		if got := formatCell(json.Number(s)); got != s {
+			t.Errorf("formatCell(json.Number(%q)) = %q, want it exact", s, got)
 		}
 	}
 }

@@ -141,13 +141,23 @@ func formatCell(v any) string {
 		}
 		return "false"
 	case float64:
-		// Callers may supply floats directly. QueryJSON uses json.Number
-		// for wire values so large integers retain their exact precision.
 		if x == float64(int64(x)) {
 			return strconv.FormatInt(int64(x), 10)
 		}
 		return strconv.FormatFloat(x, 'g', -1, 64)
 	case json.Number:
+		// QueryJSON decodes numbers as json.Number so integers above 2^53
+		// keep every digit. An integer that fits int64 prints exactly;
+		// anything else (a fraction, an exponent, a value beyond int64)
+		// prints as the float64 it decoded to before, so table and CSV
+		// output for DOUBLE columns stays byte for byte what earlier
+		// releases printed (1234567.5 is still "1.2345675e+06").
+		if i, err := strconv.ParseInt(string(x), 10, 64); err == nil {
+			return strconv.FormatInt(i, 10)
+		}
+		if f, err := strconv.ParseFloat(string(x), 64); err == nil {
+			return formatCell(f)
+		}
 		return string(x)
 	}
 	// Slices, maps, anything else — fall back to compact JSON so the
