@@ -66,7 +66,7 @@ var legacyFeatureDisabledKeys = map[string]bool{
 // wrong place. Retention and continuous-query handler failures stop Arc,
 // so their legacy text is accurate and gets no note.
 var legacyFeatureDisabledNotes = map[string]string{
-	backupConfigKey: "if backup.enabled is true, the backup manager failed to start (see the server log)",
+	backupConfigKey: "if backup.enabled is true, the backup manager failed to initialize (see the server log)",
 }
 
 // routeNotRegisteredHint is appended to a route-missing *HTTPError of a
@@ -104,8 +104,9 @@ func (c *Client) classifyFeatureRouteMissing(ctx context.Context, err error, fea
 }
 
 // featureJSON is the shared request helper for feature-gated JSON
-// routes: optional JSON body, bounded read, non-2xx → *HTTPError (a
-// missing route is classified by classifyFeatureRouteMissing), 2xx → body
+// routes: optional JSON body, bounded read, non-2xx → *HTTPError, except a
+// missing route, which classifyFeatureRouteMissing turns into
+// FeatureDisabledError (legacy groups) or a wrapped *HTTPError; 2xx → body
 // returned and,
 // when out is non-nil, decoded into it. A 2xx body of "null" is
 // returned as-is so callers can normalise it.

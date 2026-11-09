@@ -33,7 +33,7 @@ func TestFeatureRouteMissing_LegacyMessagesPinned(t *testing.T) {
 	}{
 		{"retention", "retention policies are disabled on this server (retention.enabled=false)", retErr},
 		{"cq", "continuous queries are disabled on this server (continuous_query.enabled=false)", cqErr},
-		{"backup", "backups are disabled on this server (backup.enabled=false); if backup.enabled is true, the backup manager failed to start (see the server log)", backupErr},
+		{"backup", "backups are disabled on this server (backup.enabled=false); if backup.enabled is true, the backup manager failed to initialize (see the server log)", backupErr},
 	}
 	for _, tc := range cases {
 		var fde *FeatureDisabledError
