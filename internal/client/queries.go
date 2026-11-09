@@ -16,7 +16,24 @@ const (
 	QueryHistoryMaxLimit = 1000
 	// QueryHistoryDefaultLimit is Arc's default history page size.
 	QueryHistoryDefaultLimit = 50
+
+	// queryManagementConfigKey is the server setting the query-management
+	// routes depend on: Arc registers them only when
+	// query_management.enabled is true (default false) and the license
+	// includes query management.
+	queryManagementConfigKey = "query_management.enabled"
 )
+
+// queriesGet is getRaw with a route-missing 404 given the neutral hint of
+// classifyFeatureRouteMissing; every other error is unchanged (a handler
+// 404 such as "Query not found" is not route-missing).
+func (c *Client) queriesGet(ctx context.Context, path string, limit int64) ([]byte, error) {
+	body, err := c.getRaw(ctx, path, limit)
+	if err != nil {
+		return nil, c.classifyFeatureRouteMissing(ctx, err, "query management", queryManagementConfigKey)
+	}
+	return body, nil
+}
 
 // ManagedQuery mirrors the query metadata returned by Arc's query-management API.
 // Active-query responses omit the history-only fields.
@@ -73,7 +90,7 @@ func ValidateQueryID(id string) error {
 
 // ActiveQueries calls GET /api/v1/queries/active.
 func (c *Client) ActiveQueries(ctx context.Context) (*QueryList, error) {
-	body, err := c.getRaw(ctx, "/api/v1/queries/active", 16<<20)
+	body, err := c.queriesGet(ctx, "/api/v1/queries/active", 16<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +109,7 @@ func (c *Client) QueryHistory(ctx context.Context, limit int) (*QueryList, error
 		q.Set("limit", strconv.Itoa(limit))
 		path += "?" + q.Encode()
 	}
-	body, err := c.getRaw(ctx, path, 32<<20)
+	body, err := c.queriesGet(ctx, path, 32<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +121,7 @@ func (c *Client) GetManagedQuery(ctx context.Context, id string) (*ManagedQueryR
 	if err := ValidateQueryID(id); err != nil {
 		return nil, err
 	}
-	body, err := c.getRaw(ctx, "/api/v1/queries/"+url.PathEscape(id), 4<<20)
+	body, err := c.queriesGet(ctx, "/api/v1/queries/"+url.PathEscape(id), 4<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +158,7 @@ func (c *Client) CancelManagedQuery(ctx context.Context, id string) (*QueryCance
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, decodeWriteError(resp.StatusCode, body)
+		return nil, c.classifyFeatureRouteMissing(ctx, decodeWriteError(resp.StatusCode, body), "query management", queryManagementConfigKey)
 	}
 	var out QueryCancelResult
 	if err := json.Unmarshal(body, &out); err != nil {

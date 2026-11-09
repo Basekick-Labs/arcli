@@ -128,3 +128,70 @@ func TestQueryManagementPreservesServerErrorStatuses(t *testing.T) {
 		})
 	}
 }
+
+func TestQueryManagementRouteMissingKeepsHTTPErrorWithHint(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
+	})
+	const hint = " (HTTP 404); Arc is reachable but did not register this route; check query_management.enabled, the license, the server log, and that this Arc version supports this command"
+	checks := []struct {
+		name string
+		call func() error
+		want string
+	}{
+		{"active", func() error { _, err := cli.ActiveQueries(context.Background()); return err }, "arc: Cannot GET /api/v1/queries/active" + hint},
+		{"history", func() error { _, err := cli.QueryHistory(context.Background(), 0); return err }, "arc: Cannot GET /api/v1/queries/history" + hint},
+		{"show", func() error { _, err := cli.GetManagedQuery(context.Background(), testQueryID); return err }, "arc: Cannot GET /api/v1/queries/" + testQueryID + hint},
+		{"cancel", func() error { _, err := cli.CancelManagedQuery(context.Background(), testQueryID); return err }, "arc: Cannot DELETE /api/v1/queries/" + testQueryID + hint},
+	}
+	for _, tc := range checks {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+				t.Fatalf("want wrapped *HTTPError 404, got %T: %v", err, err)
+			}
+			var fde *FeatureDisabledError
+			if errors.As(err, &fde) {
+				t.Fatalf("query management must not report FeatureDisabledError: %v", err)
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("err = %q\nwant %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// A handler 404 for an unknown query id, and a route-missing 404 from
+// something that is not Arc, must not get the hint.
+func TestQueryManagementNotFoundAndWrongEndpointHaveNoHint(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		if r.URL.Path == "/api/v1/queries/"+testQueryID {
+			_, _ = w.Write([]byte(`{"success":false,"error":"Query not found"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
+	})
+	_, err := cli.GetManagedQuery(context.Background(), testQueryID)
+	if err == nil || err.Error() != "arc: Query not found (HTTP 404)" {
+		t.Fatalf("handler 404 changed: %T %v", err, err)
+	}
+	_, err = cli.CancelManagedQuery(context.Background(), testQueryID)
+	if err == nil || err.Error() != "arc: Query not found (HTTP 404)" {
+		t.Fatalf("handler 404 changed: %T %v", err, err)
+	}
+	_, err = cli.ActiveQueries(context.Background())
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+		t.Fatalf("want wrapped *HTTPError 404, got %T: %v", err, err)
+	}
+	if strings.Contains(err.Error(), "did not register") || !strings.Contains(err.Error(), "does not answer like an Arc server") {
+		t.Fatalf("wrong endpoint got the hint: %v", err)
+	}
+}

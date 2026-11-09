@@ -141,9 +141,9 @@ arcli admin query show <query-id>
 arcli admin query cancel <query-id>
 ```
 
-Query management requires an admin token and an Arc Enterprise licence with the `query_management` feature enabled. Cancellation prompts for confirmation; pass `--yes` for scripted use.
+Query management requires an admin token and an Arc Enterprise licence with the `query_management` feature enabled. Arc registers these routes only when `query_management.enabled` is true (default false) and the license includes the feature; a missing route reports the server's HTTP 404 error followed by a hint to check `query_management.enabled`, the license, the server log, and the Arc version. Cancellation prompts for confirmation; pass `--yes` for scripted use.
 
-Query-management table and CSV timestamps use UTC RFC3339Nano, preserving fractional seconds. JSON preserves the original response; CSV retains original SQL text, including line breaks.
+Query-management table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON preserves the original response; CSV retains original SQL text, including line breaks.
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 

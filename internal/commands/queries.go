@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,13 +19,6 @@ func newAdminCmd() *cobra.Command {
 	return c
 }
 
-func managedQueryTime(t time.Time, zero string) string {
-	if t.IsZero() {
-		return zero
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
 func newQueriesCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "query",
@@ -34,8 +26,9 @@ func newQueriesCmd() *cobra.Command {
 		Long: `Inspect and manage Arc query activity. These endpoints require an admin
 token and an Arc Enterprise licence with the query_management feature enabled.
 
-Table and CSV timestamps use UTC RFC3339Nano with fractional seconds.
-JSON preserves the original response. CSV retains multiline SQL unchanged.
+Table and CSV timestamps are UTC RFC3339 by default; --time-output
+rfc3339nano shows fractional seconds. JSON preserves the original response.
+CSV retains multiline SQL unchanged.
 
 Cancelling a query prompts for confirmation unless --yes is supplied.`,
 	}
@@ -48,6 +41,7 @@ func newQueriesActiveCmd() *cobra.Command {
 		f            connFlags
 		outputFormat string
 		noHeader     bool
+		to           timeOutput
 	)
 	c := &cobra.Command{
 		Use:   "active",
@@ -74,10 +68,11 @@ duration, and SQL. Supports table, JSON, and CSV output.`,
 			if err != nil {
 				return err
 			}
-			return renderManagedQueryList(cmd, res, outputFormat, noHeader, false)
+			return renderManagedQueryList(cmd, res, outputFormat, noHeader, false, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	return c
@@ -89,6 +84,7 @@ func newQueriesHistoryCmd() *cobra.Command {
 		outputFormat string
 		noHeader     bool
 		limit        int
+		to           timeOutput
 	)
 	c := &cobra.Command{
 		Use:   "history",
@@ -121,10 +117,11 @@ between 1 and 1000 entries. Supports table, JSON, and CSV output.`,
 			if err != nil {
 				return err
 			}
-			return renderManagedQueryList(cmd, res, outputFormat, noHeader, true)
+			return renderManagedQueryList(cmd, res, outputFormat, noHeader, true, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().IntVar(&limit, "limit", client.QueryHistoryDefaultLimit, "maximum queries to return (1-1000)")
@@ -135,6 +132,7 @@ func newQueriesShowCmd() *cobra.Command {
 	var (
 		f            connFlags
 		outputFormat string
+		to           timeOutput
 	)
 	c := &cobra.Command{
 		Use:     "show <query-id>",
@@ -162,10 +160,11 @@ func newQueriesShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), res.Raw)
 			}
-			return renderManagedQuery(cmd.OutOrStdout(), res.Query)
+			return renderManagedQuery(cmd.OutOrStdout(), res.Query, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -219,20 +218,20 @@ func newQueriesCancelCmd() *cobra.Command {
 	return c
 }
 
-func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format string, noHeader, history bool) error {
+func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format string, noHeader, history bool, to timeOutput) error {
 	if format == output.FormatJSON {
 		return writeRawJSON(cmd.OutOrStdout(), list.Raw)
 	}
 	if format == output.FormatCSV {
 		w := csv.NewWriter(cmd.OutOrStdout())
-		headers := managedQueryListHeaders(history)
+		headers := managedQueryCSVHeaders(history)
 		if !noHeader {
 			if err := w.Write(headers); err != nil {
 				return err
 			}
 		}
 		for _, query := range list.Queries {
-			if err := w.Write(managedQueryListRow(query, history, false)); err != nil {
+			if err := w.Write(managedQueryListRow(query, history, false, to)); err != nil {
 				return err
 			}
 		}
@@ -253,7 +252,7 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 	}
 	rows := make([][]string, 0, len(list.Queries))
 	for _, query := range list.Queries {
-		rows = append(rows, managedQueryListRow(query, history, true))
+		rows = append(rows, managedQueryListRow(query, history, true, to))
 	}
 	return output.Table(cmd.OutOrStdout(), headers, rows)
 }
@@ -265,17 +264,29 @@ func managedQueryListHeaders(history bool) []string {
 	return []string{"ID", "STATUS", "TOKEN", "CLIENT", "STARTED", "DURATION MS", "SQL"}
 }
 
-func managedQueryListRow(query client.ManagedQuery, history, terminal bool) []string {
+// managedQueryCSVHeaders names the CSV columns in lower snake_case after
+// the server's JSON fields, like the other CSV outputs. "token" has no
+// single JSON field: it combines token_name and token_id.
+func managedQueryCSVHeaders(history bool) []string {
+	if history {
+		return []string{"id", "status", "token", "remote_addr", "start_time", "end_time", "duration_ms", "row_count", "sql"}
+	}
+	return []string{"id", "status", "token", "remote_addr", "start_time", "duration_ms", "sql"}
+}
+
+// managedQueryListRow builds one table (terminal) or CSV row. An unset
+// timestamp is "-" in the table and an empty field in CSV.
+func managedQueryListRow(query client.ManagedQuery, history, terminal bool, to timeOutput) []string {
+	none := ""
+	if terminal {
+		none = "-"
+	}
 	row := []string{
 		query.ID, query.Status, managedQueryToken(query), query.RemoteAddr,
-		managedQueryTime(query.StartTime, "-"),
+		to.Val(query.StartTime, none),
 	}
 	if history {
-		ended := "-"
-		if query.EndTime != nil {
-			ended = managedQueryTime(*query.EndTime, "-")
-		}
-		row = append(row, ended, formatQueryDuration(query.DurationMs), strconv.Itoa(query.RowCount), query.SQL)
+		row = append(row, to.Ptr(query.EndTime, none), formatQueryDuration(query.DurationMs), strconv.Itoa(query.RowCount), query.SQL)
 		return managedQueryCleanRow(row, terminal)
 	}
 	return managedQueryCleanRow(append(row, formatQueryDuration(query.DurationMs), query.SQL), terminal)
@@ -307,19 +318,15 @@ func formatQueryDuration(ms float64) string {
 	return strconv.FormatFloat(ms, 'f', -1, 64)
 }
 
-func renderManagedQuery(w io.Writer, query client.ManagedQuery) error {
-	end := "-"
-	if query.EndTime != nil {
-		end = managedQueryTime(*query.EndTime, "-")
-	}
+func renderManagedQuery(w io.Writer, query client.ManagedQuery, to timeOutput) error {
 	rows := [][]string{
 		{"id", clean(query.ID)},
 		{"status", clean(query.Status)},
 		{"sql", clean(query.SQL)},
 		{"token", clean(managedQueryToken(query))},
 		{"client", cleanOrDash(query.RemoteAddr)},
-		{"start time", managedQueryTime(query.StartTime, "-")},
-		{"end time", end},
+		{"start time", to.Val(query.StartTime, "-")},
+		{"end time", to.Ptr(query.EndTime, "-")},
 		{"duration ms", formatQueryDuration(query.DurationMs)},
 		{"rows", strconv.Itoa(query.RowCount)},
 		{"row cap", strconv.Itoa(query.RowCap)},

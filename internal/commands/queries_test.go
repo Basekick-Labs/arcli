@@ -176,7 +176,8 @@ func TestAdminQueryRegistration(t *testing.T) {
 
 func TestManagedQueryPrecisionAndMultilineCSV(t *testing.T) {
 	const stamp = "2026-10-27T03:04:05.123456789+02:30"
-	const utc = "2026-10-27T00:34:05.123456789Z"
+	const utc = "2026-10-27T00:34:05Z"
+	const utcNano = "2026-10-27T00:34:05.123456789Z"
 	const sql = "SELECT 1, 'quoted'\nFROM metrics\tWHERE x = 1"
 	query := map[string]any{"id": commandTestQueryID, "sql": sql, "token_name": "admin", "status": "completed", "start_time": stamp, "end_time": stamp}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,32 +189,66 @@ func TestManagedQueryPrecisionAndMultilineCSV(t *testing.T) {
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "admin")
-	for _, action := range []string{"active", "history"} {
-		for _, format := range []string{"table", "csv", "json"} {
-			out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", action, "-o", format)
-			want := utc
+	for _, nano := range []bool{false, true} {
+		var extra []string
+		wantUTC := utc
+		if nano {
+			extra = []string{"--time-output", "rfc3339nano"}
+			wantUTC = utcNano
+		}
+		for _, action := range []string{"active", "history"} {
+			for _, format := range []string{"table", "csv", "json"} {
+				out, _, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"admin", "query", action, "-o", format}, extra...)...)
+				want := wantUTC
+				if format == "json" {
+					want = stamp
+				}
+				if err != nil || !strings.Contains(out, want) {
+					t.Fatalf("%s/%s/nano=%t: %q %v", action, format, nano, out, err)
+				}
+				if !nano && format != "json" && strings.Contains(out, ".123456789") {
+					t.Errorf("%s/%s: default output shows fractional seconds: %q", action, format, out)
+				}
+				if format == "csv" {
+					rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+					if err != nil || len(rows) != 2 || rows[1][len(rows[1])-1] != sql {
+						t.Errorf("CSV changed SQL: %v %v", rows, err)
+					}
+				}
+			}
+		}
+		for _, format := range []string{"table", "json"} {
+			out, _, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"admin", "query", "show", commandTestQueryID, "-o", format}, extra...)...)
+			want := wantUTC
 			if format == "json" {
 				want = stamp
 			}
 			if err != nil || !strings.Contains(out, want) {
-				t.Fatalf("%s/%s: %q %v", action, format, out, err)
-			}
-			if format == "csv" {
-				rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
-				if err != nil || len(rows) != 2 || rows[1][len(rows[1])-1] != sql {
-					t.Errorf("CSV changed SQL: %v %v", rows, err)
-				}
+				t.Errorf("show/%s/nano=%t: %q %v", format, nano, out, err)
 			}
 		}
 	}
-	for _, format := range []string{"table", "json"} {
-		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", "show", commandTestQueryID, "-o", format)
-		want := utc
-		if format == "json" {
-			want = stamp
+}
+
+func TestManagedQueryCSVHeadersAndUnsetTimes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"count":1,"queries":[{"id":"8f14e45fceea","sql":"SELECT 1","status":"running","start_time":"0001-01-01T00:00:00Z","duration_ms":2}]}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin")
+	for _, tc := range []struct {
+		action, header, row string
+	}{
+		{"active", "id,status,token,remote_addr,start_time,duration_ms,sql", commandTestQueryID + ",running,-,,,2,SELECT 1"},
+		{"history", "id,status,token,remote_addr,start_time,end_time,duration_ms,row_count,sql", commandTestQueryID + ",running,-,,,,2,0,SELECT 1"},
+	} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", tc.action, "-o", "csv")
+		if err != nil || out != tc.header+"\n"+tc.row+"\n" {
+			t.Errorf("%s CSV = %q, err = %v", tc.action, out, err)
 		}
-		if err != nil || !strings.Contains(out, want) {
-			t.Errorf("show/%s: %q %v", format, out, err)
+		out, _, err = execCmd(t, NewRoot(BuildInfo{}), "admin", "query", tc.action)
+		if err != nil || !strings.Contains(out, "STARTED") || !strings.Contains(out, "DURATION MS") {
+			t.Errorf("%s table headers changed: %q, err = %v", tc.action, out, err)
 		}
 	}
 }
