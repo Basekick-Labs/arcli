@@ -3,6 +3,9 @@ package client
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
+	"math"
+	"math/big"
 	"strings"
 	"testing"
 )
@@ -152,6 +155,82 @@ func TestMsgPackFirstByteOK(t *testing.T) {
 	for _, bad := range []byte{'c', '{', '[', ' ', '\n', 0x00, 0xa3, 0xc0, 0x7f} {
 		if MsgPackFirstByteOK(bad) {
 			t.Errorf("0x%02x should be rejected", bad)
+		}
+	}
+}
+
+func TestJSONToMsgPack_ExactTimestamps(t *testing.T) {
+	for _, tc := range []struct {
+		number  string
+		want    int64
+		invalid bool
+	}{
+		{"1700000000000000001.0", 1700000000000000001, false},
+		{"1.700000000000000001e18", 1700000000000000001, false},
+		{"17000000000000000010e-1", 1700000000000000001, false},
+		{"9007199254740993.0", 9007199254740993, false},
+		{"9223372036854775807.0", math.MaxInt64, false},
+		{"9.223372036854775807e18", math.MaxInt64, false},
+		{"-9223372036854775808.0", math.MinInt64, false},
+		{"-9.223372036854775808E+18", math.MinInt64, false},
+		{"0.001e3", 1, false},
+		{"1.00e2", 100, false},
+		{"-0.0e99999999999999999999", 0, false},
+		{"1" + strings.Repeat("0", 1000) + "e-1000", 1, false},
+		{"1700000000000000001.5", 0, true},
+		{"1700000000000000001.0000000000000001", 0, true},
+		{"9223372036854775808.0", 0, true},
+		{"-9223372036854775809.0", 0, true},
+		{"1e-400", 0, true},
+		{"1e-1000000000", 0, true},
+		{"1e1000000000", 0, true},
+		{"1e-99999999999999999999", 0, true},
+	} {
+		for _, shape := range []string{"row", "columnar"} {
+			t.Run(fmt.Sprintf("%s/%s", shape, tc.number), func(t *testing.T) {
+				in := fmt.Sprintf(`{"m":"cpu","t":%s,"fields":{"x":1}}`, tc.number)
+				want := map[string]any{"m": "cpu", "t": tc.want, "fields": map[string]any{"x": int64(1)}}
+				if shape == "columnar" {
+					in = fmt.Sprintf(`{"m":"cpu","columns":{"time":[%s]}}`, tc.number)
+					want = map[string]any{"m": "cpu", "columns": map[string]any{"time": []any{tc.want}}}
+				}
+				out, sum, err := JSONToMsgPack(strings.NewReader(in))
+				if tc.invalid {
+					if err == nil || out != nil {
+						t.Errorf("non-integral or out-of-range timestamp accepted: output=%x error=%v", out, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, expected := hex.EncodeToString(out), encodeHex(t, want); got != expected {
+					t.Errorf("MessagePack = %s, want %s (timestamp %d)", got, expected, tc.want)
+				}
+				if sum.Items != 1 || sum.Rows != 1 {
+					t.Errorf("summary = %+v", sum)
+				}
+			})
+		}
+	}
+}
+
+func TestParseIntegerEpoch_DecimalScales(t *testing.T) {
+	for _, mantissa := range []string{
+		"0", "-0", "1", "-1", "1.5", "0.0001", "1700000000000000001",
+		"9223372036854775808", "-9223372036854775808", "100000000000000000000",
+	} {
+		for exponent := -25; exponent <= 25; exponent++ {
+			number := fmt.Sprintf("%se%d", mantissa, exponent)
+			exact, ok := new(big.Rat).SetString(number)
+			if !ok {
+				t.Fatalf("invalid test number %q", number)
+			}
+			wantOK := exact.IsInt() && exact.Num().IsInt64()
+			got, gotOK := parseIntegerEpoch(number)
+			if gotOK != wantOK || (wantOK && got != exact.Num().Int64()) {
+				t.Errorf("parseIntegerEpoch(%q) = (%d, %t), exact value = %s, fits int64 = %t", number, got, gotOK, exact, wantOK)
+			}
 		}
 	}
 }
