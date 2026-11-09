@@ -224,6 +224,9 @@ func runGoldenCase(t *testing.T, tc goldenCase, extraArgs ...string) (string, *g
 
 func TestTimeOutputDefaultGolden(t *testing.T) {
 	update := os.Getenv("ARCLI_UPDATE_TIME_GOLDEN") == "1"
+	if update && os.Getenv("CI") != "" {
+		t.Fatal("ARCLI_UPDATE_TIME_GOLDEN must not be set in CI: it rewrites the goldens instead of comparing")
+	}
 	for _, tc := range timeOutputGoldenCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			got, _ := runGoldenCase(t, tc)

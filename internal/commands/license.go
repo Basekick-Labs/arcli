@@ -69,7 +69,7 @@ the server and are outside this command.`,
 			rows := [][]string{{"configured", strconv.FormatBool(st.Configured)}}
 			if lic := st.License; lic != nil {
 				rows = append(rows, []string{"tier", clean(lic.Tier)}, []string{"status", clean(lic.Status)}, []string{"source", clean(lic.Source)})
-				if lic.ExpiresAt != nil {
+				if lic.ExpiresAt != nil && !lic.ExpiresAt.IsZero() {
 					rows = append(rows, []string{"expires_at", to.Time(*lic.ExpiresAt)})
 				}
 				if lic.DaysRemaining != nil {

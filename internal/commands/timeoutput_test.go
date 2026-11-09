@@ -73,7 +73,7 @@ func TestTimeOutputSet(t *testing.T) {
 	for _, in := range []string{"", "bogus", "rfc3339 ", "rfc", "unix"} {
 		var to timeOutput
 		err := to.Set(in)
-		if err == nil || !strings.Contains(err.Error(), `(valid: rfc3339, rfc3339nano)`) {
+		if err == nil || err.Error() != "must be rfc3339 or rfc3339nano" {
 			t.Errorf("Set(%q) err = %v", in, err)
 		}
 	}
@@ -137,7 +137,7 @@ func TestTimeOutputInvalidMakesNoRequest(t *testing.T) {
 	for _, tc := range timeOutputGoldenCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			got, g := runGoldenCase(t, tc, "--time-output", "bogus")
-			if !strings.Contains(got, `invalid --time-output "bogus" (valid: rfc3339, rfc3339nano)`) {
+			if !strings.Contains(got, `invalid argument "bogus" for "--time-output" flag: must be rfc3339 or rfc3339nano`) {
 				t.Errorf("output = %s", got)
 			}
 			if n := g.requests(); n != 0 {
@@ -242,9 +242,12 @@ func TestCQExecuteEndComparesSentValue(t *testing.T) {
 		// New: fractional --end later than last processed within the same
 		// second; 19:00:00 is sent, which IS earlier. Main stayed silent.
 		{"fractional end same second", "2026-09-07T19:00:00.4Z", "2026-09-07T19:00:00.5Z",
-			"warning: --end 2026-09-07T19:00:00Z is earlier than the query's last processed time 2026-09-07T19:00:00Z; the server will rewind the watermark and the next run will reprocess everything since\n"},
+			"warning: --end 2026-09-07T19:00:00.5Z is sent as 2026-09-07T19:00:00Z (whole seconds), which is earlier than the query's last processed time 2026-09-07T19:00:00.4Z; the server will rewind the watermark and the next run will reprocess everything since\n"},
 		{"fractional end, offset input", "2026-09-07T19:00:00.4Z", "2026-09-07T16:00:00.9-03:00",
-			"warning: --end 2026-09-07T19:00:00Z is earlier than the query's last processed time 2026-09-07T19:00:00Z; the server will rewind the watermark and the next run will reprocess everything since\n"},
+			"warning: --end 2026-09-07T19:00:00.9Z is sent as 2026-09-07T19:00:00Z (whole seconds), which is earlier than the query's last processed time 2026-09-07T19:00:00.4Z; the server will rewind the watermark and the next run will reprocess everything since\n"},
+		// Fractional input that main already warned about keeps main's text.
+		{"fractional end earlier", "2026-09-07T19:00:00Z", "2026-09-07T18:59:58.5Z",
+			"warning: --end 2026-09-07T18:59:58Z is earlier than the query's last processed time 2026-09-07T19:00:00Z; the server will rewind the watermark and the next run will reprocess everything since\n"},
 		// Unchanged: fractional end whose truncation equals last processed.
 		{"fractional end equals truncated", "2026-09-07T19:00:00Z", "2026-09-07T19:00:00.5Z", ""},
 		{"fractional end next second", "2026-09-07T19:00:00.4Z", "2026-09-07T19:00:01.1Z", ""},

@@ -15,8 +15,10 @@ import (
 // JSON output never goes through it.
 //
 // It is a per-command value, not package state: a renderer that shows a
-// timestamp takes a timeOutput parameter, so a call site that does not
-// plumb the flag does not compile.
+// timestamp takes a timeOutput parameter, and the old free helpers are
+// gone, so a renderer cannot format a timestamp without one. Registering
+// the flag (to.add) on each command is enforced by
+// TestTimeOutputFlagTreeWalk, not by the compiler.
 type timeOutput struct{ nano bool }
 
 const (
@@ -32,7 +34,7 @@ func (t *timeOutput) Set(s string) error {
 	case timeOutputRFC3339Nano:
 		t.nano = true
 	default:
-		return fmt.Errorf("invalid --time-output %q (valid: %s, %s)", s, timeOutputRFC3339, timeOutputRFC3339Nano)
+		return fmt.Errorf("must be %s or %s", timeOutputRFC3339, timeOutputRFC3339Nano)
 	}
 	return nil
 }
@@ -51,7 +53,7 @@ func (t *timeOutput) Type() string { return "string" }
 // add registers --time-output on c. The usage's `a|b` token is what shell
 // completion offers (see enumFromUsage).
 func (t *timeOutput) add(c *cobra.Command) {
-	c.Flags().Var(t, "time-output", "timestamp display in table/CSV/text: rfc3339|rfc3339nano (UTC; JSON is unaffected; rfc3339nano trims trailing zeros, so it is variable width and not lexically sortable)")
+	c.Flags().Var(t, "time-output", "timestamp display in table/CSV/text: rfc3339|rfc3339nano (JSON unaffected)")
 }
 
 func (t timeOutput) layout() string {

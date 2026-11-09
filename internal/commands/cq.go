@@ -535,12 +535,20 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 			if opts.End != nil && q.LastProcessedTime != nil && !dryRun {
 				// The client sends --end with its fractional seconds dropped
 				// (client.ExecuteContinuousQuery formats it as RFC3339), and
-				// that is what the server moves the watermark to; compare and
-				// print that value, not the one typed. The warning is fixed
-				// RFC3339 and ignores --time-output.
+				// that is what the server moves the watermark to, so compare
+				// that value, not the one typed. Every case earlier releases
+				// warned about (the typed value itself is earlier) keeps the
+				// published text byte for byte. The cases they missed (only
+				// the sent value is earlier, so --end had a fraction) get a
+				// text naming both values with fractions, so it never reads
+				// "X is earlier than X". It ignores --time-output.
 				sentEnd := opts.End.UTC().Truncate(time.Second)
 				if lp, perr := time.Parse(time.RFC3339Nano, *q.LastProcessedTime); perr == nil && sentEnd.Before(lp) {
-					fmt.Fprintf(stderr, "warning: --end %s is earlier than the query's last processed time %s; the server will rewind the watermark and the next run will reprocess everything since\n", sentEnd.Format(time.RFC3339), lp.UTC().Format(time.RFC3339))
+					if opts.End.Before(lp) {
+						fmt.Fprintf(stderr, "warning: --end %s is earlier than the query's last processed time %s; the server will rewind the watermark and the next run will reprocess everything since\n", sentEnd.Format(time.RFC3339), lp.UTC().Format(time.RFC3339))
+					} else {
+						fmt.Fprintf(stderr, "warning: --end %s is sent as %s (whole seconds), which is earlier than the query's last processed time %s; the server will rewind the watermark and the next run will reprocess everything since\n", opts.End.UTC().Format(time.RFC3339Nano), sentEnd.Format(time.RFC3339), lp.UTC().Format(time.RFC3339Nano))
+					}
 				}
 			}
 			ctx, cancel = f.ctx(cmd)
