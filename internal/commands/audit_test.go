@@ -78,6 +78,7 @@ func TestAuditStats_TableJSONAndLicenseError(t *testing.T) {
 func TestAuditFractionalTimestampOutput(t *testing.T) {
 	const original = "2026-10-27T12:34:56.123456789+02:30"
 	const utc = "2026-10-27T10:04:56.123456789Z"
+	const utcSeconds = "2026-10-27T10:04:56Z"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/audit/stats" {
 			_, _ = w.Write([]byte(`{"data":{"auth.login":1},"since":"` + original + `","extra":"kept"}`))
@@ -87,31 +88,48 @@ func TestAuditFractionalTimestampOutput(t *testing.T) {
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
-	for _, format := range []string{"table", "csv", "json"} {
-		out, _, err := execCmd(t, newAuditCmd(), "log", "-o", format)
-		want := utc
-		if format == "json" {
-			want = original
+	for _, mode := range []struct {
+		args []string
+		want string
+	}{
+		{nil, utcSeconds},
+		{[]string{"--time-output", "rfc3339nano"}, utc},
+	} {
+		for _, format := range []string{"table", "csv", "json"} {
+			out, _, err := execCmd(t, newAuditCmd(), append([]string{"log", "-o", format}, mode.args...)...)
+			want := mode.want
+			if format == "json" {
+				want = original
+			}
+			if err != nil || !strings.Contains(out, want) {
+				t.Errorf("log %s %v: out=%q err=%v", format, mode.args, out, err)
+			}
+			if mode.args == nil && format != "json" && strings.Contains(out, ".123") {
+				t.Errorf("log %s: default output kept fractional seconds: %q", format, out)
+			}
+			if format == "json" && !strings.Contains(out, `"extra": "kept"`) {
+				t.Errorf("JSON field lost: %s", out)
+			}
 		}
-		if err != nil || !strings.Contains(out, want) {
-			t.Errorf("log %s: out=%q err=%v", format, out, err)
-		}
-		if format == "json" && !strings.Contains(out, `"extra": "kept"`) {
-			t.Errorf("JSON field lost: %s", out)
+		for _, format := range []string{"table", "json"} {
+			out, _, err := execCmd(t, newAuditCmd(), append([]string{"stats", "-o", format}, mode.args...)...)
+			want := mode.want
+			if format == "json" {
+				want = original
+			}
+			if err != nil || !strings.Contains(out, want) {
+				t.Errorf("stats %s %v: out=%q err=%v", format, mode.args, out, err)
+			}
+			if mode.args == nil && format != "json" && strings.Contains(out, ".123") {
+				t.Errorf("stats %s: default output kept fractional seconds: %q", format, out)
+			}
+			if format == "json" && !strings.Contains(out, `"extra": "kept"`) {
+				t.Errorf("JSON field lost: %s", out)
+			}
 		}
 	}
-	for _, format := range []string{"table", "json"} {
-		out, _, err := execCmd(t, newAuditCmd(), "stats", "-o", format)
-		want := utc
-		if format == "json" {
-			want = original
-		}
-		if err != nil || !strings.Contains(out, want) {
-			t.Errorf("stats %s: out=%q err=%v", format, out, err)
-		}
-		if format == "json" && !strings.Contains(out, `"extra": "kept"`) {
-			t.Errorf("JSON field lost: %s", out)
-		}
+	if _, _, err := execCmd(t, newAuditCmd(), "log", "--time-output", "bogus"); err == nil {
+		t.Error("bogus --time-output accepted")
 	}
 }
 
@@ -127,7 +145,7 @@ func TestAuditLogCommandName(t *testing.T) {
 		}
 	}
 	out, _, err := execCmd(t, newAuditCmd(), "log", "--help")
-	if err != nil || !strings.Contains(out, "UTC RFC3339Nano") || strings.Contains(out, "arcli audit logs") {
+	if err != nil || !strings.Contains(out, "--time-output\nrfc3339nano shows fractional seconds") || strings.Contains(out, "arcli audit logs") {
 		t.Fatalf("help=%q err=%v", out, err)
 	}
 }

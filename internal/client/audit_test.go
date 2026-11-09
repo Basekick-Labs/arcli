@@ -95,3 +95,35 @@ func TestAuditLicenseErrorIsPreserved(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A route-missing 404 on a healthy Arc keeps the server's *HTTPError (not
+// FeatureDisabledError, which is frozen to the legacy groups) and appends
+// the neutral hint naming audit_log.enabled.
+func TestAuditRouteMissingKeepsHTTPErrorWithHint(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
+	})
+	for name, call := range map[string]func() error{
+		"/api/v1/audit/logs":  func() error { _, err := cli.AuditLogs(context.Background(), AuditLogsOptions{}); return err },
+		"/api/v1/audit/stats": func() error { _, err := cli.AuditStats(context.Background(), ""); return err },
+	} {
+		err := call()
+		var httpErr *HTTPError
+		if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+			t.Fatalf("%s: want wrapped *HTTPError 404, got %T: %v", name, err, err)
+		}
+		var fde *FeatureDisabledError
+		if errors.As(err, &fde) {
+			t.Fatalf("%s: audit must not report FeatureDisabledError: %v", name, err)
+		}
+		want := "Cannot GET " + name + " (HTTP 404); Arc is reachable but did not register this route; check audit_log.enabled, the license, the server log, and that this Arc version supports this command"
+		if !strings.HasSuffix(err.Error(), want) {
+			t.Fatalf("err = %q\nwant suffix %q", err.Error(), want)
+		}
+	}
+}

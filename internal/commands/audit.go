@@ -34,6 +34,7 @@ func newAuditLogCmd() *cobra.Command {
 		outputFormat string
 		noHeader     bool
 		filter       client.AuditLogsOptions
+		to           timeOutput
 	)
 	c := &cobra.Command{
 		Use:   "log",
@@ -43,8 +44,9 @@ func newAuditLogCmd() *cobra.Command {
 Filters are applied on Arc. --since and --until use RFC3339 timestamps;
 --limit defaults to the server's 100-entry limit and --offset supports
 pagination. Output formats: table (default) | json | csv.
-Table and CSV timestamps use UTC RFC3339Nano with fractional seconds.
-JSON preserves the original server response.`,
+Table and CSV timestamps use UTC RFC3339 by default; --time-output
+rfc3339nano shows fractional seconds. JSON preserves the original server
+response.`,
 		Example: `  arcli audit log --since 2026-01-01T00:00:00Z --limit 100 --offset 100
   arcli audit log --event-type auth.login --actor admin -o json`,
 		Args: cobra.NoArgs,
@@ -68,12 +70,13 @@ JSON preserves the original server response.`,
 			if err != nil {
 				return err
 			}
-			return renderAuditLogs(cmd.OutOrStdout(), res, outputFormat, noHeader)
+			return renderAuditLogs(cmd.OutOrStdout(), res, outputFormat, noHeader, to)
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
+	to.add(c)
 	c.Flags().StringVar(&filter.EventType, "event-type", "", "filter by event type")
 	c.Flags().StringVar(&filter.Actor, "actor", "", "filter by actor")
 	c.Flags().StringVar(&filter.Database, "database", "", "filter by database")
@@ -84,7 +87,7 @@ JSON preserves the original server response.`,
 	return c
 }
 
-func renderAuditLogs(w io.Writer, res *client.AuditLogsResult, format string, noHeader bool) error {
+func renderAuditLogs(w io.Writer, res *client.AuditLogsResult, format string, noHeader bool, to timeOutput) error {
 	if format == output.FormatJSON {
 		return writeRawJSON(w, res.Raw)
 	}
@@ -96,7 +99,7 @@ func renderAuditLogs(w io.Writer, res *client.AuditLogsResult, format string, no
 			}
 		}
 		for _, entry := range res.Data {
-			if err := cw.Write(auditEntryFields(entry)); err != nil {
+			if err := cw.Write(auditEntryFields(entry, to)); err != nil {
 				return err
 			}
 		}
@@ -110,7 +113,7 @@ func renderAuditLogs(w io.Writer, res *client.AuditLogsResult, format string, no
 	rows := make([][]string, 0, len(res.Data))
 	for _, entry := range res.Data {
 		rows = append(rows, []string{
-			strconv.FormatInt(entry.ID, 10), fmtTimeVal(entry.Timestamp, "-"), clean(entry.EventType), clean(entry.Actor),
+			strconv.FormatInt(entry.ID, 10), to.Val(entry.Timestamp, "-"), clean(entry.EventType), clean(entry.Actor),
 			clean(entry.Method), clean(entry.Path), clean(entry.Database), strconv.Itoa(entry.StatusCode), strconv.FormatInt(entry.DurationMs, 10),
 		})
 	}
@@ -121,9 +124,9 @@ func renderAuditLogs(w io.Writer, res *client.AuditLogsResult, format string, no
 	return output.Table(w, headers, rows)
 }
 
-func auditEntryFields(entry client.AuditEntry) []string {
+func auditEntryFields(entry client.AuditEntry, to timeOutput) []string {
 	return []string{
-		strconv.FormatInt(entry.ID, 10), fmtTimeVal(entry.Timestamp, ""), entry.EventType, entry.Actor, entry.Method, entry.Path,
+		strconv.FormatInt(entry.ID, 10), to.Val(entry.Timestamp, ""), entry.EventType, entry.Actor, entry.Method, entry.Path,
 		entry.Database, entry.Measurement, strconv.Itoa(entry.StatusCode), entry.IPAddress, entry.UserAgent,
 		strconv.FormatInt(entry.DurationMs, 10), entry.Detail,
 	}
@@ -134,6 +137,7 @@ func newAuditStatsCmd() *cobra.Command {
 		f            connFlags
 		outputFormat string
 		since        string
+		to           timeOutput
 	)
 	c := &cobra.Command{
 		Use:   "stats",
@@ -141,8 +145,9 @@ func newAuditStatsCmd() *cobra.Command {
 		Long: `Show audit event counts (GET /api/v1/audit/stats).
 
 --since uses an RFC3339 timestamp. When omitted, Arc reports the last 24 hours.
-The displayed since timestamp uses UTC RFC3339Nano with fractional seconds.
-JSON preserves the original server response.`,
+The displayed since timestamp uses UTC RFC3339 by default; --time-output
+rfc3339nano shows fractional seconds. JSON preserves the original server
+response.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -158,20 +163,21 @@ JSON preserves the original server response.`,
 			if err != nil {
 				return err
 			}
-			return renderAuditStats(cmd.OutOrStdout(), res, outputFormat)
+			return renderAuditStats(cmd.OutOrStdout(), res, outputFormat, to)
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().StringVar(&since, "since", "", "count records since this RFC3339 timestamp (default: 24h)")
+	to.add(c)
 	return c
 }
 
-func renderAuditStats(w io.Writer, res *client.AuditStatsResult, format string) error {
+func renderAuditStats(w io.Writer, res *client.AuditStatsResult, format string, to timeOutput) error {
 	if format == output.FormatJSON {
 		return writeRawJSON(w, res.Raw)
 	}
-	if _, err := fmt.Fprintf(w, "since: %s\n", fmtServerTime(res.Since, "-")); err != nil {
+	if _, err := fmt.Fprintf(w, "since: %s\n", to.Server(res.Since, "-")); err != nil {
 		return err
 	}
 	if len(res.Data) == 0 {
