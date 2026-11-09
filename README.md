@@ -142,7 +142,7 @@ arcli logs --level warn --since 6h
 
 `cluster file` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
 
-Cluster file table and CSV timestamps use UTC RFC3339Nano, preserving fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV retains original field values; JSON preserves the original response, including pagination.
+Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV retains original field values; JSON preserves the original response, including pagination.
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
 

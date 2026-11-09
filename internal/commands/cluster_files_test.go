@@ -93,7 +93,7 @@ func TestClusterFiles_StandaloneAndFlagValidation(t *testing.T) {
 	}
 
 	_, _, err = execCmd(t, newClusterFilesCmd(), "--limit", "10001")
-	if err == nil || !strings.Contains(err.Error(), "limit must be between 1 and 10000") {
+	if err == nil || err.Error() != "cluster file limit must be between 1 and 10000" {
 		t.Errorf("limit error = %v", err)
 	}
 	_, _, err = execCmd(t, newClusterFilesCmd(), "--database", "1metrics")
@@ -166,7 +166,8 @@ func TestClusterFiles_PropagatesPaginationOutputErrors(t *testing.T) {
 
 func TestClusterFilePrecisionRawCSVAndNoHeader(t *testing.T) {
 	const stamp = "2026-10-27T03:04:05.123456789+02:30"
-	const utc = "2026-10-27T00:34:05.123456789Z"
+	const utc = "2026-10-27T00:34:05Z"
+	const utcNano = "2026-10-27T00:34:05.123456789Z"
 	const raw = "raw\nvalue\twith,comma\"quote\x1b[31m"
 	file := map[string]any{"path": raw, "database": raw, "measurement": raw, "tier": raw, "sha256": raw, "origin_node_id": raw, "compaction_job": raw, "partition_time": stamp, "created_at": stamp}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,44 +175,54 @@ func TestClusterFilePrecisionRawCSVAndNoHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "admin")
-	for _, format := range []string{"table", "csv", "json"} {
-		for _, noHeader := range []bool{false, true} {
-			args := []string{"cluster", "file", "-o", format}
-			if noHeader {
-				args = append(args, "--no-header")
-			}
-			out, stderr, err := execCmd(t, NewRoot(BuildInfo{}), args...)
-			want := utc
-			if format == "json" {
-				want = stamp
-			}
-			if err != nil || !strings.Contains(out, want) {
-				t.Fatalf("%s/%t: %q %v", format, noHeader, out, err)
-			}
-			if format == "csv" {
-				rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
-				count := 2
+	for _, nano := range []bool{false, true} {
+		for _, format := range []string{"table", "csv", "json"} {
+			for _, noHeader := range []bool{false, true} {
+				args := []string{"cluster", "file", "-o", format}
 				if noHeader {
-					count = 1
+					args = append(args, "--no-header")
 				}
-				if err != nil || len(rows) != count {
-					t.Fatalf("CSV=%v err=%v", rows, err)
+				utc := utc
+				if nano {
+					args = append(args, "--time-output", "rfc3339nano")
+					utc = utcNano
 				}
-				row := rows[len(rows)-1]
-				for _, i := range []int{0, 1, 2, 3, 5, 7, 11} {
-					if row[i] != raw {
-						t.Errorf("column %d changed: %q", i, row[i])
+				out, stderr, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+				want := utc
+				if format == "json" {
+					want = stamp
+				}
+				if err != nil || !strings.Contains(out, want) {
+					t.Fatalf("%s/%t/nano=%t: %q %v", format, noHeader, nano, out, err)
+				}
+				if format != "json" && !nano && strings.Contains(out, ".123456789") {
+					t.Errorf("%s: default output shows fractional seconds: %q", format, out)
+				}
+				if format == "csv" {
+					rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+					count := 2
+					if noHeader {
+						count = 1
+					}
+					if err != nil || len(rows) != count {
+						t.Fatalf("CSV=%v err=%v", rows, err)
+					}
+					row := rows[len(rows)-1]
+					for _, i := range []int{0, 1, 2, 3, 5, 7, 11} {
+						if row[i] != raw {
+							t.Errorf("column %d changed: %q", i, row[i])
+						}
+					}
+					if row[6] != utc || row[8] != utc || !strings.Contains(stderr, "next cursor: next") {
+						t.Errorf("CSV timestamps/cursor: %v %q", row, stderr)
 					}
 				}
-				if row[6] != utc || row[8] != utc || !strings.Contains(stderr, "next cursor: next") {
-					t.Errorf("CSV timestamps/cursor: %v %q", row, stderr)
+				if format == "table" && strings.Contains(out, "PARTITION TIME") == noHeader {
+					t.Errorf("table header=%t: %q", noHeader, out)
 				}
-			}
-			if format == "table" && strings.Contains(out, "PARTITION TIME") == noHeader {
-				t.Errorf("table header=%t: %q", noHeader, out)
-			}
-			if format == "json" && (!strings.Contains(out, `"extra": "kept"`) || !strings.Contains(out, `"next_cursor": "next"`)) {
-				t.Errorf("JSON changed: %q", out)
+				if format == "json" && (!strings.Contains(out, `"extra": "kept"`) || !strings.Contains(out, `"next_cursor": "next"`)) {
+					t.Errorf("JSON changed: %q", out)
+				}
 			}
 		}
 	}

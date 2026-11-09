@@ -127,6 +127,7 @@ func newClusterFilesCmd() *cobra.Command {
 		cursor       string
 		limit        int
 		noHeader     bool
+		to           timeOutput
 	)
 	c := &cobra.Command{
 		Use:   "file",
@@ -138,7 +139,8 @@ to continue. The server response must include next_cursor; older Arc versions
 without pagination support are rejected instead of treating a full manifest
 as one page. JSON preserves files, total, and next_cursor. CSV writes the
 page count and continuation cursor to stderr so stdout remains valid CSV.
-Table and CSV timestamps use UTC RFC3339Nano with fractional seconds.
+Table and CSV timestamps are UTC RFC3339 by default; --time-output
+rfc3339nano shows fractional seconds. JSON keeps the server's values.
 CSV preserves original field values. Use --no-header to omit column headers.`,
 		Example: `  arcli cluster file
   arcli cluster file --database metrics --limit 500 -o json
@@ -164,7 +166,7 @@ CSV preserves original field values. Use --no-header to omit column headers.`,
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), page.Raw)
 			}
-			if err := renderClusterFiles(cmd.OutOrStdout(), page.Files, noHeader, outputFormat == output.FormatCSV); err != nil {
+			if err := renderClusterFiles(cmd.OutOrStdout(), page.Files, noHeader, outputFormat == output.FormatCSV, to); err != nil {
 				return err
 			}
 			w := cmd.OutOrStdout()
@@ -182,6 +184,7 @@ CSV preserves original field values. Use --no-header to omit column headers.`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().StringVar(&database, "database", "", "filter by database")
@@ -196,7 +199,7 @@ var clusterFileCSVHeaders = []string{"path", "database", "measurement", "tier", 
 
 // renderClusterFiles preserves the server's manifest order, which is also
 // the order used by its path-based continuation cursor.
-func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV bool) error {
+func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV bool, to timeOutput) error {
 	if asCSV {
 		cw := csv.NewWriter(w)
 		if !noHeader {
@@ -207,8 +210,8 @@ func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV
 		for _, file := range files {
 			row := []string{
 				file.Path, file.Database, file.Measurement, file.Tier,
-				strconv.FormatInt(file.SizeBytes, 10), file.SHA256, clusterFileTime(file.PartitionTime, ""),
-				file.OriginNodeID, clusterFileTime(file.CreatedAt, ""), strconv.FormatUint(file.LSN, 10),
+				strconv.FormatInt(file.SizeBytes, 10), file.SHA256, to.Val(file.PartitionTime, ""),
+				file.OriginNodeID, to.Val(file.CreatedAt, ""), strconv.FormatUint(file.LSN, 10),
 				strconv.FormatBool(file.CoverageInherited), file.CompactionJob,
 			}
 			if err := cw.Write(row); err != nil {
@@ -222,7 +225,7 @@ func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV
 	for _, file := range files {
 		rows = append(rows, []string{
 			clean(file.Path), clean(file.Database), clean(file.Measurement), clean(file.Tier), humanBytes(file.SizeBytes),
-			clusterFileTime(file.PartitionTime, "-"), clean(file.OriginNodeID), clean(file.SHA256),
+			to.Val(file.PartitionTime, "-"), clean(file.OriginNodeID), clean(file.SHA256),
 		})
 	}
 	headers := clusterFileTableHeaders
@@ -230,13 +233,6 @@ func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV
 		headers = nil
 	}
 	return output.Table(w, headers, rows)
-}
-
-func clusterFileTime(t time.Time, zero string) string {
-	if t.IsZero() {
-		return zero
-	}
-	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // ---- nodes -----------------------------------------------------------------

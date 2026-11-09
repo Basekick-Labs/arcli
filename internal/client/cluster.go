@@ -278,10 +278,10 @@ func ValidateClusterFilesArgs(database, cursor string, limit int) error {
 		}
 	}
 	if len(cursor) > clusterFilesMaxCursorLen {
-		return fmt.Errorf("cluster files cursor must be at most %d bytes", clusterFilesMaxCursorLen)
+		return fmt.Errorf("cluster file cursor must be at most %d bytes", clusterFilesMaxCursorLen)
 	}
 	if limit < 1 || limit > ClusterFilesMaxLimit {
-		return fmt.Errorf("cluster files limit must be between 1 and %d", ClusterFilesMaxLimit)
+		return fmt.Errorf("cluster file limit must be between 1 and %d", ClusterFilesMaxLimit)
 	}
 	return nil
 }
@@ -315,10 +315,10 @@ func (c *Client) ClusterFiles(ctx context.Context, database, cursor string, limi
 		NextCursor *string       `json:"next_cursor"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("decode cluster files: %w", err)
+		return nil, fmt.Errorf("decode cluster file response: %w", err)
 	}
 	if response.NextCursor == nil {
-		return nil, fmt.Errorf("cluster files response is missing next_cursor; this Arc version does not support paginated cluster files")
+		return nil, fmt.Errorf("cluster file response is missing next_cursor; this Arc version does not support the paginated cluster file manifest")
 	}
 	if response.Files == nil {
 		response.Files = []ClusterFile{}
