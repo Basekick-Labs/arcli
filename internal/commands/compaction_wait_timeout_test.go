@@ -17,11 +17,13 @@ func TestCompactionWaitTimeoutBoundsRequestsAndPolls(t *testing.T) {
 		name                   string
 		block, command         bool
 		requestWait, totalWait time.Duration
+		wantErr                string // exact message; "" = not checked
 	}{
-		{"poll delay", false, false, 5 * time.Second, 50 * time.Millisecond},
-		{"blocked request", true, false, 5 * time.Second, 50 * time.Millisecond},
-		{"shorter request timeout", true, false, 50 * time.Millisecond, 5 * time.Second},
-		{"command JSON output", true, true, 5 * time.Second, 50 * time.Millisecond},
+		// The published message, byte for byte (no ": context deadline exceeded").
+		{"poll delay", false, false, 5 * time.Second, 50 * time.Millisecond, "cycle 1 still running after 50ms; it continues on the server"},
+		{"blocked request", true, false, 5 * time.Second, 50 * time.Millisecond, "gave up after 50ms waiting for cycle 1 (no status received in time); it may still run on the server"},
+		{"shorter request timeout", true, false, 50 * time.Millisecond, 5 * time.Second, ""},
+		{"command JSON output", true, true, 5 * time.Second, 50 * time.Millisecond, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			oldInterval, oldMax := waitPollInterval, waitPollMax
@@ -72,6 +74,9 @@ func TestCompactionWaitTimeoutBoundsRequestsAndPolls(t *testing.T) {
 			case got := <-done:
 				if !errors.Is(got.err, context.DeadlineExceeded) {
 					t.Errorf("error = %v; want deadline exceeded", got.err)
+				}
+				if tc.wantErr != "" && (got.err == nil || got.err.Error() != tc.wantErr) {
+					t.Errorf("error = %v; want exactly %q", got.err, tc.wantErr)
 				}
 				if got.out != "" {
 					t.Errorf("timed-out command printed a result: %q", got.out)
