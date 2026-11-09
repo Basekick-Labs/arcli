@@ -73,7 +73,7 @@ func TestBackup_IncompleteIsVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"INCOMPLETE", "2 skipped, 1 metadata, 2 unaddressable, 2 manifest-only; info: 1 skipped reconciled, 4 unregistered, 3 left manifest during backup, cluster manifest checked", "│ -"} {
+	for _, want := range []string{"INCOMPLETE", "3 skipped, 1 metadata, 2 unaddressable, 2 manifest-only", "│ -"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list table lacks %q:\n%s", want, out)
 		}
@@ -83,14 +83,14 @@ func TestBackup_IncompleteIsVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 || lines[0] != "backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,skipped_reconciled,unregistered_skipped,manifest_only_files,left_manifest_during_run,cluster_manifest_checked" {
+	if len(lines) != 4 || lines[0] != "backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,unregistered_skipped,manifest_only_files,left_manifest_during_run" {
 		t.Errorf("csv header = %q (%d lines)", lines[0], len(lines))
 	}
-	if len(lines) == 4 && (!strings.HasSuffix(lines[1], ",21,2086,3,1,2,1,4,2,3,true") || !strings.HasSuffix(lines[2], ",20,2000,0,0,0,0,0,0,0,") || !strings.HasSuffix(lines[3], ",20,2000,0,1,0,0,0,0,0,")) {
+	if len(lines) == 4 && (!strings.HasSuffix(lines[1], ",21,2086,3,1,2,4,2,3") || !strings.HasSuffix(lines[2], ",20,2000,0,0,0,0,0,0") || !strings.HasSuffix(lines[3], ",20,2000,0,1,0,0,0,0")) {
 		t.Errorf("csv rows = %q", lines[1:])
 	}
 	out, _, err = execCmd(t, newBackupListCmd(), "-o", "csv", "--no-header")
-	if err != nil || strings.Contains(out, "backup_id,") || !strings.Contains(out, ",3,1,2,1,4,2,3,true") {
+	if err != nil || strings.Contains(out, "backup_id,") || !strings.Contains(out, ",3,1,2,4,2,3") {
 		t.Errorf("csv --no-header: err=%v out=%q", err, out)
 	}
 	// json is the server's body, untouched.

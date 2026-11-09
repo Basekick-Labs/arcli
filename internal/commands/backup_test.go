@@ -431,8 +431,9 @@ func TestBackup_RestoreUsesServerDefaultsUnlessExplicit(t *testing.T) {
 		if _, ok := f.lastRestoreRequest()["mode"]; ok {
 			t.Error("omitted --mode must leave the request mode to Arc")
 		}
-		if !strings.Contains(out, "Restore of "+id+" started (mode: merge)") {
-			t.Errorf("output omitted the server's effective default mode: %q", out)
+		// A merge keeps the published line; only replace is named.
+		if !strings.Contains(out, "Restore of "+id+" started\n") {
+			t.Errorf("merge restore changed the published line: %q", out)
 		}
 	})
 
@@ -444,8 +445,8 @@ func TestBackup_RestoreUsesServerDefaultsUnlessExplicit(t *testing.T) {
 		if err == nil || err.Error() != "aborted" {
 			t.Fatalf("err = %v; want declined confirmation", err)
 		}
-		if !strings.Contains(stderr, "restore mode follows Arc's default: merge for a full backup, or replace for a scoped backup on a cluster") {
-			t.Errorf("confirmation omitted the server's scoped mode default: %q", stderr)
+		if strings.Contains(stderr, "restore mode") {
+			t.Errorf("default confirmation must keep its published text: %q", stderr)
 		}
 		if len(f.lastRestoreRequest()) != 0 {
 			t.Errorf("declined restore reached the server: %v", f.lastRestoreRequest())

@@ -180,10 +180,10 @@ func writeRestoreDetails(w io.Writer, p *client.BackupProgress) {
 	if p.Operation != "restore" {
 		return
 	}
-	if p.Mode != "" {
+	if p.Mode != "" && p.Mode != "merge" {
 		fmt.Fprintf(w, "mode:       %s\n", clean(p.Mode))
 	}
-	if p.Mode != "" || p.FilesRegistered > 0 || p.RegistrationFailed > 0 || p.SidecarMismatches > 0 || p.ReplacedFiles > 0 {
+	if p.FilesRegistered > 0 || p.RegistrationFailed > 0 || p.SidecarMismatches > 0 || p.ReplacedFiles > 0 {
 		fmt.Fprintf(w, "restore:    %d files registered, %d registration failures, %d sidecar mismatches, %d files replaced\n",
 			p.FilesRegistered, p.RegistrationFailed, p.SidecarMismatches, p.ReplacedFiles)
 	}
@@ -287,24 +287,18 @@ func describeClusterBackupInfo(reconciled, unregistered, leftManifest int64, che
 }
 
 func backupListIncomplete(b client.BackupSummary) string {
-	incomplete := describeIncomplete(incompleteCounts{
-		Skipped:           b.SkippedFiles,
-		SkippedReconciled: b.SkippedReconciled,
-		Metadata:          b.SkippedMetadataFiles,
-		Unaddressable:     b.UnaddressableFiles,
-		ManifestOnly:      b.ManifestOnlyFiles,
-	})
-	info := describeClusterBackupInfo(b.SkippedReconciled, b.UnregisteredSkipped, b.LeftManifestDuringRun, b.ClusterManifestChecked)
-	if incomplete == "" {
-		if info == "" {
-			return "-"
-		}
-		return "info: " + info
+	// Arc's backup listing carries no skipped_reconciled, so skipped files
+	// are counted as listed; `backup show` reads the manifest and subtracts
+	// them. Information-only counts stay out of this column.
+	if incomplete := describeIncomplete(incompleteCounts{
+		Skipped:       b.SkippedFiles,
+		Metadata:      b.SkippedMetadataFiles,
+		Unaddressable: b.UnaddressableFiles,
+		ManifestOnly:  b.ManifestOnlyFiles,
+	}); incomplete != "" {
+		return incomplete
 	}
-	if info != "" {
-		return incomplete + "; info: " + info
-	}
-	return incomplete
+	return "-"
 }
 
 // writeSample prints one labelled line per path (up to the server's 32).
@@ -498,16 +492,12 @@ incompleteness and cluster-manifest counts returned by the server.`,
 			if outputFormat == output.FormatCSV {
 				cw := csv.NewWriter(w)
 				if !noHeader {
-					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files", "skipped_reconciled", "unregistered_skipped", "manifest_only_files", "left_manifest_during_run", "cluster_manifest_checked"}); err != nil {
+					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files", "unregistered_skipped", "manifest_only_files", "left_manifest_during_run"}); err != nil {
 						return err
 					}
 				}
 				for _, b := range list {
-					checked := ""
-					if b.ClusterManifestChecked != nil {
-						checked = strconv.FormatBool(*b.ClusterManifestChecked)
-					}
-					if err := cw.Write([]string{b.BackupID, to.Val(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.SkippedReconciled, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10), checked}); err != nil {
+					if err := cw.Write([]string{b.BackupID, to.Val(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10)}); err != nil {
 						return err
 					}
 				}
@@ -862,7 +852,7 @@ before the restore starts.`,
 			if waitTimeout <= 0 {
 				return fmt.Errorf("--wait-timeout must be > 0")
 			}
-			if mode != "merge" && mode != "replace" {
+			if mode != "" && mode != "merge" && mode != "replace" {
 				return fmt.Errorf("invalid --mode %q (valid: merge, replace)", mode)
 			}
 			if dataOnly && withConfig {
@@ -910,8 +900,6 @@ before the restore starts.`,
 			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), to.Val(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
 			if cmd.Flags().Changed("mode") && mode == "replace" {
 				parts = append(parts, "The current cluster manifest entries for these databases will be removed before restoring.")
-			} else if !cmd.Flags().Changed("mode") {
-				parts = append(parts, "The restore mode follows Arc's default: merge for a full backup, or replace for a scoped backup on a cluster.")
 			}
 			if restoreMeta {
 				parts = append(parts, "The metadata store will be staged and applied at the next server start.")
@@ -972,7 +960,7 @@ before the restore starts.`,
 					if err := writeRawJSON(cmd.OutOrStdout(), res.Raw); err != nil {
 						return err
 					}
-				} else if res.Mode != "" {
+				} else if res.Mode == "replace" {
 					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s accepted (mode: %s)\n", clean(id), clean(res.Mode))
 				}
 				restartNote()
@@ -984,11 +972,10 @@ before the restore starts.`,
 						return err
 					}
 				} else {
+					// Only a mode the server echoed: an older Arc ignores the
+					// field and merges. A merge prints the published line.
 					startedMode := res.Mode
-					if startedMode == "" && cmd.Flags().Changed("mode") {
-						startedMode = mode
-					}
-					if startedMode == "" {
+					if startedMode == "" || startedMode == "merge" {
 						fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s started\n", clean(id))
 					} else {
 						fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s started (mode: %s)\n", clean(id), clean(startedMode))
@@ -1012,10 +999,7 @@ before the restore starts.`,
 				if completedMode == "" {
 					completedMode = res.Mode
 				}
-				if completedMode == "" && cmd.Flags().Changed("mode") {
-					completedMode = mode
-				}
-				if completedMode == "" {
+				if completedMode == "" || completedMode == "merge" {
 					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes))
 				} else {
 					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written (mode: %s)\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes), clean(completedMode))
@@ -1035,7 +1019,7 @@ before the restore starts.`,
 	f.add(c)
 	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
-	c.Flags().StringVar(&mode, "mode", "merge", "restore mode: merge|replace (default: merge)")
+	c.Flags().StringVar(&mode, "mode", "", "restore mode: merge|replace (default: the server's)")
 	c.Flags().BoolVar(&dataOnly, "data-only", false, "restore data files only (skip metadata and config)")
 	c.Flags().BoolVar(&withMetadata, "with-metadata", false, "also restore the metadata store (staged; unavailable on clusters)")
 	c.Flags().BoolVar(&withConfig, "with-config", false, "also restore the server config file (staged)")

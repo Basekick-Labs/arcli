@@ -23,13 +23,13 @@ func TestBackupClusterCSVTimeOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
-			if err != nil || len(rows) != 2 || len(rows[0]) != 14 || len(rows[1]) != 14 {
+			if err != nil || len(rows) != 2 || len(rows[0]) != 12 || len(rows[1]) != 12 {
 				t.Fatalf("invalid CSV: %v %s", err, out)
 			}
 			if rows[1][1] != tc.want {
 				t.Fatalf("timestamp %q, want %q", rows[1][1], tc.want)
 			}
-			for i, want := range []string{"2", "4", "5", "6", "false"} {
+			for i, want := range []string{"4", "5", "6"} {
 				if rows[1][9+i] != want {
 					t.Errorf("cluster field %s=%s, want %s", rows[0][9+i], rows[1][9+i], want)
 				}

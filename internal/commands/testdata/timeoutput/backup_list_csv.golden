@@ -1,7 +1,7 @@
 --- stdout
-backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,skipped_reconciled,unregistered_skipped,manifest_only_files,left_manifest_during_run,cluster_manifest_checked
-backup-20260907-190000-abcdef12,2026-09-07T19:00:01Z,full,1,2,2048,0,0,0,0,0,0,0,
-backup-20260908-010203-0000ffff,,full,0,0,0,1,0,0,0,0,0,0,
+backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,unregistered_skipped,manifest_only_files,left_manifest_during_run
+backup-20260907-190000-abcdef12,2026-09-07T19:00:01Z,full,1,2,2048,0,0,0,0,0,0
+backup-20260908-010203-0000ffff,,full,0,0,0,1,0,0,0,0,0
 --- stderr
 --- err
 <nil>
