@@ -42,6 +42,12 @@ var timeOutputCommands = []string{
 	"arcli retention show",
 	"arcli retention update",
 	"arcli scheduler status",
+	"arcli tiering file",
+	"arcli tiering policy list",
+	"arcli tiering policy set",
+	"arcli tiering policy show",
+	"arcli tiering stats",
+	"arcli tiering status",
 }
 
 func TestTimeOutputFlagTreeWalk(t *testing.T) {

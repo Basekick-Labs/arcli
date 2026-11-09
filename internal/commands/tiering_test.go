@@ -201,15 +201,21 @@ func TestTieringCommandsRegistered(t *testing.T) {
 	}
 }
 
-func TestTieringFileCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
+func TestTieringFileCSVPreservesValuesAndTimestamps(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testTieringFileCSV(t, nil, "2026-10-31T07:04:56Z") })
+	t.Run("rfc3339nano", func(t *testing.T) {
+		testTieringFileCSV(t, []string{"--time-output", "rfc3339nano"}, "2026-10-31T07:04:56.123456789Z")
+	})
+}
+
+func testTieringFileCSV(t *testing.T, extra []string, utc string) {
 	stamp := "2026-10-31T12:34:56.123456789+05:30"
-	utc := "2026-10-31T07:04:56.123456789Z"
 	raw := `{"files":[{"path":"a,\"b\"\n\t\u001b[31m","database":" db ","measurement":"cpu\tload","tier":"cold","size_bytes":1024,"partition_time":"` + stamp + `","created_at":"` + stamp + `","migrated_at":"` + stamp + `","quarantined_at":"` + stamp + `","quarantine_reason":""}],"count":1,"future":9007199254740993}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
 	for _, noHeader := range []bool{false, true} {
-		args := []string{"tiering", "file", "--output", "csv"}
+		args := append([]string{"tiering", "file", "--output", "csv"}, extra...)
 		if noHeader {
 			args = append(args, "--no-header")
 		}
@@ -233,11 +239,11 @@ func TestTieringFileCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
 			t.Fatalf("CSV=%q want=%q", records, want)
 		}
 	}
-	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file")
-	if err != nil || !strings.Contains(out, utc) || strings.Contains(out, "\x1b") {
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "file"}, extra...)...)
+	if err != nil || !strings.Contains(out, utc) || strings.Contains(out, "\x1b") || (extra == nil && strings.Contains(out, ".123")) {
 		t.Fatalf("table=%q err=%v", out, err)
 	}
-	out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "--output", "json")
+	out, _, err = execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "file", "--output", "json"}, extra...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,13 +263,20 @@ func TestTieringFileCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
 	}
 }
 
-func TestTieringPolicyCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
+func TestTieringPolicyCSVPreservesValuesAndTimestamps(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testTieringPolicyCSV(t, nil, "2026-10-31T05:33:04Z") })
+	t.Run("rfc3339nano", func(t *testing.T) {
+		testTieringPolicyCSV(t, []string{"--time-output", "rfc3339nano"}, "2026-10-31T05:33:04.123456789Z")
+	})
+}
+
+func testTieringPolicyCSV(t *testing.T, extra []string, utc string) {
 	raw := `{"policies":[{"database":" db,\"x\"\n\t\u001b[31m ","hot_only":false,"created_at":"2026-10-31T02:03:04.123456789-03:30","updated_at":"2026-10-31T02:03:04.123456789-03:30"}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
 	for _, noHeader := range []bool{false, true} {
-		args := []string{"tiering", "policy", "list", "--output", "csv"}
+		args := append([]string{"tiering", "policy", "list", "--output", "csv"}, extra...)
 		if noHeader {
 			args = append(args, "--no-header")
 		}
@@ -281,13 +294,13 @@ func TestTieringPolicyCSVPreservesValuesAndTimestampPrecision(t *testing.T) {
 			}
 			rows = rows[1:]
 		}
-		want := []string{" db,\"x\"\n\t\x1b[31m ", "false", "", "2026-10-31T05:33:04.123456789Z", "2026-10-31T05:33:04.123456789Z"}
+		want := []string{" db,\"x\"\n\t\x1b[31m ", "false", "", utc, utc}
 		if len(rows) != 1 || !reflect.DeepEqual(rows[0], want) {
 			t.Fatalf("CSV=%q", rows)
 		}
 	}
-	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "list")
-	if err != nil || !strings.Contains(out, "2026-10-31T05:33:04.123456789Z") || strings.Contains(out, "\x1b") {
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "policy", "list"}, extra...)...)
+	if err != nil || !strings.Contains(out, utc) || strings.Contains(out, "\x1b") || (extra == nil && strings.Contains(out, ".123")) {
 		t.Fatalf("table=%q err=%v", out, err)
 	}
 }
@@ -300,5 +313,21 @@ func TestTieringSingularFileHelp(t *testing.T) {
 	cmd, _, _ := NewRoot(BuildInfo{}).Find([]string{"tiering", "files"})
 	if cmd != nil && cmd.Name() == "files" {
 		t.Fatal("plural files command still registered")
+	}
+}
+
+// Unset or zero timestamps are empty in CSV and "-" in the table.
+func TestTieringFileZeroTimestamps(t *testing.T) {
+	raw := `{"files":[{"path":"p","database":"db","measurement":"m","tier":"hot","size_bytes":1,"partition_time":"0001-01-01T00:00:00Z","created_at":"","migrated_at":null}],"count":1}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "-o", "csv", "--no-header")
+	if err != nil || out != "p,db,m,hot,1,,,,,\n" {
+		t.Fatalf("CSV=%q err=%v", out, err)
+	}
+	out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "file")
+	if err != nil || strings.Contains(out, "0001") || strings.Count(out, " - ") < 5 {
+		t.Fatalf("table=%q err=%v", out, err)
 	}
 }

@@ -142,7 +142,7 @@ arcli logs --level warn --since 6h
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
-Tiering commands require an administrator token and an Enterprise licence with tiering enabled. File listings are limited to 100 entries by default; Arc currently supports a tier or database filter, but does not expose an offset or cursor. Policy deletion prompts for confirmation unless `--yes` is passed.
+Tiering commands require an administrator token and an Enterprise licence with tiering enabled. File listings are limited to 100 entries by default; Arc currently supports a tier or database filter, but does not expose an offset or cursor. In `tiering file -o json`, `count` is the number of files returned (at most `--limit`), not the total number of indexed files. Policy deletion prompts for confirmation unless `--yes` is passed.
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, compaction, and tiered storage. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
 
@@ -152,7 +152,7 @@ Active, expired, invalid, and configured-but-unlicensed states retain the server
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
 
-Tiering file and policy CSV output preserves original values with lowercase snake_case headers. Table and CSV timestamps use UTC RFC3339Nano, including fractional seconds; JSON retains the original response, including null arrays. A missing route preserves the HTTP status and server message and does not imply that tiering is disabled.
+Tiering file and policy CSV output preserves original values with lowercase snake_case headers. Table and CSV timestamps use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Unset timestamps are empty in CSV. JSON retains the original response, including null arrays. A missing route preserves the HTTP status and server message and does not imply that tiering is disabled.
 
 ## Output and automation
 

@@ -247,4 +247,12 @@ func TestTieringRouteMissingPreservesHTTPError(t *testing.T) {
 	if strings.Contains(err.Error(), "enabled=false") {
 		t.Fatalf("inferred disabled: %v", err)
 	}
+	var fde *FeatureDisabledError
+	if errors.As(err, &fde) {
+		t.Fatalf("tiering must not report FeatureDisabledError: %v", err)
+	}
+	const want = "Cannot GET /api/v1/tiering/status (HTTP 404); Arc is reachable but did not register this route; check tiered_storage.enabled, the license, the server log, and that this Arc version supports this command"
+	if !strings.HasSuffix(err.Error(), want) {
+		t.Fatalf("err = %q\nwant suffix %q", err.Error(), want)
+	}
 }
