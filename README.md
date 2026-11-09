@@ -84,7 +84,7 @@ arcli config set-active production
 arcli config update production --token-stdin
 ```
 
-Connection profiles live in `~/.arcli/config.toml` with file mode `0600`. For CI and one-off commands, use `ARC_CONNECTION`, `ARC_ENDPOINT`, and `ARC_TOKEN`, or pass `--connection` / `--endpoint` directly.
+Connection profiles live in `~/.arcli/config.toml` with file mode `0600`. Profile names are case-sensitive and may contain dots. For CI and one-off commands, use `ARC_CONNECTION`, `ARC_ENDPOINT`, and `ARC_TOKEN`, or pass `--connection` / `--endpoint` directly.
 
 ### Query and write
 

@@ -107,6 +107,18 @@ func TestQueryJSON_DecodesResultSignals(t *testing.T) {
 	}
 }
 
+func TestQueryJSON_RejectsTrailingJSONValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"columns":[],"data":[],"row_count":0} {}`)
+	}))
+	defer srv.Close()
+
+	c := freshClient(t, srv, "")
+	if _, err := c.QueryJSON(context.Background(), "SELECT 1", ""); err == nil || !strings.Contains(err.Error(), "unexpected additional JSON value") {
+		t.Fatalf("QueryJSON error = %v, want trailing JSON value error", err)
+	}
+}
+
 func TestQueryJSON_DatabaseOverride(t *testing.T) {
 	// Client default = "metrics", per-call override = "logs".
 	// Per-call wins.
