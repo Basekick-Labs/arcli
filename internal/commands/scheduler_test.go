@@ -70,22 +70,22 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 		body   string
 		args   []string
 		newCmd func() *cobra.Command
-		want   string
+		want   []string
 	}{
 		{
 			name:   "admin permission",
 			status: http.StatusForbidden,
 			body:   `{"error":"Permission denied: admin permission required"}`,
 			newCmd: newSchedulerCQReloadCmd,
-			want:   "HTTP 403",
+			want:   []string{"Permission denied: admin permission required", "HTTP 403"},
 		},
 		{
 			name:   "disabled scheduler",
 			status: http.StatusServiceUnavailable,
-			body:   `{"error":"Retention scheduler is not running"}`,
+			body:   `{"error":"Retention scheduler is not running - enterprise license required"}`,
 			args:   []string{"--yes"},
 			newCmd: newSchedulerRetentionTriggerCmd,
-			want:   "HTTP 503",
+			want:   []string{"Retention scheduler is not running - enterprise license required", "HTTP 503"},
 		},
 		{
 			name:   "role gate",
@@ -93,7 +93,7 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 			body:   `{"error":"Retention trigger failed: retention: node role is not primary writer"}`,
 			args:   []string{"--yes"},
 			newCmd: newSchedulerRetentionTriggerCmd,
-			want:   "not primary writer",
+			want:   []string{"Retention trigger failed: retention: node role is not primary writer", "HTTP 409"},
 		},
 	}
 	for _, tc := range cases {
@@ -104,9 +104,17 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 			}))
 			defer srv.Close()
 			writeTestConfig(t, srv.URL, "tok")
+			// main prints the returned error on stderr ("Error: <err>"),
+			// so the server's own message must be part of it, not only
+			// the status code.
 			out, _, err := execCmd(t, tc.newCmd(), tc.args...)
-			if err == nil || !strings.Contains(err.Error(), tc.want) || out != "" {
-				t.Errorf("out=%q err=%v", out, err)
+			if err == nil || out != "" {
+				t.Fatalf("out=%q err=%v", out, err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
 			}
 		})
 	}
