@@ -1,0 +1,4 @@
+--- stdout
+--- stderr
+The dry run found nothing older than 2026-09-07T19:05:00Z to delete in database "metrics". Run the policy anyway (an execution is still recorded)? [y/N] --- err
+aborted

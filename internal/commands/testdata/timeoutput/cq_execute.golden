@@ -1,0 +1,9 @@
+--- stdout
+status:       completed (cq-exec-1)
+window:       2026-09-07T19:00:00Z → 2026-09-07T19:05:00Z
+destination:  cpu_1m
+written:      5 records
+duration:     250ms
+--- stderr
+--- err
+<nil>

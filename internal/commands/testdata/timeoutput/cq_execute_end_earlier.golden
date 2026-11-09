@@ -1,0 +1,10 @@
+--- stdout
+status:       completed (cq-exec-1)
+window:       2026-09-07T19:00:00Z → 2026-09-07T19:05:00Z
+destination:  cpu_1m
+written:      5 records
+duration:     250ms
+--- stderr
+warning: --end 2026-09-07T18:00:00Z is earlier than the query's last processed time 2026-09-07T19:00:00Z; the server will rewind the watermark and the next run will reprocess everything since
+--- err
+<nil>

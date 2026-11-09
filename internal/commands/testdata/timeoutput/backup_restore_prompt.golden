@@ -1,0 +1,4 @@
+--- stdout
+--- stderr
+Restore backup backup-20260907-190000-abcdef12 (2026-09-07T19:00:01Z, 2 files, 2.0 KiB) over the live storage of database(s) metrics? Existing files at the same paths are replaced. The restore mode follows Arc's default: merge for a full backup, or replace for a scoped backup on a cluster. Stop writers and compaction first. [y/N] --- err
+aborted

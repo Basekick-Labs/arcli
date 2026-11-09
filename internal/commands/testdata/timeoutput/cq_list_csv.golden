@@ -1,0 +1,7 @@
+--- stdout
+id,name,database,source_measurement,destination_measurement,interval,is_active,last_execution_time,last_execution_status,last_records_written
+1,cq-frac,metrics,cpu,cpu_1m,1m,true,2026-09-07T19:00:00Z,completed,5
+2,cq-odd,metrics,mem,mem_1m,5m,false,not-a-time,,
+--- stderr
+--- err
+<nil>

@@ -1,0 +1,7 @@
+--- stdout
+id,name,role,state,address,api_address,version,last_heartbeat,failed_checks
+n1,node-1,writer,healthy,10.0.0.1:9000,10.0.0.1:8000,26.09.3,2026-09-07T19:00:01Z,0
+n2,node-2,reader,unknown,10.0.0.2:9000,10.0.0.2:8000,26.09.3,,3
+--- stderr
+--- err
+<nil>

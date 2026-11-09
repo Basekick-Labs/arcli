@@ -27,6 +27,7 @@ func newSchedulerCmd() *cobra.Command {
 func newSchedulerStatusCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -58,8 +59,8 @@ run manually with "arcli retention execute" and "arcli cq execute".`,
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(w, st.Raw)
 			}
-			fmt.Fprintf(w, "continuous queries:  %s\n", describeScheduler(st.CQ, true))
-			fmt.Fprintf(w, "retention:           %s\n", describeScheduler(st.Retention, false))
+			fmt.Fprintf(w, "continuous queries:  %s\n", describeScheduler(st.CQ, true, to))
+			fmt.Fprintf(w, "retention:           %s\n", describeScheduler(st.Retention, false, to))
 			if !st.CQ.NotRunning() && len(st.CQ.Jobs) > 0 {
 				fmt.Fprintln(w)
 				rows := make([][]string, 0, len(st.CQ.Jobs))
@@ -72,6 +73,7 @@ run manually with "arcli retention execute" and "arcli cq execute".`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -80,7 +82,7 @@ run manually with "arcli retention execute" and "arcli cq execute".`,
 // pointer selects the not-started shape; inside the running shape,
 // `running` is the actual state (a scheduler whose Start failed is
 // present with running=false).
-func describeScheduler(b client.SchedulerBlock, isCQ bool) string {
+func describeScheduler(b client.SchedulerBlock, isCQ bool, to timeOutput) string {
 	if b.NotRunning() {
 		return "not running (" + clean(b.Reason) + ")"
 	}
@@ -100,7 +102,7 @@ func describeScheduler(b client.SchedulerBlock, isCQ bool) string {
 			parts = append(parts, "schedule "+clean(b.Schedule))
 		}
 		if b.NextRun != "" {
-			parts = append(parts, "next run "+fmtServerTime(b.NextRun, "-"))
+			parts = append(parts, "next run "+to.Server(b.NextRun, "-"))
 		}
 		if b.CanRun != nil {
 			role := ""

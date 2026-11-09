@@ -34,8 +34,9 @@ Every subcommand requires an admin token.
 A backup contains every database plus, by default, the metadata store
 (tokens, policies, continuous queries) and the server config. It is
 written to the server's backup.local_path; there is no remote
-destination and no incremental mode. Backups are disabled when the
-server runs with backup.enabled=false.`,
+destination and no incremental mode. Backups are unavailable when the
+server runs with backup.enabled=false, or when its backup manager fails
+to initialize (the server log says why).`,
 	}
 	c.AddCommand(newBackupCreateCmd(), newBackupListCmd(), newBackupShowCmd(), newBackupStatusCmd(), newBackupDeleteCmd(), newBackupRestoreCmd())
 	return c
@@ -139,15 +140,15 @@ func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expe
 	}
 }
 
-func describeProgress(w io.Writer, p *client.BackupProgress) {
+func describeProgress(w io.Writer, p *client.BackupProgress, to timeOutput) {
 	fmt.Fprintf(w, "operation:  %s\n", clean(p.Operation))
 	fmt.Fprintf(w, "backup id:  %s\n", clean(p.BackupID))
 	fmt.Fprintf(w, "status:     %s\n", clean(p.Status))
 	fmt.Fprintf(w, "files:      %d / %d (%d skipped)\n", p.ProcessedFiles, p.TotalFiles, p.SkippedFiles)
 	fmt.Fprintf(w, "bytes:      %s / %s\n", humanBytes(p.ProcessedBytes), humanBytes(p.TotalBytes))
-	fmt.Fprintf(w, "started:    %s\n", fmtTimeVal(p.StartedAt, "-"))
+	fmt.Fprintf(w, "started:    %s\n", to.Val(p.StartedAt, "-"))
 	if p.CompletedAt != nil {
-		fmt.Fprintf(w, "completed:  %s\n", fmtTimeVal(*p.CompletedAt, "-"))
+		fmt.Fprintf(w, "completed:  %s\n", to.Val(*p.CompletedAt, "-"))
 	}
 	if p.Error != "" {
 		fmt.Fprintf(w, "error:      %s\n", clean(p.Error))
@@ -326,6 +327,7 @@ func plural(n int64, singular, pluralForm string) string {
 func newBackupCreateCmd() *cobra.Command {
 	var (
 		f                    connFlags
+		to                   timeOutput
 		outputFormat         string
 		noMetadata, noConfig bool
 		wait                 bool
@@ -418,7 +420,7 @@ nodes receive HTTP 503 before the operation starts.`,
 				return nil
 			}
 			if final.Status != "completed" {
-				describeProgress(cmd.OutOrStdout(), final)
+				describeProgress(cmd.OutOrStdout(), final, to)
 				return fmt.Errorf("backup %s %s: %s", clean(id), clean(final.Status), clean(final.Error))
 			}
 			out := cmd.OutOrStdout()
@@ -442,6 +444,7 @@ nodes receive HTTP 503 before the operation starts.`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().BoolVar(&noMetadata, "no-metadata", false, "exclude the metadata store (tokens, policies, continuous queries)")
 	c.Flags().BoolVar(&noConfig, "no-config", false, "exclude the server config file")
@@ -455,6 +458,7 @@ nodes receive HTTP 503 before the operation starts.`,
 func newBackupListCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 	)
@@ -503,7 +507,7 @@ incompleteness and cluster-manifest counts returned by the server.`,
 					if b.ClusterManifestChecked != nil {
 						checked = strconv.FormatBool(*b.ClusterManifestChecked)
 					}
-					if err := cw.Write([]string{b.BackupID, fmtTimeVal(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.SkippedReconciled, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10), checked}); err != nil {
+					if err := cw.Write([]string{b.BackupID, to.Val(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.SkippedReconciled, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10), checked}); err != nil {
 						return err
 					}
 				}
@@ -516,7 +520,7 @@ incompleteness and cluster-manifest counts returned by the server.`,
 			}
 			rows := make([][]string, 0, len(list))
 			for _, b := range list {
-				rows = append(rows, []string{clean(b.BackupID), fmtTimeVal(b.CreatedAt, "-"), clean(b.BackupType), strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), humanBytes(b.TotalBytes), backupListIncomplete(b)})
+				rows = append(rows, []string{clean(b.BackupID), to.Val(b.CreatedAt, "-"), clean(b.BackupType), strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), humanBytes(b.TotalBytes), backupListIncomplete(b)})
 			}
 			headers := []string{"ID", "CREATED", "TYPE", "DATABASES", "FILES", "SIZE", "INCOMPLETE"}
 			if noHeader {
@@ -526,6 +530,7 @@ incompleteness and cluster-manifest counts returned by the server.`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	return c
@@ -534,6 +539,7 @@ incompleteness and cluster-manifest counts returned by the server.`,
 func newBackupShowCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -561,17 +567,18 @@ func newBackupShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(w, m.Raw)
 			}
-			return writeManifest(w, m)
+			return writeManifest(w, m, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
 
-func writeManifest(w io.Writer, m *client.BackupManifest) error {
+func writeManifest(w io.Writer, m *client.BackupManifest, to timeOutput) error {
 	fmt.Fprintf(w, "backup id:   %s\n", clean(m.BackupID))
-	fmt.Fprintf(w, "created:     %s\n", fmtTimeVal(m.CreatedAt, "-"))
+	fmt.Fprintf(w, "created:     %s\n", to.Val(m.CreatedAt, "-"))
 	fmt.Fprintf(w, "type:        %s (server %s)\n", clean(m.BackupType), clean(m.Version))
 	fmt.Fprintf(w, "contents:    %d files, %s, metadata %t, config %t\n", m.TotalFiles, humanBytes(m.TotalSizeBytes), m.HasMetadata, m.HasConfig)
 	if line := describeManifestIncomplete(m); line != "" {
@@ -696,6 +703,7 @@ func describeRestoreGaps(m *client.BackupManifest) string {
 func newBackupStatusCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -728,11 +736,12 @@ since it started.`,
 				_, err := fmt.Fprintln(w, "idle (no backup or restore has run since the server started)")
 				return err
 			}
-			describeProgress(w, st.Progress)
+			describeProgress(w, st.Progress, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -742,6 +751,7 @@ since it started.`,
 func newBackupDeleteCmd() *cobra.Command {
 	var (
 		f   connFlags
+		to  timeOutput
 		yes bool
 	)
 	c := &cobra.Command{
@@ -769,7 +779,7 @@ the backup is not deleted.`,
 			if err != nil {
 				return err
 			}
-			q := fmt.Sprintf("Delete backup %s (%s, %d files, %s)?", clean(id), fmtTimeVal(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes))
+			q := fmt.Sprintf("Delete backup %s (%s, %d files, %s)?", clean(id), to.Val(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes))
 			if err := confirmOrAbort(cmd, q, yes); err != nil {
 				return err
 			}
@@ -795,6 +805,7 @@ the backup is not deleted.`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return c
 }
@@ -804,6 +815,7 @@ the backup is not deleted.`,
 func newBackupRestoreCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		mode         string
 		dataOnly     bool
@@ -895,7 +907,7 @@ before the restore starts.`,
 			if len(dbs) > 0 {
 				scope = "the live storage of database(s) " + strings.Join(dbs, ", ")
 			}
-			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), fmtTimeVal(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
+			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), to.Val(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
 			if cmd.Flags().Changed("mode") && mode == "replace" {
 				parts = append(parts, "The current cluster manifest entries for these databases will be removed before restoring.")
 			} else if !cmd.Flags().Changed("mode") {
@@ -1011,7 +1023,7 @@ before the restore starts.`,
 				writeRestoreGaps(cmd.OutOrStdout(), final)
 				writeRestoreDetails(cmd.OutOrStdout(), final)
 			} else {
-				describeProgress(cmd.OutOrStdout(), final)
+				describeProgress(cmd.OutOrStdout(), final, to)
 			}
 			restartNote()
 			if final.Status != "completed" {
@@ -1021,6 +1033,7 @@ before the restore starts.`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().StringVar(&mode, "mode", "merge", "restore mode: merge|replace (default: merge)")
 	c.Flags().BoolVar(&dataOnly, "data-only", false, "restore data files only (skip metadata and config)")

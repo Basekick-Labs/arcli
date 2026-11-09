@@ -104,6 +104,7 @@ addressed by its id.`,
 func newAuthWhoamiCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -139,11 +140,12 @@ name, or "(flags)" / "(env)" for ad-hoc use).`,
 			w := cmd.OutOrStdout()
 			fmt.Fprintf(w, "connection:  %s\n", connName)
 			fmt.Fprintf(w, "endpoint:    %s\n", cli.Endpoint())
-			writeTokenInfo(w, me)
+			writeTokenInfo(w, me, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -153,6 +155,7 @@ name, or "(flags)" / "(env)" for ad-hoc use).`,
 func newAuthTokenListCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 	)
@@ -178,10 +181,11 @@ Output formats: table (default) | json | csv`,
 			if err != nil {
 				return err
 			}
-			return renderTokenList(cmd, tokens, outputFormat, noHeader)
+			return renderTokenList(cmd, tokens, outputFormat, noHeader, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	return c
@@ -192,6 +196,7 @@ Output formats: table (default) | json | csv`,
 func newAuthTokenShowCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -215,11 +220,12 @@ func newAuthTokenShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), t)
 			}
-			writeTokenInfo(cmd.OutOrStdout(), t)
+			writeTokenInfo(cmd.OutOrStdout(), t, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -565,7 +571,9 @@ never authenticate.`,
 				return fmt.Errorf("token %q (id %d) is revoked; a rotated secret could never authenticate. Delete it instead", target.Name, target.ID)
 			}
 			if target.IsExpired(time.Now()) {
-				return fmt.Errorf("token %q (id %d) expired at %s; run `arcli auth token update %d --expires-in ...` first", target.Name, target.ID, fmtTime(target.ExpiresAt, "-"), target.ID)
+				// Fixed RFC3339 on purpose: rotate has no --time-output.
+				// IsExpired guarantees ExpiresAt is non-nil and non-zero.
+				return fmt.Errorf("token %q (id %d) expired at %s; run `arcli auth token update %d --expires-in ...` first", target.Name, target.ID, target.ExpiresAt.UTC().Format(time.RFC3339), target.ID)
 			}
 
 			ctx, cancel = f.ctx(cmd)
@@ -865,14 +873,6 @@ func permsOrNone(p []string) string {
 	return strings.Join(p, ",")
 }
 
-// fmtTime renders a nullable timestamp as UTC RFC3339, or `none` when nil.
-func fmtTime(t *time.Time, none string) string {
-	if t == nil || t.IsZero() {
-		return none
-	}
-	return t.UTC().Format(time.RFC3339)
-}
-
 // validObjectFormat is table|json — the formats for single-object output.
 func validObjectFormat(s string) bool {
 	return s == output.FormatTable || s == output.FormatJSON
@@ -885,7 +885,7 @@ func writeJSON(w io.Writer, v any) error {
 }
 
 // writeTokenInfo prints one TokenInfo as aligned key/value lines.
-func writeTokenInfo(w io.Writer, t *client.TokenInfo) {
+func writeTokenInfo(w io.Writer, t *client.TokenInfo, to timeOutput) {
 	fmt.Fprintf(w, "id:          %d\n", t.ID)
 	fmt.Fprintf(w, "name:        %s\n", clean(t.Name))
 	if t.Description != "" {
@@ -893,13 +893,13 @@ func writeTokenInfo(w io.Writer, t *client.TokenInfo) {
 	}
 	fmt.Fprintf(w, "permissions: %s\n", permsOrNone(t.Permissions))
 	fmt.Fprintf(w, "enabled:     %t\n", t.Enabled)
-	fmt.Fprintf(w, "expires:     %s\n", fmtTime(t.ExpiresAt, "never"))
-	fmt.Fprintf(w, "last used:   %s\n", fmtTime(t.LastUsedAt, "never"))
-	fmt.Fprintf(w, "created:     %s\n", t.CreatedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(w, "expires:     %s\n", to.Ptr(t.ExpiresAt, "never"))
+	fmt.Fprintf(w, "last used:   %s\n", to.Ptr(t.LastUsedAt, "never"))
+	fmt.Fprintf(w, "created:     %s\n", to.Time(t.CreatedAt))
 }
 
 // renderTokenList writes the token list sorted by id in the chosen format.
-func renderTokenList(cmd *cobra.Command, tokens []client.TokenInfo, format string, noHeader bool) error {
+func renderTokenList(cmd *cobra.Command, tokens []client.TokenInfo, format string, noHeader bool, to timeOutput) error {
 	list := make([]client.TokenInfo, len(tokens))
 	copy(list, tokens)
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
@@ -924,7 +924,7 @@ func renderTokenList(cmd *cobra.Command, tokens []client.TokenInfo, format strin
 		for _, t := range list {
 			if err := w.Write([]string{
 				strconv.FormatInt(t.ID, 10), t.Name, strings.Join(t.Permissions, ","), strconv.FormatBool(t.Enabled),
-				fmtTime(t.ExpiresAt, ""), fmtTime(t.LastUsedAt, ""), t.CreatedAt.UTC().Format(time.RFC3339), t.Description,
+				to.Ptr(t.ExpiresAt, ""), to.Ptr(t.LastUsedAt, ""), to.Time(t.CreatedAt), t.Description,
 			}); err != nil {
 				return err
 			}
@@ -940,7 +940,7 @@ func renderTokenList(cmd *cobra.Command, tokens []client.TokenInfo, format strin
 		for _, t := range list {
 			rows = append(rows, []string{
 				strconv.FormatInt(t.ID, 10), clean(t.Name), permsOrNone(t.Permissions), strconv.FormatBool(t.Enabled),
-				fmtTime(t.ExpiresAt, "-"), fmtTime(t.LastUsedAt, "never"), t.CreatedAt.UTC().Format(time.RFC3339),
+				to.Ptr(t.ExpiresAt, "-"), to.Ptr(t.LastUsedAt, "never"), to.Time(t.CreatedAt),
 			})
 		}
 		headers := []string{"ID", "NAME", "PERMISSIONS", "ENABLED", "EXPIRES", "LAST USED", "CREATED"}

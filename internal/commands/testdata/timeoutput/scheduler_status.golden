@@ -1,0 +1,12 @@
+--- stdout
+continuous queries:  running, 1 scheduled job(s)
+retention:           running, schedule 0 3 * * *, next run 2026-09-07T19:00:00Z, can run on this node: true (writer)
+
+┌───────┬─────────┬──────────┐
+│ CQ ID │  NAME   │ INTERVAL │
+├───────┼─────────┼──────────┤
+│ 1     │ cq-frac │ 1m       │
+└───────┴─────────┴──────────┘
+--- stderr
+--- err
+<nil>

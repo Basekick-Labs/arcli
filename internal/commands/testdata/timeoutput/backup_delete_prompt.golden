@@ -1,0 +1,4 @@
+--- stdout
+--- stderr
+Delete backup backup-20260907-190000-abcdef12 (2026-09-07T19:00:01Z, 2 files, 2.0 KiB)? [y/N] --- err
+aborted
