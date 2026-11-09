@@ -1,0 +1,17 @@
+--- stdout
+clustering:  enabled
+cluster:     c1
+running:     true
+local node:  n1 (writer)
+nodes:       2 total, 1 healthy (writers 1, readers 1, compactors 0)
+raft:        Leader, leader n1, this node is leader: true
+
+┌────┬────────┬────────┬─────────┬───────────────┬───────────────┬─────────┬──────────────────────┬────────┐
+│ ID │  NAME  │  ROLE  │  STATE  │    ADDRESS    │      API      │ VERSION │    LAST HEARTBEAT    │ FAILED │
+├────┼────────┼────────┼─────────┼───────────────┼───────────────┼─────────┼──────────────────────┼────────┤
+│ n1 │ node-1 │ writer │ healthy │ 10.0.0.1:9000 │ 10.0.0.1:8000 │ 26.09.3 │ 2026-09-07T19:00:01Z │ 0      │
+│ n2 │ node-2 │ reader │ unknown │ 10.0.0.2:9000 │ 10.0.0.2:8000 │ 26.09.3 │ never                │ 3      │
+└────┴────────┴────────┴─────────┴───────────────┴───────────────┴─────────┴──────────────────────┴────────┘
+--- stderr
+--- err
+<nil>

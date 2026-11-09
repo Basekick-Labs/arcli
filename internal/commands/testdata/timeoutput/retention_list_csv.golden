@@ -1,0 +1,8 @@
+--- stdout
+id,name,database,measurement,retention_days,buffer_days,is_active,last_execution_time,last_execution_status,last_deleted_count
+1,p-frac,metrics,cpu,30,1,true,2026-09-07T19:00:00Z,completed,42
+2,p-odd,metrics,,7,0,false,,,
+3,p-null,metrics,,7,0,true,,,
+--- stderr
+--- err
+<nil>

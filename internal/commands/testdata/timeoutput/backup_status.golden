@@ -1,0 +1,12 @@
+--- stdout
+operation:  backup
+backup id:  backup-20260907-190000-abcdef12
+status:     running
+files:      1 / 2 (0 skipped)
+bytes:      1.0 KiB / 2.0 KiB
+started:    2026-09-07T19:00:01Z
+completed:  2026-09-07T23:02:03Z
+error:      disk full
+--- stderr
+--- err
+<nil>

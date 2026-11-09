@@ -1,0 +1,22 @@
+--- stdout
+Updated continuous query "cq-frac" (id 1)
+id:              1
+name:            cq-frac
+description:     d
+database:        metrics
+source:          cpu
+destination:     cpu_1m
+interval:        1m
+tag columns:     host
+active:          true
+last run:        2026-09-07T19:00:00Z
+last status:     completed
+last processed:  2026-09-07T19:00:00Z
+last written:    5
+created:         2026-09-07T19:05:00Z
+updated:         2026-09-07T19:00:00Z
+query:
+SELECT 1 FROM metrics.cpu WHERE time >= {start_time} AND time < {end_time}
+--- stderr
+--- err
+<nil>

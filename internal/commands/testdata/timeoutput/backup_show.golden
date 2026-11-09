@@ -1,0 +1,14 @@
+--- stdout
+backup id:   backup-20260907-190000-abcdef12
+created:     2026-09-07T19:00:01Z
+type:        full (server 1)
+contents:    2 files, 2.0 KiB, metadata false, config false
+
+┌──────────┬─────────────┬───────┬─────────┐
+│ DATABASE │ MEASUREMENT │ FILES │  SIZE   │
+├──────────┼─────────────┼───────┼─────────┤
+│ metrics  │ cpu         │ 2     │ 2.0 KiB │
+└──────────┴─────────────┴───────┴─────────┘
+--- stderr
+--- err
+<nil>

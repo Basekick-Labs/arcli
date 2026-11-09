@@ -69,7 +69,7 @@ func TestLicenseStatus_StatesAndFormats(t *testing.T) {
 						t.Fatalf("table=%s", out)
 					}
 					if tc.name == "active" {
-						for _, v := range []string{"enterprise", "file", "2027-01-01T06:00:00.123Z", "68", "true"} {
+						for _, v := range []string{"enterprise", "file", "2027-01-01T06:00:00Z", "68", "true"} {
 							if !strings.Contains(out, v) {
 								t.Errorf("missing %q: %s", v, out)
 							}

@@ -28,14 +28,14 @@ func TestRenderTokenList_EmptyTableAndJSON(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := newTestCmd()
 	cmd.SetOut(&buf)
-	if err := renderTokenList(cmd, nil, "table", false); err != nil {
+	if err := renderTokenList(cmd, nil, "table", false, timeOutput{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "(no tokens)") {
 		t.Errorf("table = %q", buf.String())
 	}
 	buf.Reset()
-	if err := renderTokenList(cmd, nil, "json", false); err != nil {
+	if err := renderTokenList(cmd, nil, "json", false, timeOutput{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), `"tokens": []`) || strings.Contains(buf.String(), "null") {
@@ -53,7 +53,7 @@ func TestRenderTokenList_SortedByIDWithNullableColumns(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := newTestCmd()
 	cmd.SetOut(&buf)
-	if err := renderTokenList(cmd, []client.TokenInfo{b, a}, "csv", false); err != nil {
+	if err := renderTokenList(cmd, []client.TokenInfo{b, a}, "csv", false, timeOutput{}); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -68,7 +68,7 @@ func TestRenderTokenList_SortedByIDWithNullableColumns(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := renderTokenList(cmd, []client.TokenInfo{b, a}, "table", false); err != nil {
+	if err := renderTokenList(cmd, []client.TokenInfo{b, a}, "table", false, timeOutput{}); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -84,7 +84,7 @@ func TestWriteTokenInfo_NullableFields(t *testing.T) {
 	var buf bytes.Buffer
 	tok := tokenFixture(4, "svc", true)
 	tok.Description = "desc"
-	writeTokenInfo(&buf, &tok)
+	writeTokenInfo(&buf, &tok, timeOutput{})
 	out := buf.String()
 	for _, want := range []string{"id:          4", "name:        svc", "description: desc", "permissions: read,write", "expires:     never", "last used:   never"} {
 		if !strings.Contains(out, want) {

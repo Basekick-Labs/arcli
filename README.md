@@ -142,7 +142,7 @@ arcli logs --level warn --since 6h
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
 
-`license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is normalized to UTC RFC3339 with fractional seconds when provided.
+`license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is shown in UTC RFC3339; the table uses whole seconds unless `--time-output rfc3339nano` is given, and JSON keeps the fractional seconds.
 
 Active, expired, invalid, and configured-but-unlicensed states retain the server's status. A missing or null license block is normal for OSS and is distinct from `unlicensed`: JSON returns `{"configured": false, "license": null}`. Present licenses use `{"configured": true, "license": {...}}`; optional fields are omitted when absent or null, while explicit zero days and `false` site-license values are retained. Unknown server status values are preserved. Successfully reading any of these states exits 0; configuration, request, decoding, and output failures exit nonzero. Installing licenses or configuring license keys/files belongs to the Arc server.
 
@@ -156,6 +156,8 @@ Commands support the formats appropriate to their API:
 - `json` for scripts
 - `csv` for tabular exports
 - `arrow` for query streams
+
+Administrative commands that format timestamps (retention, continuous queries, backups, cluster, logs, schedulers, tokens, compaction, license) print them in table, CSV and text as UTC RFC3339 with whole seconds, for example `2026-09-07T19:00:00Z`. Pass `--time-output rfc3339nano` to keep the sub-second precision the server reports, for example `2026-09-07T19:00:00.123456789Z`. Trailing zeros are trimmed, so these values vary in width and do not sort lexically; use the default when a script sorts or compares them as strings. The flag does not affect `-o json`, which always carries the server's full precision, and it does not apply to timestamps arcli passes through as the server sent them (`db`, `import`, `sample show`, `arcli query` results). Values are case-insensitive; an invalid value fails before any request is sent.
 
 When Arc reports a truncated query result, arcli writes the received data to stdout, reports the failure on stderr, and exits with status 1. Check the exit status before treating an export as complete. JSON output preserves `truncated` and `truncation_reason`; Arrow output stays raw IPC, with completeness signals read from HTTP trailers after the stream ends. A truncated Arrow payload may not parse.
 

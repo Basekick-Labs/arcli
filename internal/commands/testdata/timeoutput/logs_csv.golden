@@ -1,0 +1,8 @@
+--- stdout
+timestamp,level,component,message,caller
+2026-09-07T19:00:01Z,info,api,hello,x.go:1
+2026-09-07T23:02:03Z,warn,,no component,
+,error,c,zero,
+--- stderr
+--- err
+<nil>
