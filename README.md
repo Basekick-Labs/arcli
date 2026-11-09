@@ -140,7 +140,7 @@ arcli logs --level warn --since 6h
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
-RBAC table and CSV timestamps use UTC RFC3339Nano, preserving fractional seconds. JSON retains available timestamp precision.
+RBAC table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON retains available timestamp precision.
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
 
@@ -150,7 +150,7 @@ Active, expired, invalid, and configured-but-unlicensed states retain the server
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
 
-`arcli rbac` manages Enterprise organizations, teams, roles, measurement permissions, and token team memberships. List commands support table, JSON, and CSV output; destructive operations prompt for confirmation and accept `--yes` for scripts. Token references accept a numeric id or an exact name.
+`arcli rbac` manages Enterprise organizations, teams, roles, measurement permissions, and token team memberships. List commands support table, JSON, and CSV output; destructive operations prompt for confirmation and accept `--yes` for scripts. Token references accept a numeric id or an exact name. Arc registers the RBAC routes only when `auth.enabled` is true; a missing route reports the server's HTTP 404 error followed by a hint to check `auth.enabled`, the license, the server log, and the Arc version.
 
 ## Output and automation
 

@@ -257,20 +257,41 @@ func TestRBACSingularResources(t *testing.T) {
 
 func TestRBACTimestampPrecision(t *testing.T) {
 	const stamp = "2026-10-27T03:04:05.123456789+02:30"
-	const utc = "2026-10-27T00:34:05.123456789Z"
+	const utc = "2026-10-27T00:34:05Z"
+	const utcNano = "2026-10-27T00:34:05.123456789Z"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"organizations":[{"id":2,"name":"test","enabled":true,"created_at":"` + stamp + `","updated_at":"` + stamp + `"}]}`))
+		_, _ = w.Write([]byte(`{"organizations":[{"id":2,"name":"test","enabled":true,"created_at":"` + stamp + `","updated_at":"` + stamp + `"},{"id":3,"name":"unset","enabled":true,"created_at":"0001-01-01T00:00:00Z"}]}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "admin-secret")
-	for _, format := range []string{"table", "csv", "json"} {
-		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "rbac", "organization", "list", "-o", format)
-		want := utc
-		if format == "json" {
-			want = stamp
-		}
-		if err != nil || !strings.Contains(out, want) {
-			t.Errorf("%s: out=%q err=%v", format, out, err)
+	for _, nano := range []bool{false, true} {
+		for _, format := range []string{"table", "csv", "json"} {
+			args := []string{"rbac", "organization", "list", "-o", format}
+			want := utc
+			if nano {
+				args = append(args, "--time-output", "rfc3339nano")
+				want = utcNano
+			}
+			if format == "json" {
+				want = stamp
+			}
+			out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+			if err != nil || !strings.Contains(out, want) {
+				t.Errorf("%s/nano=%t: out=%q err=%v", format, nano, out, err)
+			}
+			if !nano && format != "json" && strings.Contains(out, ".123456789") {
+				t.Errorf("%s: default output shows fractional seconds: %q", format, out)
+			}
+			switch format {
+			case "table":
+				if strings.Count(out, "never") != 2 {
+					t.Errorf("table: unset timestamps should read never: %q", out)
+				}
+			case "csv":
+				if !strings.Contains(out, "\n3,unset,,true,,\n") || strings.Contains(out, "never") {
+					t.Errorf("csv: unset timestamps should be empty fields: %q", out)
+				}
+			}
 		}
 	}
 }

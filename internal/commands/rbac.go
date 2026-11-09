@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,7 +18,7 @@ func newRBACCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "rbac",
 		Short: "Administer Arc Enterprise RBAC",
-		Long:  "Administer organizations, teams, roles, measurement permissions, and token memberships. All commands require an admin token. Arc Enterprise RBAC is required for organization, team, role, and measurement-permission operations and for adding token memberships; listing or removing memberships also works when an existing RBAC configuration remains after a licence lapse.\n\nTable and CSV timestamps use UTC RFC3339Nano with fractional seconds. JSON retains timestamp precision.\n\nToken references accept a numeric id or an exact token name. IDs are tried first, so a token named with digits must be addressed by id.",
+		Long:  "Administer organizations, teams, roles, measurement permissions, and token memberships. All commands require an admin token. Arc Enterprise RBAC is required for organization, team, role, and measurement-permission operations and for adding token memberships; listing or removing memberships also works when an existing RBAC configuration remains after a licence lapse.\n\nTable and CSV timestamps are UTC RFC3339 by default; --time-output rfc3339nano shows fractional seconds. JSON retains timestamp precision.\n\nToken references accept a numeric id or an exact token name. IDs are tried first, so a token named with digits must be addressed by id.",
 	}
 	c.AddCommand(
 		newRBACOrganizationsCmd(),
@@ -118,11 +117,13 @@ func renderRBACObject[T any](cmd *cobra.Command, value T, format string, fields 
 	return nil
 }
 
-func rbacTime(t time.Time) string {
-	if t.IsZero() {
-		return "never"
+// rbacListNone is the placeholder for an unset timestamp in an RBAC list:
+// "never" in the table, an empty field in CSV.
+func rbacListNone(format string) string {
+	if format == output.FormatCSV {
+		return ""
 	}
-	return t.UTC().Format(time.RFC3339Nano)
+	return "never"
 }
 
 func sortOrganizations(items []client.Organization) {
@@ -155,6 +156,7 @@ func newRBACOrganizationsCmd() *cobra.Command {
 
 func newRBACOrganizationListCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	var noHeader bool
 	c := &cobra.Command{
@@ -178,17 +180,19 @@ func newRBACOrganizationListCmd() *cobra.Command {
 			return renderRBACList(cmd, items, "organizations", "organizations", format, noHeader,
 				[]string{"id", "name", "description", "enabled", "created_at", "updated_at"},
 				func(v client.Organization) []string {
-					return []string{strconv.FormatInt(v.ID, 10), v.Name, v.Description, strconv.FormatBool(v.Enabled), rbacTime(v.CreatedAt), rbacTime(v.UpdatedAt)}
+					return []string{strconv.FormatInt(v.ID, 10), v.Name, v.Description, strconv.FormatBool(v.Enabled), to.Val(v.CreatedAt, rbacListNone(format)), to.Val(v.UpdatedAt, rbacListNone(format))}
 				})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACListOutputFlags(c, &format, &noHeader)
 	return c
 }
 
 func newRBACOrganizationShowCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	c := &cobra.Command{
 		Use:   "show <organization-id>",
@@ -213,18 +217,20 @@ func newRBACOrganizationShowCmd() *cobra.Command {
 			}
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"name", item.Name}, {"description", item.Description},
-				{"enabled", strconv.FormatBool(item.Enabled)}, {"created_at", rbacTime(item.CreatedAt)},
-				{"updated_at", rbacTime(item.UpdatedAt)}, {"teams", strconv.Itoa(len(item.Teams))},
+				{"enabled", strconv.FormatBool(item.Enabled)}, {"created_at", to.Val(item.CreatedAt, "never")},
+				{"updated_at", to.Val(item.UpdatedAt, "never")}, {"teams", strconv.Itoa(len(item.Teams))},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACObjectOutputFlag(c, &format)
 	return c
 }
 
 func newRBACOrganizationCreateCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var name, description, format string
 	c := &cobra.Command{
 		Use:   "create",
@@ -245,11 +251,12 @@ func newRBACOrganizationCreateCmd() *cobra.Command {
 			}
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"name", item.Name}, {"description", item.Description},
-				{"enabled", strconv.FormatBool(item.Enabled)}, {"created_at", rbacTime(item.CreatedAt)},
+				{"enabled", strconv.FormatBool(item.Enabled)}, {"created_at", to.Val(item.CreatedAt, "never")},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVar(&name, "name", "", "organization name")
 	c.Flags().StringVar(&description, "description", "", "organization description")
 	c.Flags().StringVarP(&format, "output", "o", output.FormatTable, "output format: table|json")
@@ -344,6 +351,7 @@ func newRBACTeamsCmd() *cobra.Command {
 
 func newRBACTeamListCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	var noHeader bool
 	c := &cobra.Command{
@@ -371,17 +379,19 @@ func newRBACTeamListCmd() *cobra.Command {
 			return renderRBACList(cmd, items, "teams", "teams", format, noHeader,
 				[]string{"id", "organization_id", "name", "description", "enabled", "created_at", "updated_at"},
 				func(v client.Team) []string {
-					return []string{strconv.FormatInt(v.ID, 10), strconv.FormatInt(v.OrganizationID, 10), v.Name, v.Description, strconv.FormatBool(v.Enabled), rbacTime(v.CreatedAt), rbacTime(v.UpdatedAt)}
+					return []string{strconv.FormatInt(v.ID, 10), strconv.FormatInt(v.OrganizationID, 10), v.Name, v.Description, strconv.FormatBool(v.Enabled), to.Val(v.CreatedAt, rbacListNone(format)), to.Val(v.UpdatedAt, rbacListNone(format))}
 				})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACListOutputFlags(c, &format, &noHeader)
 	return c
 }
 
 func newRBACTeamShowCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	c := &cobra.Command{
 		Use:   "show <team-id>",
@@ -407,18 +417,20 @@ func newRBACTeamShowCmd() *cobra.Command {
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"organization_id", strconv.FormatInt(item.OrganizationID, 10)},
 				{"name", item.Name}, {"description", item.Description}, {"enabled", strconv.FormatBool(item.Enabled)},
-				{"created_at", rbacTime(item.CreatedAt)}, {"updated_at", rbacTime(item.UpdatedAt)},
+				{"created_at", to.Val(item.CreatedAt, "never")}, {"updated_at", to.Val(item.UpdatedAt, "never")},
 				{"roles", strconv.Itoa(len(item.Roles))},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACObjectOutputFlag(c, &format)
 	return c
 }
 
 func newRBACTeamCreateCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var name, description, format string
 	c := &cobra.Command{
 		Use:   "create <organization-id>",
@@ -444,11 +456,12 @@ func newRBACTeamCreateCmd() *cobra.Command {
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"organization_id", strconv.FormatInt(item.OrganizationID, 10)},
 				{"name", item.Name}, {"description", item.Description}, {"enabled", strconv.FormatBool(item.Enabled)},
-				{"created_at", rbacTime(item.CreatedAt)},
+				{"created_at", to.Val(item.CreatedAt, "never")},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVar(&name, "name", "", "team name")
 	c.Flags().StringVar(&description, "description", "", "team description")
 	addRBACObjectOutputFlag(c, &format)
@@ -543,6 +556,7 @@ func newRBACRolesCmd() *cobra.Command {
 
 func newRBACRoleListCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	var noHeader bool
 	c := &cobra.Command{
@@ -570,17 +584,19 @@ func newRBACRoleListCmd() *cobra.Command {
 			return renderRBACList(cmd, items, "roles", "roles", format, noHeader,
 				[]string{"id", "team_id", "database_pattern", "permissions", "created_at"},
 				func(v client.Role) []string {
-					return []string{strconv.FormatInt(v.ID, 10), strconv.FormatInt(v.TeamID, 10), v.DatabasePattern, strings.Join(v.Permissions, ","), rbacTime(v.CreatedAt)}
+					return []string{strconv.FormatInt(v.ID, 10), strconv.FormatInt(v.TeamID, 10), v.DatabasePattern, strings.Join(v.Permissions, ","), to.Val(v.CreatedAt, rbacListNone(format))}
 				})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACListOutputFlags(c, &format, &noHeader)
 	return c
 }
 
 func newRBACRoleShowCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	c := &cobra.Command{
 		Use:   "show <role-id>",
@@ -606,17 +622,19 @@ func newRBACRoleShowCmd() *cobra.Command {
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"team_id", strconv.FormatInt(item.TeamID, 10)},
 				{"database_pattern", item.DatabasePattern}, {"permissions", strings.Join(item.Permissions, ",")},
-				{"created_at", rbacTime(item.CreatedAt)}, {"measurement_permissions", strconv.Itoa(len(item.MeasurementPermissions))},
+				{"created_at", to.Val(item.CreatedAt, "never")}, {"measurement_permissions", strconv.Itoa(len(item.MeasurementPermissions))},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACObjectOutputFlag(c, &format)
 	return c
 }
 
 func newRBACRoleCreateCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var databasePattern, format string
 	var permissions []string
 	c := &cobra.Command{
@@ -644,11 +662,12 @@ func newRBACRoleCreateCmd() *cobra.Command {
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"team_id", strconv.FormatInt(item.TeamID, 10)},
 				{"database_pattern", item.DatabasePattern}, {"permissions", strings.Join(item.Permissions, ",")},
-				{"created_at", rbacTime(item.CreatedAt)},
+				{"created_at", to.Val(item.CreatedAt, "never")},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVar(&databasePattern, "database-pattern", "", "database name or pattern")
 	c.Flags().StringArrayVar(&permissions, "permission", nil, "permission to grant (repeatable: read, write, delete, admin)")
 	c.Flags().StringVarP(&format, "output", "o", output.FormatTable, "output format: table|json")
@@ -741,6 +760,7 @@ func newRBACMeasurementsCmd() *cobra.Command {
 
 func newRBACMeasurementListCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	var noHeader bool
 	c := &cobra.Command{
@@ -768,17 +788,19 @@ func newRBACMeasurementListCmd() *cobra.Command {
 			return renderRBACList(cmd, items, "measurement permissions", "measurement_permissions", format, noHeader,
 				[]string{"id", "role_id", "measurement_pattern", "permissions", "created_at"},
 				func(v client.MeasurementPermission) []string {
-					return []string{strconv.FormatInt(v.ID, 10), strconv.FormatInt(v.RoleID, 10), v.MeasurementPattern, strings.Join(v.Permissions, ","), rbacTime(v.CreatedAt)}
+					return []string{strconv.FormatInt(v.ID, 10), strconv.FormatInt(v.RoleID, 10), v.MeasurementPattern, strings.Join(v.Permissions, ","), to.Val(v.CreatedAt, rbacListNone(format))}
 				})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACListOutputFlags(c, &format, &noHeader)
 	return c
 }
 
 func newRBACMeasurementCreateCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var pattern, format string
 	var permissions []string
 	c := &cobra.Command{
@@ -808,11 +830,12 @@ func newRBACMeasurementCreateCmd() *cobra.Command {
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"role_id", strconv.FormatInt(item.RoleID, 10)},
 				{"measurement_pattern", item.MeasurementPattern}, {"permissions", strings.Join(item.Permissions, ",")},
-				{"created_at", rbacTime(item.CreatedAt)},
+				{"created_at", to.Val(item.CreatedAt, "never")},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVar(&pattern, "measurement-pattern", "", "measurement name or pattern")
 	c.Flags().StringArrayVar(&permissions, "permission", nil, "permission to grant (repeatable)")
 	c.Flags().StringVarP(&format, "output", "o", output.FormatTable, "output format: table|json")
@@ -910,6 +933,7 @@ func newRBACTokenTeamsListCmd() *cobra.Command {
 
 func newRBACTokenTeamsAddCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var format string
 	c := &cobra.Command{
 		Use:   "add <token-id|name> <team-id>",
@@ -943,11 +967,12 @@ func newRBACTokenTeamsAddCmd() *cobra.Command {
 			}
 			return renderRBACObject(cmd, item, format, [][2]string{
 				{"id", strconv.FormatInt(item.ID, 10)}, {"token_id", strconv.FormatInt(item.TokenID, 10)},
-				{"team_id", strconv.FormatInt(item.TeamID, 10)}, {"created_at", rbacTime(item.CreatedAt)},
+				{"team_id", strconv.FormatInt(item.TeamID, 10)}, {"created_at", to.Val(item.CreatedAt, "never")},
 			})
 		},
 	}
 	f.add(c)
+	to.add(c)
 	addRBACObjectOutputFlag(c, &format)
 	return c
 }

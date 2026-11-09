@@ -243,3 +243,52 @@ func TestRBACHTTPErrorPreservesStatusAndMessage(t *testing.T) {
 		t.Fatalf("error = %#v", err)
 	}
 }
+
+func TestRBACRouteMissingKeepsHTTPErrorWithHint(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
+	})
+	_, err := cli.ListOrganizations(context.Background())
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+		t.Fatalf("want wrapped *HTTPError 404, got %T: %v", err, err)
+	}
+	var fde *FeatureDisabledError
+	if errors.As(err, &fde) {
+		t.Fatalf("RBAC must not report FeatureDisabledError: %v", err)
+	}
+	const want = "arc: Cannot GET /api/v1/rbac/organizations (HTTP 404); Arc is reachable but did not register this route; check auth.enabled, the license, the server log, and that this Arc version supports this command"
+	if err.Error() != want {
+		t.Fatalf("err = %q\nwant %q", err.Error(), want)
+	}
+}
+
+// A handler 404 (missing object) and a route-missing 404 from something
+// that is not Arc must not get the hint.
+func TestRBACNotFoundAndWrongEndpointHaveNoHint(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		if r.URL.Path == "/api/v1/rbac/organizations/7" {
+			_, _ = w.Write([]byte(`{"error":"Organization not found"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
+	})
+	_, err := cli.GetOrganization(context.Background(), 7)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound || err.Error() != "arc: Organization not found (HTTP 404)" {
+		t.Fatalf("handler 404 changed: %T %v", err, err)
+	}
+	_, err = cli.ListOrganizations(context.Background())
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+		t.Fatalf("want wrapped *HTTPError 404, got %T: %v", err, err)
+	}
+	if strings.Contains(err.Error(), "did not register") || !strings.Contains(err.Error(), "does not answer like an Arc server") {
+		t.Fatalf("wrong endpoint got the hint: %v", err)
+	}
+}

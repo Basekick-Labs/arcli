@@ -113,9 +113,15 @@ type CreateMeasurementPermissionOptions struct {
 	Permissions        []string `json:"permissions"`
 }
 
+// rbacConfigKey is the server setting RBAC routes depend on: Arc registers
+// them only when authentication is enabled (auth.enabled).
+const rbacConfigKey = "auth.enabled"
+
 // rbacJSON performs one authenticated JSON request against an admin API
 // endpoint. These routes are cross-database and must not inherit the
-// connection's default database header.
+// connection's default database header. A route-missing 404 gets the
+// neutral hint of classifyFeatureRouteMissing; every other non-2xx is the
+// server's *HTTPError unchanged.
 func (c *Client) rbacJSON(ctx context.Context, method, path string, reqBody any, out any) error {
 	var body io.Reader
 	if reqBody != nil {
@@ -145,7 +151,7 @@ func (c *Client) rbacJSON(ctx context.Context, method, path string, reqBody any,
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return decodeWriteError(resp.StatusCode, respBody)
+		return c.classifyFeatureRouteMissing(ctx, decodeWriteError(resp.StatusCode, respBody), "RBAC", rbacConfigKey)
 	}
 	if out == nil || len(respBody) == 0 {
 		return nil
