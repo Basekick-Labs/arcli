@@ -34,8 +34,9 @@ Every subcommand requires an admin token.
 A backup contains every database plus, by default, the metadata store
 (tokens, policies, continuous queries) and the server config. It is
 written to the server's backup.local_path; there is no remote
-destination and no incremental mode. Backups are disabled when the
-server runs with backup.enabled=false.`,
+destination and no incremental mode. Backups are unavailable when the
+server runs with backup.enabled=false, or when its backup manager fails
+to start (the server log says why).`,
 	}
 	c.AddCommand(newBackupCreateCmd(), newBackupListCmd(), newBackupShowCmd(), newBackupStatusCmd(), newBackupDeleteCmd(), newBackupRestoreCmd())
 	return c

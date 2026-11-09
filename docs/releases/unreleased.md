@@ -5,3 +5,8 @@
 - All successfully read license states exit 0. Configuration, request, decoding, and output failures exit nonzero. No token or database header is sent to `/health`, and no authentication verification is performed. Normal connection selection, timeout, TLS verification, and identity opt-out settings apply.
 
 License installation and key/file configuration remain server responsibilities. Existing `ping -o json` license pass-through is unchanged. Closes [arcli#34](https://github.com/Basekick-Labs/arcli/issues/34).
+
+### Changed
+
+- `arcli backup` commands: when the backup routes are not registered, the existing message `backups are disabled on this server (backup.enabled=false)` is now followed by `; if backup.enabled is true, the backup manager failed to start (see the server log)`. Arc also leaves those routes unregistered when the backup manager fails to start, so the configuration value alone could be wrong. The original text is unchanged and still comes first, so scripts that search for it keep matching; scripts that compare the whole line for equality must be updated. Exit status (1) and error type are unchanged. Retention and continuous-query messages are unchanged.
+- Internal: a missing route on feature groups added after this release reports the server's HTTP 404 with a neutral hint instead of asserting `<feature>.enabled=false`. The published retention, continuous-query, and backup messages are kept.
