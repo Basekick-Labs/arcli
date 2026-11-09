@@ -23,8 +23,8 @@ func newGovernanceCmd() *cobra.Command {
 
 The governance endpoints require an admin token and an Enterprise licence
 with query governance enabled. A limit of 0 means unlimited.
-Displayed timestamps use UTC RFC3339Nano, preserving fractional seconds;
-JSON retains the available timestamp precision. Unavailable routes retain
+Displayed timestamps use UTC RFC3339 by default; --time-output rfc3339nano
+shows fractional seconds. JSON retains the available timestamp precision. Unavailable routes retain
 the server HTTP error without inferring configuration or license causes.`,
 	}
 	c.AddCommand(newGovernancePolicyCmd(), newGovernanceUsageCmd())
@@ -54,6 +54,7 @@ func resolveGovernancePolicyRef(ctx context.Context, cli *client.Client, ref str
 
 func newGovernancePolicyListCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var outputFormat string
 	var noHeader bool
 	c := &cobra.Command{
@@ -80,17 +81,19 @@ func newGovernancePolicyListCmd() *cobra.Command {
 					Count    int                       `json:"count"`
 				}{policies, len(policies)})
 			}
-			return renderGovernancePolicyList(cmd.OutOrStdout(), policies, noHeader, outputFormat == output.FormatCSV)
+			return renderGovernancePolicyList(cmd.OutOrStdout(), policies, noHeader, outputFormat == output.FormatCSV, to)
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
+	to.add(c)
 	return c
 }
 
 func newGovernancePolicyShowCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var outputFormat string
 	c := &cobra.Command{
 		Use:   "show <token-id|name>",
@@ -113,12 +116,13 @@ func newGovernancePolicyShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), policy)
 			}
-			writeGovernancePolicyInfo(cmd.OutOrStdout(), policy)
+			writeGovernancePolicyInfo(cmd.OutOrStdout(), policy, to)
 			return nil
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
@@ -187,6 +191,7 @@ func governanceLimitFlagsChanged(cmd *cobra.Command) bool {
 
 func newGovernancePolicyCreateCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var outputFormat string
 	var limits governanceLimitFlags
 	c := &cobra.Command{
@@ -227,18 +232,20 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), policy)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Created governance policy for token %q (id %d)\n", clean(token.Name), token.ID)
-			writeGovernancePolicyInfo(cmd.OutOrStdout(), policy)
+			writeGovernancePolicyInfo(cmd.OutOrStdout(), policy, to)
 			return nil
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	limits.add(c)
 	return c
 }
 
 func newGovernancePolicyUpdateCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var outputFormat string
 	var limits governanceLimitFlags
 	c := &cobra.Command{
@@ -284,12 +291,13 @@ so arcli reads the current policy and merges only the flags you pass.`,
 				return writeJSON(cmd.OutOrStdout(), updated)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Updated governance policy for token %q (id %d)\n", clean(token.Name), token.ID)
-			writeGovernancePolicyInfo(cmd.OutOrStdout(), updated)
+			writeGovernancePolicyInfo(cmd.OutOrStdout(), updated, to)
 			return nil
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	limits.add(c)
 	return c
 }
@@ -331,6 +339,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 
 func newGovernanceUsageCmd() *cobra.Command {
 	var f connFlags
+	var to timeOutput
 	var outputFormat string
 	c := &cobra.Command{
 		Use:   "usage <token-id|name>",
@@ -362,16 +371,17 @@ func newGovernanceUsageCmd() *cobra.Command {
 					Policy *client.GovernancePolicy `json:"policy"`
 				}{usage, policy})
 			}
-			writeGovernanceUsageInfo(cmd.OutOrStdout(), usage, policy)
+			writeGovernanceUsageInfo(cmd.OutOrStdout(), usage, policy, to)
 			return nil
 		},
 	}
 	f.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
+	to.add(c)
 	return c
 }
 
-func renderGovernancePolicyList(w io.Writer, policies []client.GovernancePolicy, noHeader, asCSV bool) error {
+func renderGovernancePolicyList(w io.Writer, policies []client.GovernancePolicy, noHeader, asCSV bool, to timeOutput) error {
 	sorted := append([]client.GovernancePolicy(nil), policies...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TokenID < sorted[j].TokenID })
 	if asCSV {
@@ -382,7 +392,7 @@ func renderGovernancePolicyList(w io.Writer, policies []client.GovernancePolicy,
 			}
 		}
 		for _, p := range sorted {
-			if err := cw.Write(governancePolicyCSVRow(p)); err != nil {
+			if err := cw.Write(governancePolicyCSVRow(p, to)); err != nil {
 				return err
 			}
 		}
@@ -407,11 +417,11 @@ func renderGovernancePolicyList(w io.Writer, policies []client.GovernancePolicy,
 	return output.Table(w, headers, rows)
 }
 
-func governancePolicyCSVRow(p client.GovernancePolicy) []string {
+func governancePolicyCSVRow(p client.GovernancePolicy, to timeOutput) []string {
 	return []string{
 		strconv.FormatInt(p.TokenID, 10), p.TokenName, strconv.Itoa(p.RateLimitPerMinute), strconv.Itoa(p.RateLimitPerHour),
 		strconv.Itoa(p.MaxQueriesPerHour), strconv.Itoa(p.MaxQueriesPerDay), strconv.Itoa(p.MaxRowsPerQuery), strconv.Itoa(p.MaxScanDurationSec),
-		fmtServerTime(p.CreatedAt, ""), fmtServerTime(p.UpdatedAt, ""),
+		to.Server(p.CreatedAt, ""), to.Server(p.UpdatedAt, ""),
 	}
 }
 
@@ -422,7 +432,7 @@ func governanceLimit(value int) string {
 	return strconv.Itoa(value)
 }
 
-func writeGovernancePolicyInfo(w io.Writer, p *client.GovernancePolicy) {
+func writeGovernancePolicyInfo(w io.Writer, p *client.GovernancePolicy, to timeOutput) {
 	fmt.Fprintf(w, "token id:               %d\n", p.TokenID)
 	fmt.Fprintf(w, "token:                  %s\n", clean(p.TokenName))
 	fmt.Fprintf(w, "rate limit per minute:  %s\n", governanceLimit(p.RateLimitPerMinute))
@@ -431,16 +441,16 @@ func writeGovernancePolicyInfo(w io.Writer, p *client.GovernancePolicy) {
 	fmt.Fprintf(w, "max queries per day:    %s\n", governanceLimit(p.MaxQueriesPerDay))
 	fmt.Fprintf(w, "max rows per query:     %s\n", governanceLimit(p.MaxRowsPerQuery))
 	fmt.Fprintf(w, "max scan duration:      %s sec\n", governanceLimit(p.MaxScanDurationSec))
-	fmt.Fprintf(w, "created:                %s\n", fmtServerTime(p.CreatedAt, "-"))
-	fmt.Fprintf(w, "updated:                %s\n", fmtServerTime(p.UpdatedAt, "-"))
+	fmt.Fprintf(w, "created:                %s\n", to.Server(p.CreatedAt, "-"))
+	fmt.Fprintf(w, "updated:                %s\n", to.Server(p.UpdatedAt, "-"))
 }
 
-func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy *client.GovernancePolicy) {
+func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy *client.GovernancePolicy, to timeOutput) {
 	fmt.Fprintf(w, "token id:                       %d\n", usage.TokenID)
 	fmt.Fprintf(w, "queries this hour:              %d\n", usage.QueriesThisHour)
 	fmt.Fprintf(w, "queries this day:               %d\n", usage.QueriesThisDay)
-	fmt.Fprintf(w, "hour resets:                    %s\n", fmtServerTime(usage.HourResetAt, "-"))
-	fmt.Fprintf(w, "day resets:                     %s\n", fmtServerTime(usage.DayResetAt, "-"))
+	fmt.Fprintf(w, "hour resets:                    %s\n", to.Server(usage.HourResetAt, "-"))
+	fmt.Fprintf(w, "day resets:                     %s\n", to.Server(usage.DayResetAt, "-"))
 	fmt.Fprintf(w, "remaining rate limit per minute: %d\n", usage.RateLimitRemainingPerMin)
 	fmt.Fprintf(w, "remaining rate limit per hour:   %d\n", usage.RateLimitRemainingPerHour)
 	if policy == nil {

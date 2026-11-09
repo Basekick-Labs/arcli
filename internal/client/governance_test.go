@@ -143,3 +143,30 @@ func TestGovernancePreservesLicenseAdminAndNotFoundErrors(t *testing.T) {
 		})
 	}
 }
+
+// A route-missing 404 on a healthy Arc keeps the server's *HTTPError (not
+// FeatureDisabledError, which is frozen to the legacy groups) and appends
+// the neutral hint naming governance.enabled.
+func TestGovernanceRouteMissingKeepsHTTPErrorWithHint(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
+	})
+	_, err := cli.ListGovernancePolicies(context.Background())
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+		t.Fatalf("want wrapped *HTTPError 404, got %T: %v", err, err)
+	}
+	var fde *FeatureDisabledError
+	if errors.As(err, &fde) {
+		t.Fatalf("governance must not report FeatureDisabledError: %v", err)
+	}
+	const want = "Cannot GET /api/v1/governance/policies (HTTP 404); Arc is reachable but did not register this route; check governance.enabled, the license, the server log, and that this Arc version supports this command"
+	if !strings.HasSuffix(err.Error(), want) {
+		t.Fatalf("err = %q\nwant suffix %q", err.Error(), want)
+	}
+}
