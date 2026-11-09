@@ -1,0 +1,23 @@
+--- stdout
+{
+  "connection": "local",
+  "endpoint": "ENDPOINT",
+  "token": {
+    "id": 1,
+    "name": "admin",
+    "description": "root token",
+    "permissions": [
+      "read",
+      "write",
+      "delete",
+      "admin"
+    ],
+    "created_at": "2026-09-07T16:00:01.987654321-03:00",
+    "last_used_at": "2026-09-08T01:02:03.000001+02:00",
+    "enabled": true,
+    "expires_at": "2027-01-01T03:00:00.123-03:00"
+  }
+}
+--- stderr
+--- err
+<nil>

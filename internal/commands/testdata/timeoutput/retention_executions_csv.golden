@@ -1,0 +1,7 @@
+--- stdout
+execution_time,status,deleted_count,cutoff_date,duration,error
+2026-09-07T19:00:00Z,completed,42,2026-09-07T19:05:00Z,1.5s,-
+not-a-time,failed,0,-,2ms,boom
+--- stderr
+--- err
+<nil>

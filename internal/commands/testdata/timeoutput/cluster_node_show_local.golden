@@ -1,0 +1,18 @@
+--- stdout
+id:             n1
+name:           node-1
+role:           writer
+state:          healthy
+address:        10.0.0.1:9000
+api address:    10.0.0.1:8000
+cluster:        c1
+version:        26.09.3
+started:        2026-09-07T19:00:01Z
+joined:         2026-09-07T23:02:03Z
+last heartbeat: 2026-09-07T19:00:01Z
+failed checks:  0
+stats:          cpu 1.5%, mem 2.5%, ingest 10/s, queries 2/s, storage 2.0 KiB, conns 3, active queries 1, compaction jobs 0
+capabilities:   query, write
+--- stderr
+--- err
+<nil>

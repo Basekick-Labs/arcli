@@ -1,0 +1,7 @@
+--- stdout
+Deleted 3 files (42 rows) older than 2026-09-07T19:00:00Z from database "metrics"
+measurements: cpu
+duration:     1.5s
+--- stderr
+--- err
+<nil>

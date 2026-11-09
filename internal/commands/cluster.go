@@ -48,6 +48,7 @@ raft leader.`,
 func newClusterStatusCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -109,10 +110,11 @@ unchanged in both cases; check "enabled" to branch in scripts.`,
 				return err
 			}
 			fmt.Fprintln(w)
-			return renderNodeTable(w, st.Nodes, false, false)
+			return renderNodeTable(w, st.Nodes, false, false, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -122,6 +124,7 @@ unchanged in both cases; check "enabled" to branch in scripts.`,
 func newClusterNodesCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 		role, state  string
@@ -162,17 +165,18 @@ Output formats: table (default) | json | csv`,
 			case output.FormatJSON:
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			case output.FormatCSV:
-				return renderNodeTable(cmd.OutOrStdout(), nodes, noHeader, true)
+				return renderNodeTable(cmd.OutOrStdout(), nodes, noHeader, true, to)
 			default:
 				if len(nodes) == 0 {
 					_, err := fmt.Fprintln(cmd.OutOrStdout(), "(no nodes)")
 					return err
 				}
-				return renderNodeTable(cmd.OutOrStdout(), nodes, noHeader, false)
+				return renderNodeTable(cmd.OutOrStdout(), nodes, noHeader, false, to)
 			}
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().StringVar(&role, "role", "", "filter by role")
@@ -194,6 +198,7 @@ func newClusterNodeCmd() *cobra.Command {
 func newClusterNodeShowCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		local        bool
 	)
@@ -226,7 +231,7 @@ which additionally reports the node's role capabilities.`,
 				if outputFormat == output.FormatJSON {
 					return writeRawJSON(w, raw)
 				}
-				writeNodeInfo(w, &n.ClusterNode)
+				writeNodeInfo(w, &n.ClusterNode, to)
 				caps := make([]string, 0, len(n.Capabilities))
 				for k, v := range n.Capabilities {
 					if v {
@@ -244,11 +249,12 @@ which additionally reports the node's role capabilities.`,
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(w, raw)
 			}
-			writeNodeInfo(w, n)
+			writeNodeInfo(w, n, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().BoolVar(&local, "local", false, "show the node this connection is talking to")
 	return c
@@ -406,15 +412,6 @@ func writeRawJSON(w io.Writer, raw json.RawMessage) error {
 	return err
 }
 
-// fmtTimeVal renders a time.Time as UTC RFC3339, or "never" for the zero
-// value (Arc serialises unset times as 0001-01-01T00:00:00Z).
-func fmtTimeVal(t time.Time, none string) string {
-	if t.IsZero() {
-		return none
-	}
-	return t.UTC().Format(time.RFC3339)
-}
-
 // humanBytes renders a byte count with a binary unit suffix.
 func humanBytes(n int64) string {
 	const unit = 1024
@@ -438,17 +435,17 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-func nodeRow(n client.ClusterNode) []string {
+func nodeRow(n client.ClusterNode, to timeOutput) []string {
 	return []string{
 		clean(n.ID), clean(n.Name), clean(n.Role), clean(n.State), clean(n.Address), clean(n.APIAddress), clean(n.Version),
-		fmtTimeVal(n.LastHeartbeat, "never"), strconv.Itoa(n.FailedChecks),
+		to.Val(n.LastHeartbeat, "never"), strconv.Itoa(n.FailedChecks),
 	}
 }
 
 var nodeHeaders = []string{"ID", "NAME", "ROLE", "STATE", "ADDRESS", "API", "VERSION", "LAST HEARTBEAT", "FAILED"}
 
 // renderNodeTable writes nodes sorted by id as a table or CSV.
-func renderNodeTable(w io.Writer, nodes []client.ClusterNode, noHeader, asCSV bool) error {
+func renderNodeTable(w io.Writer, nodes []client.ClusterNode, noHeader, asCSV bool, to timeOutput) error {
 	list := make([]client.ClusterNode, len(nodes))
 	copy(list, nodes)
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
@@ -460,8 +457,8 @@ func renderNodeTable(w io.Writer, nodes []client.ClusterNode, noHeader, asCSV bo
 			}
 		}
 		for _, n := range list {
-			row := nodeRow(n)
-			row[7] = fmtTimeVal(n.LastHeartbeat, "")
+			row := nodeRow(n, to)
+			row[7] = to.Val(n.LastHeartbeat, "")
 			if err := cw.Write(row); err != nil {
 				return err
 			}
@@ -471,7 +468,7 @@ func renderNodeTable(w io.Writer, nodes []client.ClusterNode, noHeader, asCSV bo
 	}
 	rows := make([][]string, 0, len(list))
 	for _, n := range list {
-		rows = append(rows, nodeRow(n))
+		rows = append(rows, nodeRow(n, to))
 	}
 	headers := nodeHeaders
 	if noHeader {
@@ -481,7 +478,7 @@ func renderNodeTable(w io.Writer, nodes []client.ClusterNode, noHeader, asCSV bo
 }
 
 // writeNodeInfo prints one node as aligned key/value lines.
-func writeNodeInfo(w io.Writer, n *client.ClusterNode) {
+func writeNodeInfo(w io.Writer, n *client.ClusterNode, to timeOutput) {
 	fmt.Fprintf(w, "id:             %s\n", clean(n.ID))
 	fmt.Fprintf(w, "name:           %s\n", clean(n.Name))
 	fmt.Fprintf(w, "role:           %s\n", clean(n.Role))
@@ -492,9 +489,9 @@ func writeNodeInfo(w io.Writer, n *client.ClusterNode) {
 		fmt.Fprintf(w, "cluster:        %s\n", clean(n.ClusterName))
 	}
 	fmt.Fprintf(w, "version:        %s\n", clean(n.Version))
-	fmt.Fprintf(w, "started:        %s\n", fmtTimeVal(n.StartedAt, "-"))
-	fmt.Fprintf(w, "joined:         %s\n", fmtTimeVal(n.JoinedAt, "-"))
-	fmt.Fprintf(w, "last heartbeat: %s\n", fmtTimeVal(n.LastHeartbeat, "never"))
+	fmt.Fprintf(w, "started:        %s\n", to.Val(n.StartedAt, "-"))
+	fmt.Fprintf(w, "joined:         %s\n", to.Val(n.JoinedAt, "-"))
+	fmt.Fprintf(w, "last heartbeat: %s\n", to.Val(n.LastHeartbeat, "never"))
 	fmt.Fprintf(w, "failed checks:  %d\n", n.FailedChecks)
 	s := n.Stats
 	fmt.Fprintf(w, "stats:          cpu %.1f%%, mem %.1f%%, ingest %d/s, queries %d/s, storage %s, conns %d, active queries %d, compaction jobs %d\n",

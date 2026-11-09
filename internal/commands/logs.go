@@ -17,6 +17,7 @@ import (
 func newLogsCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 		limit        int
@@ -82,7 +83,7 @@ Output formats: table (default) | json | csv`,
 					}
 				}
 				for _, e := range res.Logs {
-					if err := cw.Write([]string{fmtTimeVal(e.Timestamp, ""), e.Level, e.Component, e.Message, e.Caller}); err != nil {
+					if err := cw.Write([]string{to.Val(e.Timestamp, ""), e.Level, e.Component, e.Message, e.Caller}); err != nil {
 						return err
 					}
 				}
@@ -95,7 +96,7 @@ Output formats: table (default) | json | csv`,
 				}
 				rows := make([][]string, 0, len(res.Logs))
 				for _, e := range res.Logs {
-					rows = append(rows, []string{fmtTimeVal(e.Timestamp, "-"), clean(e.Level), clean(e.Component), clean(e.Message)})
+					rows = append(rows, []string{to.Val(e.Timestamp, "-"), clean(e.Level), clean(e.Component), clean(e.Message)})
 				}
 				headers := []string{"TIME", "LEVEL", "COMPONENT", "MESSAGE"}
 				if noHeader {
@@ -106,6 +107,7 @@ Output formats: table (default) | json | csv`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().IntVar(&limit, "limit", 100, "maximum entries (1-1000)")

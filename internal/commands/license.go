@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -24,6 +23,7 @@ func newLicenseCmd() *cobra.Command {
 func newLicenseStatusCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -33,7 +33,8 @@ func newLicenseStatusCmd() *cobra.Command {
 no authentication check is made. Works on standalone and clustered servers.
 
 Reports tier, status, source, and optional expiry, days remaining, and site-license
-state. Expiry uses UTC RFC3339 with fractional seconds when provided. The server's
+state. Table expiry is UTC RFC3339 in whole seconds (--time-output rfc3339nano
+keeps fractional seconds); JSON keeps the fractional seconds. The server's
 status is preserved, including active, expired, invalid, and unlicensed.
 
 A missing or null license block means no license is configured (normal for OSS),
@@ -69,7 +70,7 @@ the server and are outside this command.`,
 			if lic := st.License; lic != nil {
 				rows = append(rows, []string{"tier", clean(lic.Tier)}, []string{"status", clean(lic.Status)}, []string{"source", clean(lic.Source)})
 				if lic.ExpiresAt != nil {
-					rows = append(rows, []string{"expires_at", lic.ExpiresAt.UTC().Format(time.RFC3339Nano)})
+					rows = append(rows, []string{"expires_at", to.Time(*lic.ExpiresAt)})
 				}
 				if lic.DaysRemaining != nil {
 					rows = append(rows, []string{"days_remaining", strconv.Itoa(*lic.DaysRemaining)})
@@ -91,6 +92,7 @@ the server and are outside this command.`,
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }

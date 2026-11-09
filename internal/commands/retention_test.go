@@ -523,11 +523,11 @@ func TestSchedulerStatus_OSS(t *testing.T) {
 func TestDescribeScheduler_RunningShapes(t *testing.T) {
 	can := true
 	b := client.SchedulerBlock{Running: true, LicenseValid: true, Schedule: "0 2 * * *", NextRun: "2026-09-08T02:00:00Z", CanRun: &can, GateRole: "writer"}
-	if got := describeScheduler(b, false); got != "running, schedule 0 2 * * *, next run 2026-09-08T02:00:00Z, can run on this node: true (writer)" {
+	if got := describeScheduler(b, false, timeOutput{}); got != "running, schedule 0 2 * * *, next run 2026-09-08T02:00:00Z, can run on this node: true (writer)" {
 		t.Errorf("got %q", got)
 	}
 	b2 := client.SchedulerBlock{Running: false, LicenseValid: false, JobCount: 3}
-	if got := describeScheduler(b2, true); got != "present but not running, license invalid, 3 scheduled job(s)" {
+	if got := describeScheduler(b2, true, timeOutput{}); got != "present but not running, license invalid, 3 scheduled job(s)" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -553,16 +553,16 @@ func TestFeatureDisabled_Commands(t *testing.T) {
 }
 
 func TestFmtServerTime(t *testing.T) {
-	if got := fmtServerTime("2026-09-07T13:05:00-06:00", "-"); got != "2026-09-07T19:05:00Z" {
+	if got := (timeOutput{}).Server("2026-09-07T13:05:00-06:00", "-"); got != "2026-09-07T19:05:00Z" {
 		t.Errorf("got %q", got)
 	}
-	if got := fmtServerTime("0001-01-01T00:00:00Z", "never"); got != "never" {
+	if got := (timeOutput{}).Server("0001-01-01T00:00:00Z", "never"); got != "never" {
 		t.Errorf("zero: got %q", got)
 	}
-	if got := fmtServerTime("", "never"); got != "never" {
+	if got := (timeOutput{}).Server("", "never"); got != "never" {
 		t.Errorf("empty: got %q", got)
 	}
-	if got := fmtServerTime("not a time", "-"); got != "not a time" {
+	if got := (timeOutput{}).Server("not a time", "-"); got != "not a time" {
 		t.Errorf("unparseable: got %q", got)
 	}
 }

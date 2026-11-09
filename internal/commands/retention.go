@@ -37,31 +37,6 @@ func (f *connFlags) addWithTimeout(c *cobra.Command, def time.Duration) {
 	addTimeoutFlagDefault(c, &f.timeout, def)
 }
 
-// fmtServerTime renders one of Arc's RFC3339 timestamp strings as UTC
-// RFC3339. Empty or zero values (the SQLite driver emits
-// 0001-01-01T00:00:00Z when it cannot parse a column) render as none; a
-// string that is not a timestamp at all is shown as-is (scrubbed).
-func fmtServerTime(s, none string) string {
-	if s == "" {
-		return none
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil || t.IsZero() {
-		if err != nil {
-			return clean(s)
-		}
-		return none
-	}
-	return t.UTC().Format(time.RFC3339)
-}
-
-func fmtServerTimePtr(p *string, none string) string {
-	if p == nil {
-		return none
-	}
-	return fmtServerTime(*p, none)
-}
-
 func strPtr(p *string, none string) string {
 	if p == nil || *p == "" {
 		return none
@@ -145,6 +120,7 @@ func resolvePolicyRef(ctx context.Context, cli *client.Client, ref string) (*cli
 func newRetentionListCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 	)
@@ -169,10 +145,11 @@ func newRetentionListCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			}
-			return renderPolicyList(cmd.OutOrStdout(), list, noHeader, outputFormat == output.FormatCSV)
+			return renderPolicyList(cmd.OutOrStdout(), list, noHeader, outputFormat == output.FormatCSV, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	return c
@@ -181,6 +158,7 @@ func newRetentionListCmd() *cobra.Command {
 func newRetentionShowCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -204,11 +182,12 @@ func newRetentionShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), p)
 			}
-			writePolicyInfo(cmd.OutOrStdout(), p)
+			writePolicyInfo(cmd.OutOrStdout(), p, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -236,6 +215,7 @@ func (rf *retentionFlags) add(c *cobra.Command, forUpdate bool) {
 func newRetentionCreateCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		rf           retentionFlags
 	)
@@ -279,12 +259,13 @@ a file straddling the cutoff is kept whole.`,
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Created retention policy %q (id %d)\n", clean(p.Name), p.ID)
-			writePolicyInfo(cmd.OutOrStdout(), p)
+			writePolicyInfo(cmd.OutOrStdout(), p, to)
 			schedulerHint(cmd, &f, cli, "retention", fmt.Sprintf("arcli retention execute %d", p.ID))
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	rf.add(c, false)
 	_ = c.MarkFlagRequired("name")
@@ -316,6 +297,7 @@ func schedulerHint(cmd *cobra.Command, f *connFlags, cli *client.Client, which, 
 func newRetentionUpdateCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		rf           retentionFlags
 	)
@@ -420,11 +402,12 @@ than buffer-days), the error names the extra flag to pass.
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Updated retention policy %q (id %d)\n", clean(p.Name), p.ID)
-			writePolicyInfo(cmd.OutOrStdout(), p)
+			writePolicyInfo(cmd.OutOrStdout(), p, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	rf.add(c, true)
 	return c
@@ -475,6 +458,7 @@ func newRetentionDeleteCmd() *cobra.Command {
 func newRetentionExecuteCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		dryRun, yes  bool
 	)
@@ -528,9 +512,9 @@ but refuses the real call (HTTP 503).`,
 					return fmt.Errorf("dry-run preflight failed: %w", perr)
 				}
 				q := fmt.Sprintf("Delete %d files (%d rows) whose newest row is older than %s from database %q (measurements: %s)? The server recomputes the cutoff at execution time.",
-					preview.FilesDeleted, preview.DeletedCount, fmtServerTime(preview.CutoffDate, "-"), clean(p.Database), measurementsOrNone(preview.AffectedMeasurements))
+					preview.FilesDeleted, preview.DeletedCount, to.Server(preview.CutoffDate, "-"), clean(p.Database), measurementsOrNone(preview.AffectedMeasurements))
 				if preview.FilesDeleted == 0 {
-					q = fmt.Sprintf("The dry run found nothing older than %s to delete in database %q. Run the policy anyway (an execution is still recorded)?", fmtServerTime(preview.CutoffDate, "-"), clean(p.Database))
+					q = fmt.Sprintf("The dry run found nothing older than %s to delete in database %q. Run the policy anyway (an execution is still recorded)?", to.Server(preview.CutoffDate, "-"), clean(p.Database))
 				}
 				if err := confirmOrAbort(cmd, q, false); err != nil {
 					return err
@@ -553,13 +537,14 @@ but refuses the real call (HTTP 503).`,
 			if res.DryRun {
 				verb = "Would delete"
 			}
-			fmt.Fprintf(w, "%s %d files (%d rows) older than %s from database %q\n", verb, res.FilesDeleted, res.DeletedCount, fmtServerTime(res.CutoffDate, "-"), clean(p.Database))
+			fmt.Fprintf(w, "%s %d files (%d rows) older than %s from database %q\n", verb, res.FilesDeleted, res.DeletedCount, to.Server(res.CutoffDate, "-"), clean(p.Database))
 			fmt.Fprintf(w, "measurements: %s\n", measurementsOrNone(res.AffectedMeasurements))
 			fmt.Fprintf(w, "duration:     %s\n", (time.Duration(res.ExecutionTimeMs * float64(time.Millisecond))).Round(time.Millisecond))
 			return nil
 		},
 	}
 	f.addWithTimeout(c, 30*time.Minute)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be deleted without deleting")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the dry-run preflight and the confirmation prompt")
@@ -582,6 +567,7 @@ func measurementsOrNone(ms []string) string {
 func newRetentionExecutionsCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 		limit        int
@@ -620,8 +606,8 @@ func newRetentionExecutionsCmd() *cobra.Command {
 			rows := make([][]string, 0, len(ex))
 			for _, e := range ex {
 				rows = append(rows, []string{
-					fmtServerTime(e.ExecutionTime, "-"), clean(e.Status), strconv.FormatInt(e.DeletedCount, 10),
-					fmtServerTimePtr(e.CutoffDate, "-"), (time.Duration(e.ExecutionDurationMs * float64(time.Millisecond))).Round(time.Millisecond).String(),
+					to.Server(e.ExecutionTime, "-"), clean(e.Status), strconv.FormatInt(e.DeletedCount, 10),
+					to.ServerPtr(e.CutoffDate, "-"), (time.Duration(e.ExecutionDurationMs * float64(time.Millisecond))).Round(time.Millisecond).String(),
 					strPtr(e.ErrorMessage, "-"),
 				})
 			}
@@ -652,6 +638,7 @@ func newRetentionExecutionsCmd() *cobra.Command {
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().IntVar(&limit, "limit", 50, "maximum executions to show")
@@ -660,21 +647,21 @@ func newRetentionExecutionsCmd() *cobra.Command {
 
 // ---- rendering -------------------------------------------------------------
 
-func writePolicyInfo(w io.Writer, p *client.RetentionPolicy) {
+func writePolicyInfo(w io.Writer, p *client.RetentionPolicy, to timeOutput) {
 	fmt.Fprintf(w, "id:             %d\n", p.ID)
 	fmt.Fprintf(w, "name:           %s\n", clean(p.Name))
 	fmt.Fprintf(w, "database:       %s\n", clean(p.Database))
 	fmt.Fprintf(w, "measurement:    %s\n", strPtr(p.Measurement, "(all)"))
 	fmt.Fprintf(w, "retention:      %d days (+%d buffer)\n", p.RetentionDays, p.BufferDays)
 	fmt.Fprintf(w, "active:         %t\n", p.IsActive)
-	fmt.Fprintf(w, "last run:       %s\n", fmtServerTimePtr(p.LastExecutionTime, "never"))
+	fmt.Fprintf(w, "last run:       %s\n", to.ServerPtr(p.LastExecutionTime, "never"))
 	fmt.Fprintf(w, "last status:    %s\n", strPtr(p.LastExecutionStatus, "-"))
 	fmt.Fprintf(w, "last deleted:   %s\n", int64Ptr(p.LastDeletedCount, "-"))
-	fmt.Fprintf(w, "created:        %s\n", fmtServerTime(p.CreatedAt, "-"))
-	fmt.Fprintf(w, "updated:        %s\n", fmtServerTime(p.UpdatedAt, "-"))
+	fmt.Fprintf(w, "created:        %s\n", to.Server(p.CreatedAt, "-"))
+	fmt.Fprintf(w, "updated:        %s\n", to.Server(p.UpdatedAt, "-"))
 }
 
-func renderPolicyList(w io.Writer, list []client.RetentionPolicy, noHeader, asCSV bool) error {
+func renderPolicyList(w io.Writer, list []client.RetentionPolicy, noHeader, asCSV bool, to timeOutput) error {
 	sorted := make([]client.RetentionPolicy, len(list))
 	copy(sorted, list)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
@@ -686,7 +673,7 @@ func renderPolicyList(w io.Writer, list []client.RetentionPolicy, noHeader, asCS
 			}
 		}
 		for _, p := range sorted {
-			if err := cw.Write([]string{strconv.FormatInt(p.ID, 10), p.Name, p.Database, strPtr(p.Measurement, ""), strconv.Itoa(p.RetentionDays), strconv.Itoa(p.BufferDays), strconv.FormatBool(p.IsActive), fmtServerTimePtr(p.LastExecutionTime, ""), strPtr(p.LastExecutionStatus, ""), int64Ptr(p.LastDeletedCount, "")}); err != nil {
+			if err := cw.Write([]string{strconv.FormatInt(p.ID, 10), p.Name, p.Database, strPtr(p.Measurement, ""), strconv.Itoa(p.RetentionDays), strconv.Itoa(p.BufferDays), strconv.FormatBool(p.IsActive), to.ServerPtr(p.LastExecutionTime, ""), strPtr(p.LastExecutionStatus, ""), int64Ptr(p.LastDeletedCount, "")}); err != nil {
 				return err
 			}
 		}
@@ -701,7 +688,7 @@ func renderPolicyList(w io.Writer, list []client.RetentionPolicy, noHeader, asCS
 	for _, p := range sorted {
 		rows = append(rows, []string{strconv.FormatInt(p.ID, 10), clean(p.Name), clean(p.Database), strPtr(p.Measurement, "(all)"),
 			strconv.Itoa(p.RetentionDays) + "d", strconv.Itoa(p.BufferDays) + "d", strconv.FormatBool(p.IsActive),
-			fmtServerTimePtr(p.LastExecutionTime, "never"), strPtr(p.LastExecutionStatus, "-"), int64Ptr(p.LastDeletedCount, "-")})
+			to.ServerPtr(p.LastExecutionTime, "never"), strPtr(p.LastExecutionStatus, "-"), int64Ptr(p.LastDeletedCount, "-")})
 	}
 	headers := []string{"ID", "NAME", "DATABASE", "MEASUREMENT", "RETENTION", "BUFFER", "ACTIVE", "LAST RUN", "LAST STATUS", "LAST DELETED"}
 	if noHeader {

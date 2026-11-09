@@ -1,0 +1,16 @@
+--- stdout
+Created retention policy "p-frac" (id 1)
+id:             1
+name:           p-frac
+database:       metrics
+measurement:    cpu
+retention:      30 days (+1 buffer)
+active:         true
+last run:       2026-09-07T19:00:00Z
+last status:    completed
+last deleted:   42
+created:        2026-09-07T19:05:00Z
+updated:        2026-09-07T19:00:00Z
+--- stderr
+--- err
+<nil>

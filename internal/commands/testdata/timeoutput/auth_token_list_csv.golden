@@ -1,0 +1,7 @@
+--- stdout
+id,name,permissions,enabled,expires_at,last_used_at,created_at,description
+1,admin,"read,write,delete,admin",true,2027-01-01T06:00:00Z,2026-09-07T23:02:03Z,2026-09-07T19:00:01Z,root token
+2,ro,read,false,,,2026-09-07T23:02:03Z,
+--- stderr
+--- err
+<nil>

@@ -52,6 +52,7 @@ reports that it is disabled.`,
 func newCompactionStatusCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -97,7 +98,7 @@ func newCompactionStatusCmd() *cobra.Command {
 				s := st.Schedulers[n]
 				next := "-"
 				if s.NextRun != nil && !s.NextRun.IsZero() {
-					next = s.NextRun.UTC().Format(time.RFC3339)
+					next = to.Time(*s.NextRun)
 				}
 				gate := "-"
 				if s.RoleGated != nil {
@@ -113,6 +114,7 @@ func newCompactionStatusCmd() *cobra.Command {
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
