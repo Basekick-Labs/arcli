@@ -118,6 +118,10 @@ func ParseExpiresIn(s string) (time.Duration, error) {
 			if days <= 0 {
 				return 0, fmt.Errorf("expires-in must be positive (got %s)", s)
 			}
+			const maxDays = int64((1<<63 - 1) / (24 * time.Hour))
+			if int64(days) > maxDays {
+				return 0, fmt.Errorf("expires-in exceeds maximum day count (%d days)", maxDays)
+			}
 			return time.Duration(days) * 24 * time.Hour, nil
 		}
 	}
