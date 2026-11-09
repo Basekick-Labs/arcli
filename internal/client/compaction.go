@@ -326,10 +326,20 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 			CycleID int64  `json:"cycle_id"`
 			Paused  bool   `json:"paused"`
 			Error   string `json:"error"`
+			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &conflict)
 		if conflict.Paused {
-			return nil, &CompactionPausedError{Message: conflict.Error}
+			// Arc's "message" carries the actionable half ("a restore is
+			// running; retry when it ends").
+			msg := conflict.Error
+			switch {
+			case msg == "":
+				msg = conflict.Message
+			case conflict.Message != "":
+				msg += ": " + conflict.Message
+			}
+			return nil, &CompactionPausedError{Message: msg}
 		}
 		return nil, &CompactionRunningError{CycleID: conflict.CycleID}
 	}

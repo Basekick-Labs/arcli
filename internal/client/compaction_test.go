@@ -159,7 +159,7 @@ func TestTriggerCompaction_QueryValidationAnd409(t *testing.T) {
 		}
 		if strings.Contains(r.URL.RawQuery, "database=paused") {
 			w.WriteHeader(409)
-			_, _ = w.Write([]byte(`{"error":"compaction is paused cluster-wide","paused":true}`))
+			_, _ = w.Write([]byte(`{"error":"compaction is paused cluster-wide","message":"a restore is running; retry when it ends","paused":true}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"message":"Compaction triggered","status":"running","tiers":null,"cycle_id":5}`))
@@ -188,7 +188,7 @@ func TestTriggerCompaction_QueryValidationAnd409(t *testing.T) {
 	}
 	_, err = cli.TriggerCompaction(ctx, nil, "paused")
 	var cpe *CompactionPausedError
-	if !errors.As(err, &cpe) || err.Error() != "compaction is paused cluster-wide" {
+	if !errors.As(err, &cpe) || err.Error() != "compaction is paused cluster-wide: a restore is running; retry when it ends" {
 		t.Errorf("paused err = %v", err)
 	}
 }
