@@ -1,0 +1,4 @@
+--- stdout
+--- stderr
+Delete 3 files (42 rows) whose newest row is older than 2026-09-07T19:00:00Z from database "metrics" (measurements: cpu)? The server recomputes the cutoff at execution time. [y/N] --- err
+aborted

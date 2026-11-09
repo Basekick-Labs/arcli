@@ -74,6 +74,7 @@ func resolveCQRef(ctx context.Context, cli *client.Client, ref string) (*client.
 func newCQListCmd() *cobra.Command {
 	var (
 		f                connFlags
+		to               timeOutput
 		outputFormat     string
 		noHeader         bool
 		database         string
@@ -108,10 +109,11 @@ func newCQListCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			}
-			return renderCQList(cmd.OutOrStdout(), list, noHeader, outputFormat == output.FormatCSV)
+			return renderCQList(cmd.OutOrStdout(), list, noHeader, outputFormat == output.FormatCSV, to)
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().StringVar(&database, "database", "", "only queries in this database")
@@ -123,6 +125,7 @@ func newCQListCmd() *cobra.Command {
 func newCQShowCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 	)
 	c := &cobra.Command{
@@ -146,11 +149,12 @@ func newCQShowCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), q)
 			}
-			writeCQInfo(cmd.OutOrStdout(), q)
+			writeCQInfo(cmd.OutOrStdout(), q, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
 }
@@ -223,6 +227,7 @@ func sourceRefWarning(w io.Writer, req client.ContinuousQueryRequest) {
 func newCQCreateCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		cf           cqFlags
 	)
@@ -279,12 +284,13 @@ checked by the server.`,
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Created continuous query %q (id %d)\n", clean(q.Name), q.ID)
-			writeCQInfo(cmd.OutOrStdout(), q)
+			writeCQInfo(cmd.OutOrStdout(), q, to)
 			schedulerHint(cmd, &f, cli, "cq", fmt.Sprintf("arcli cq execute %d", q.ID))
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	cf.add(c, false)
 	for _, req := range []string{"name", "database", "source", "destination", "interval"} {
@@ -296,6 +302,7 @@ checked by the server.`,
 func newCQUpdateCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		cf           cqFlags
 	)
@@ -414,11 +421,12 @@ all tag columns.`,
 				return writeRawJSON(cmd.OutOrStdout(), raw)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Updated continuous query %q (id %d)\n", clean(q.Name), q.ID)
-			writeCQInfo(cmd.OutOrStdout(), q)
+			writeCQInfo(cmd.OutOrStdout(), q, to)
 			return nil
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	cf.add(c, true)
 	return c
@@ -469,6 +477,7 @@ func newCQDeleteCmd() *cobra.Command {
 func newCQExecuteCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		start, end   string
 		dryRun       bool
@@ -524,8 +533,22 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 			}
 			stderr := cmd.ErrOrStderr()
 			if opts.End != nil && q.LastProcessedTime != nil && !dryRun {
-				if lp, perr := time.Parse(time.RFC3339Nano, *q.LastProcessedTime); perr == nil && opts.End.Before(lp) {
-					fmt.Fprintf(stderr, "warning: --end %s is earlier than the query's last processed time %s; the server will rewind the watermark and the next run will reprocess everything since\n", opts.End.UTC().Format(time.RFC3339), lp.UTC().Format(time.RFC3339))
+				// The client sends --end with its fractional seconds dropped
+				// (client.ExecuteContinuousQuery formats it as RFC3339), and
+				// that is what the server moves the watermark to, so compare
+				// that value, not the one typed. Every case earlier releases
+				// warned about (the typed value itself is earlier) keeps the
+				// published text byte for byte. The cases they missed (only
+				// the sent value is earlier, so --end had a fraction) get a
+				// text naming both values with fractions, so it never reads
+				// "X is earlier than X". It ignores --time-output.
+				sentEnd := opts.End.UTC().Truncate(time.Second)
+				if lp, perr := time.Parse(time.RFC3339Nano, *q.LastProcessedTime); perr == nil && sentEnd.Before(lp) {
+					if opts.End.Before(lp) {
+						fmt.Fprintf(stderr, "warning: --end %s is earlier than the query's last processed time %s; the server will rewind the watermark and the next run will reprocess everything since\n", sentEnd.Format(time.RFC3339), lp.UTC().Format(time.RFC3339))
+					} else {
+						fmt.Fprintf(stderr, "warning: --end %s is sent as %s (whole seconds), which is earlier than the query's last processed time %s; the server will rewind the watermark and the next run will reprocess everything since\n", opts.End.UTC().Format(time.RFC3339Nano), sentEnd.Format(time.RFC3339), lp.UTC().Format(time.RFC3339Nano))
+					}
 				}
 			}
 			ctx, cancel = f.ctx(cmd)
@@ -542,7 +565,7 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 			}
 			w := cmd.OutOrStdout()
 			fmt.Fprintf(w, "status:       %s (%s)\n", clean(res.Status), clean(res.ExecutionID))
-			fmt.Fprintf(w, "window:       %s → %s\n", fmtServerTime(res.StartTime, "-"), fmtServerTime(res.EndTime, "-"))
+			fmt.Fprintf(w, "window:       %s → %s\n", to.Server(res.StartTime, "-"), to.Server(res.EndTime, "-"))
 			fmt.Fprintf(w, "destination:  %s\n", clean(res.DestinationMeasurement))
 			fmt.Fprintf(w, "written:      %d records\n", res.RecordsWritten)
 			fmt.Fprintf(w, "duration:     %s\n", (time.Duration(res.ExecutionTimeSeconds * float64(time.Second))).Round(time.Millisecond))
@@ -553,6 +576,7 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 		},
 	}
 	f.addWithTimeout(c, 10*time.Minute)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	c.Flags().StringVar(&start, "start", "", "window start (RFC3339)")
 	c.Flags().StringVar(&end, "end", "", "window end (RFC3339)")
@@ -565,6 +589,7 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 func newCQExecutionsCmd() *cobra.Command {
 	var (
 		f            connFlags
+		to           timeOutput
 		outputFormat string
 		noHeader     bool
 		limit        int
@@ -603,8 +628,8 @@ func newCQExecutionsCmd() *cobra.Command {
 			rows := make([][]string, 0, len(ex))
 			for _, e := range ex {
 				rows = append(rows, []string{
-					fmtServerTime(e.ExecutionTime, "-"), clean(e.Status),
-					fmtServerTime(e.StartTime, "-") + " → " + fmtServerTime(e.EndTime, "-"),
+					to.Server(e.ExecutionTime, "-"), clean(e.Status),
+					to.Server(e.StartTime, "-") + " → " + to.Server(e.EndTime, "-"),
 					strconv.FormatInt(e.RecordsWritten, 10),
 					(time.Duration(e.ExecutionDurationSeconds * float64(time.Second))).Round(time.Millisecond).String(),
 					strPtr(e.ErrorMessage, "-"),
@@ -637,6 +662,7 @@ func newCQExecutionsCmd() *cobra.Command {
 		},
 	}
 	f.add(c)
+	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().IntVar(&limit, "limit", 50, "maximum executions to show")
@@ -659,7 +685,7 @@ func normaliseList(in []string) []string {
 	return out
 }
 
-func writeCQInfo(w io.Writer, q *client.ContinuousQuery) {
+func writeCQInfo(w io.Writer, q *client.ContinuousQuery, to timeOutput) {
 	fmt.Fprintf(w, "id:              %d\n", q.ID)
 	fmt.Fprintf(w, "name:            %s\n", clean(q.Name))
 	if q.Description != nil && *q.Description != "" {
@@ -679,16 +705,16 @@ func writeCQInfo(w io.Writer, q *client.ContinuousQuery) {
 	}
 	fmt.Fprintf(w, "tag columns:     %s\n", tags)
 	fmt.Fprintf(w, "active:          %t\n", q.IsActive)
-	fmt.Fprintf(w, "last run:        %s\n", fmtServerTimePtr(q.LastExecutionTime, "never"))
+	fmt.Fprintf(w, "last run:        %s\n", to.ServerPtr(q.LastExecutionTime, "never"))
 	fmt.Fprintf(w, "last status:     %s\n", strPtr(q.LastExecutionStatus, "-"))
-	fmt.Fprintf(w, "last processed:  %s\n", fmtServerTimePtr(q.LastProcessedTime, "-"))
+	fmt.Fprintf(w, "last processed:  %s\n", to.ServerPtr(q.LastProcessedTime, "-"))
 	fmt.Fprintf(w, "last written:    %s\n", int64Ptr(q.LastRecordsWritten, "-"))
-	fmt.Fprintf(w, "created:         %s\n", fmtServerTime(q.CreatedAt, "-"))
-	fmt.Fprintf(w, "updated:         %s\n", fmtServerTime(q.UpdatedAt, "-"))
+	fmt.Fprintf(w, "created:         %s\n", to.Server(q.CreatedAt, "-"))
+	fmt.Fprintf(w, "updated:         %s\n", to.Server(q.UpdatedAt, "-"))
 	fmt.Fprintf(w, "query:\n%s\n", cleanMultiline(q.Query))
 }
 
-func renderCQList(w io.Writer, list []client.ContinuousQuery, noHeader, asCSV bool) error {
+func renderCQList(w io.Writer, list []client.ContinuousQuery, noHeader, asCSV bool, to timeOutput) error {
 	sorted := make([]client.ContinuousQuery, len(list))
 	copy(sorted, list)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
@@ -700,7 +726,7 @@ func renderCQList(w io.Writer, list []client.ContinuousQuery, noHeader, asCSV bo
 			}
 		}
 		for _, q := range sorted {
-			if err := cw.Write([]string{strconv.FormatInt(q.ID, 10), q.Name, q.Database, q.SourceMeasurement, q.DestinationMeasurement, q.Interval, strconv.FormatBool(q.IsActive), fmtServerTimePtr(q.LastExecutionTime, ""), strPtr(q.LastExecutionStatus, ""), int64Ptr(q.LastRecordsWritten, "")}); err != nil {
+			if err := cw.Write([]string{strconv.FormatInt(q.ID, 10), q.Name, q.Database, q.SourceMeasurement, q.DestinationMeasurement, q.Interval, strconv.FormatBool(q.IsActive), to.ServerPtr(q.LastExecutionTime, ""), strPtr(q.LastExecutionStatus, ""), int64Ptr(q.LastRecordsWritten, "")}); err != nil {
 				return err
 			}
 		}
@@ -714,7 +740,7 @@ func renderCQList(w io.Writer, list []client.ContinuousQuery, noHeader, asCSV bo
 	rows := make([][]string, 0, len(sorted))
 	for _, q := range sorted {
 		rows = append(rows, []string{strconv.FormatInt(q.ID, 10), clean(q.Name), clean(q.Database), clean(q.SourceMeasurement) + " → " + clean(q.DestinationMeasurement), clean(q.Interval), strconv.FormatBool(q.IsActive),
-			fmtServerTimePtr(q.LastExecutionTime, "never"), strPtr(q.LastExecutionStatus, "-"), int64Ptr(q.LastRecordsWritten, "-")})
+			to.ServerPtr(q.LastExecutionTime, "never"), strPtr(q.LastExecutionStatus, "-"), int64Ptr(q.LastRecordsWritten, "-")})
 	}
 	headers := []string{"ID", "NAME", "DATABASE", "SOURCE → DEST", "INTERVAL", "ACTIVE", "LAST RUN", "LAST STATUS", "LAST WRITTEN"}
 	if noHeader {

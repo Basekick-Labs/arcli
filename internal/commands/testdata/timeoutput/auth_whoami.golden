@@ -1,0 +1,14 @@
+--- stdout
+connection:  local
+endpoint:    ENDPOINT
+id:          1
+name:        admin
+description: root token
+permissions: read,write,delete,admin
+enabled:     true
+expires:     2027-01-01T06:00:00Z
+last used:   2026-09-07T23:02:03Z
+created:     2026-09-07T19:00:01Z
+--- stderr
+--- err
+<nil>
