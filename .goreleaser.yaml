@@ -109,8 +109,9 @@ nfpms:
       # rpm 6.1 (Fedora 45) refuses an unsigned package by default. Signed
       # with the Basekick Labs package key (packaging/RPM-GPG-KEY-basekick,
       # shared with Arc); the release workflow writes the key from the
-      # RPM_SIGNING_KEY secret and passes NFPM_PASSPHRASE. With no key file
-      # set the template fails, so an unsigned RPM cannot be released.
+      # RPM_SIGNING_KEY secret and passes NFPM_PASSPHRASE, and refuses to
+      # run without the secret, so an unsigned RPM cannot be released. CI's
+      # snapshot sets the variable empty and skips signing.
       signature:
         key_file: "{{ .Env.RPM_SIGNING_KEY_FILE }}"
     contents:
