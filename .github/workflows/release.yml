@@ -108,6 +108,21 @@ jobs:
             echo "args=" >> "$GITHUB_OUTPUT"
           fi
 
+      # The RPMs are signed (nfpm, .goreleaser.yaml): rpm 6.1 refuses an
+      # unsigned package. The armored key comes from RPM_SIGNING_KEY; a
+      # missing secret fails the release rather than ship unsigned RPMs.
+      - name: Write the RPM signing key
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+        run: |
+          if [ -z "${RPM_SIGNING_KEY}" ]; then
+            echo "::error::RPM_SIGNING_KEY is not set; refusing to publish unsigned RPMs"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "${RPM_SIGNING_KEY}" > "${RUNNER_TEMP}/rpm-signing.asc"
+          echo "RPM_SIGNING_KEY_FILE=${RUNNER_TEMP}/rpm-signing.asc" >> "$GITHUB_ENV"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
@@ -116,6 +131,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          NFPM_PASSPHRASE: ${{ secrets.RPM_SIGNING_PASSPHRASE }}
 
       - name: Check the GHCR package is publicly pullable
         # A package is private the first time it is created; there is no

@@ -28,8 +28,9 @@ Use `_arm64.deb` on ARM64 systems.
 ### RHEL / Fedora / Rocky
 
 ```bash
+sudo rpm --import https://raw.githubusercontent.com/Basekick-Labs/arcli/main/packaging/RPM-GPG-KEY-basekick
 curl -LO https://github.com/Basekick-Labs/arcli/releases/download/v26.09.4/arcli-26.9.4-1.x86_64.rpm
-sudo rpm -i arcli-26.9.4-1.x86_64.rpm
+sudo dnf install -y ./arcli-26.9.4-1.x86_64.rpm
 ```
 
 Use `.aarch64.rpm` on ARM64 systems.
