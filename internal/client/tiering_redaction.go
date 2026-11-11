@@ -8,18 +8,19 @@ import (
 	"regexp"
 )
 
-// Patterns ported from Arc #1403 internal/storage/credential_text.go.
-// Parse strings before scrubbing so escaped JSON cannot hide a signature.
+// Patterns copied from Arc's internal/storage/credential_text.go (#1403);
+// keep them identical. Parse strings before scrubbing so escaped JSON cannot
+// hide a signature; the patterns also match JSON-escaped text ("\u0026sig=").
 var (
-	tieringCredentialURL       = regexp.MustCompile(`(?i)(https?://[^\s"'<>?]*)\?[^\s"'<>]*`)
-	tieringCredentialSignature = regexp.MustCompile(`(?i)\b(SharedAccessSignature)=[^;\s"'<>]+`)
-	tieringCredentialKey       = regexp.MustCompile(`(?i)\b(sig|AccountKey)=[^&;\s"'<>]+`)
+	tieringCredentialURL       = regexp.MustCompile(`(https?://[^\s"'<>?\\]*)\?(?:[^\s"'<>\\]|\\u0026)*`)
+	tieringCredentialSignature = regexp.MustCompile(`(?i)(^|[^a-z])(SharedAccessSignature)=[^;\s"'<>\\]+`)
+	tieringCredentialKey       = regexp.MustCompile(`(?i)(^|[^a-z])(sig|AccountKey)=[^&;\s"'<>\\]+`)
 )
 
 func redactTieringText(s string) string {
 	s = tieringCredentialURL.ReplaceAllString(s, "$1")
-	s = tieringCredentialSignature.ReplaceAllString(s, "${1}=REDACTED")
-	return tieringCredentialKey.ReplaceAllString(s, "${1}=REDACTED")
+	s = tieringCredentialSignature.ReplaceAllString(s, "${1}${2}=REDACTED")
+	return tieringCredentialKey.ReplaceAllString(s, "${1}${2}=REDACTED")
 }
 
 // Work on RawMessage values to preserve unknown fields, large integers and nulls.

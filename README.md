@@ -149,7 +149,11 @@ arcli audit stats --since 2026-01-01T02:30:00.123456789+02:30
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
-Tiering commands require an administrator token and an Enterprise licence with tiering enabled. File listings are limited to 100 entries by default; Arc 26.09 and earlier ignore --tier with --database, so arcli rejects that combination for compatibility. There is no offset or cursor. `--limit 0` returns an empty page. In `tiering file -o json`, `count` is the number of files returned (at most `--limit`), not the total number of indexed files. Policy deletion prompts for confirmation unless `--yes` is passed.
+Tiering commands require an administrator token and an Enterprise licence with tiering enabled. File listings are limited to 100 entries by default; Arc 26.09 and earlier ignore --tier with --database, so arcli rejects that combination for compatibility. There is no offset or cursor. `--limit 0` returns an empty page. In `tiering file -o json`, `count` is the number of files returned (at most `--limit`), not the total number of indexed files. Policy deletion and a real `tiering migrate` (without `--dry-run`) prompt for confirmation unless `--yes` is passed; without `--yes` they refuse a non-interactive stdin. Arc 26.09 and earlier ignore `tiering migrate --dry-run`, `--database` and `--measurement` and run a real migration cycle over every eligible file; arcli cannot detect this beforehand and warns on stderr when the response shows it.
+
+Tiering status, files, statistics and scans are per node. Run migrations against the primary writer; reader conflicts retain the server's retry guidance. A timeout or interrupt stops the CLI waiting but migration or scanning continues server-side; inspect status before retrying. Failed scans print available partial results and still exit nonzero.
+
+`tiering policy set` is a full replacement and requires at least one policy flag. Omitted `--hot-only` resets to false (allowing cold migration); omitted `--hot-max-age-days` resets to the global default. Pass both flags to preserve an existing setting while changing the other. `policy show` reads only a custom policy; use `policy effective` to see inherited defaults.
 
 `cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
 
@@ -228,7 +232,3 @@ gofmt -l .
 ## License
 
 [Apache-2.0](LICENSE)
-
-Tiering status, files, statistics and scans are per node. Run migrations against the primary writer; reader conflicts retain the server's retry guidance. A timeout or interrupt stops the CLI waiting but migration or scanning continues server-side; inspect status before retrying. Failed scans print available partial results and still exit nonzero.
-
-`tiering policy set` is a full replacement and requires at least one policy flag. Omitted `--hot-only` resets to false (allowing cold migration); omitted `--hot-max-age-days` resets to the global default. Pass both flags to preserve an existing setting while changing the other. `policy show` reads only a custom policy; use `policy effective` to see inherited defaults.

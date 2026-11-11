@@ -177,7 +177,7 @@ func newTieringMigrateCmd() *cobra.Command {
 		measurement  string
 		fromTier     string
 		toTier       string
-		dryRun       bool
+		dryRun, yes  bool
 	)
 	c := &cobra.Command{
 		Use:   "migrate",
@@ -186,7 +186,15 @@ func newTieringMigrateCmd() *cobra.Command {
 
 Arc currently supports hot-to-cold migration. Use --dry-run to preview the
 number of files and bytes before starting a migration. Database and
-measurement filters limit the cycle to one target.`,
+measurement filters limit the cycle to one target.
+
+A migration (without --dry-run) asks for confirmation; --yes skips the
+prompt and is required when stdin is not a terminal.
+
+Arc 26.09 and earlier ignore --dry-run, --database and --measurement: the
+request runs a real migration cycle over every eligible file. arcli cannot
+detect the server version beforehand; it warns afterwards when the response
+shows that this happened.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if f.timeout <= 0 {
@@ -195,22 +203,32 @@ measurement filters limit the cycle to one target.`,
 			if !validObjectFormat(outputFormat) {
 				return fmt.Errorf("invalid --output %q (valid: table, json)", outputFormat)
 			}
+			req := client.TieringMigrationRequest{
+				FromTier: fromTier, ToTier: toTier, Database: database,
+				Measurement: measurement, DryRun: dryRun,
+			}
+			if err := client.ValidateTieringMigrationRequest(req); err != nil {
+				return err
+			}
+			if !dryRun {
+				if err := confirmOrAbort(cmd, tieringMigrateQuestion(database, measurement), yes); err != nil {
+					return err
+				}
+			}
 			cli, _, err := f.client(cmd)
 			if err != nil {
 				return err
 			}
 			ctx, cancel := f.ctx(cmd)
 			defer cancel()
-			result, err := cli.MigrateTiering(ctx, client.TieringMigrationRequest{
-				FromTier: fromTier, ToTier: toTier, Database: database,
-				Measurement: measurement, DryRun: dryRun,
-			})
+			result, err := cli.MigrateTiering(ctx, req)
 			if err != nil {
 				if clientGaveUp(err) && !dryRun {
 					fmt.Fprintln(cmd.ErrOrStderr(), "arcli stopped waiting; migration continues server-side. Check arcli tiering status and stats before retrying.")
 				}
 				return err
 			}
+			warnTieringMigrationIgnored(cmd.ErrOrStderr(), req, result)
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), result.Raw)
 			}
@@ -223,8 +241,37 @@ measurement filters limit the cycle to one target.`,
 	c.Flags().StringVar(&measurement, "measurement", "", "limit the cycle to one measurement")
 	c.Flags().StringVar(&fromTier, "from-tier", "", "source tier (Arc currently supports hot)")
 	c.Flags().StringVar(&toTier, "to-tier", "", "destination tier (Arc currently supports cold)")
-	c.Flags().BoolVar(&dryRun, "dry-run", false, "preview migration without moving files")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "preview migration without moving files (ignored by Arc 26.09 and earlier)")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return c
+}
+
+func tieringMigrateQuestion(database, measurement string) string {
+	scope := "every database"
+	if database != "" {
+		scope = fmt.Sprintf("database %q", clean(database))
+	}
+	if measurement != "" {
+		scope += fmt.Sprintf(", measurement %q", clean(measurement))
+	}
+	q := "Move eligible files from hot to cold storage (" + scope + ")?"
+	if database != "" || measurement != "" {
+		q += " Arc 26.09 and earlier ignore these filters and migrate every eligible file."
+	}
+	return q
+}
+
+// warnTieringMigrationIgnored reports a response showing the server ignored
+// --dry-run or the filters (Arc 26.09 and earlier run a full cycle and
+// answer only a message and status).
+func warnTieringMigrationIgnored(w io.Writer, req client.TieringMigrationRequest, result *client.TieringMigrationResult) {
+	if req.DryRun && result.Status != "dry_run" {
+		fmt.Fprintln(w, "warning: this Arc ignored --dry-run and ran a real migration cycle (Arc 26.09 and earlier do not support --dry-run).")
+		return
+	}
+	if !req.DryRun && (req.Database != "" || req.Measurement != "") && result.Migrated == nil {
+		fmt.Fprintln(w, "warning: this Arc does not report filtered migrations; Arc 26.09 and earlier ignore --database and --measurement and migrate every eligible file.")
+	}
 }
 
 func newTieringScanCmd() *cobra.Command {
@@ -518,8 +565,6 @@ func renderTieringStatus(w io.Writer, status *client.TieringStatus, to timeOutpu
 		{"reason", valueOrDash(status.Reason)},
 		{"quarantined files", strconv.FormatInt(status.QuarantinedFiles, 10)},
 	}
-	renderTieringDetails(w, "cold metadata", status.ColdMetadata)
-	renderTieringDetails(w, "cold missing objects", status.ColdMissingObjects)
 	if status.Scheduler != nil {
 		rows = append(rows,
 			[]string{"scheduler running", strconv.FormatBool(status.Scheduler.Running)},
@@ -535,6 +580,8 @@ func renderTieringStatus(w io.Writer, status *client.TieringStatus, to timeOutpu
 	if err := output.Table(w, []string{"FIELD", "VALUE"}, rows); err != nil {
 		return err
 	}
+	renderTieringDetails(w, "cold metadata", status.ColdMetadata)
+	renderTieringDetails(w, "cold missing objects", status.ColdMissingObjects)
 	if len(status.Tiers) > 0 {
 		names := make([]string, 0, len(status.Tiers))
 		for name := range status.Tiers {

@@ -394,8 +394,9 @@ func TestTieringReviewTimeoutGuidance(t *testing.T) {
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
-	for _, op := range []string{"migrate", "scan"} {
-		_, stderr, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", op, "--timeout", "1ms")
+	for _, args := range [][]string{{"migrate", "--yes"}, {"scan"}} {
+		op := args[0]
+		_, stderr, err := execCmd(t, NewRoot(BuildInfo{}), append(append([]string{"tiering"}, args...), "--timeout", "1ms")...)
 		if err == nil || !strings.Contains(stderr, "continues server-side") {
 			t.Fatalf("%s: stderr=%s err=%v", op, stderr, err)
 		}
@@ -420,5 +421,34 @@ func TestTieringReviewPolicyHelpAndColdFilesNote(t *testing.T) {
 	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics", "--hot-only")
 	if err != nil || !strings.Contains(out, "cold files note: Existing cold files remain cold") || strings.Contains(out, `{"note"`) {
 		t.Fatalf("cold files: %s %v", out, err)
+	}
+}
+
+// Arc 26.09 ignores dry_run and the filters, runs a full cycle and answers
+// {"message","status":"completed"}; arcli must say so on stderr.
+func TestTieringMigrateWarnsWhenServerIgnoresRequest(t *testing.T) {
+	const legacy = `{"message":"Migration completed successfully","status":"completed"}`
+	for _, tc := range []struct {
+		name, body, want string
+		args             []string
+	}{
+		{"dry-run ignored", legacy, "ignored --dry-run", []string{"--database", "metrics", "--dry-run"}},
+		{"filters ignored", legacy, "ignore --database and --measurement", []string{"--database", "metrics", "--yes"}},
+		{"current dry run", `{"status":"dry_run","would_migrate":0,"total_bytes":0,"from_tier":"hot","to_tier":"cold"}`, "", []string{"--database", "metrics", "--dry-run"}},
+		{"current filtered", `{"message":"Migration completed successfully","status":"completed","migrated":3,"errors":0}`, "", []string{"--database", "metrics", "--yes"}},
+		{"legacy unfiltered", legacy, "", []string{"--yes"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+			defer srv.Close()
+			writeTestConfig(t, srv.URL, "tok")
+			out, stderr, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "migrate"}, tc.args...)...)
+			if err != nil || !strings.Contains(out, "status") {
+				t.Fatalf("out=%q err=%v", out, err)
+			}
+			if tc.want == "" && stderr != "" || tc.want != "" && !strings.Contains(stderr, tc.want) {
+				t.Fatalf("stderr = %q, want %q", stderr, tc.want)
+			}
+		})
 	}
 }

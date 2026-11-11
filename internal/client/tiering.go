@@ -240,23 +240,32 @@ func (c *Client) TieringStats(ctx context.Context) (*TieringMigrationStats, erro
 	return &out, nil
 }
 
-// MigrateTiering calls POST /api/v1/tiering/migrate.
-func (c *Client) MigrateTiering(ctx context.Context, req TieringMigrationRequest) (*TieringMigrationResult, error) {
+// ValidateTieringMigrationRequest checks the request locally, so a command
+// can reject it before asking for confirmation.
+func ValidateTieringMigrationRequest(req TieringMigrationRequest) error {
 	if req.Database != "" {
 		if err := ValidateDatabaseName(req.Database); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if req.Measurement != "" {
 		if err := ValidateMeasurementName(req.Measurement); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if req.FromTier != "" && req.FromTier != "hot" {
-		return nil, fmt.Errorf("invalid from-tier %q (Arc supports hot to cold migration)", req.FromTier)
+		return fmt.Errorf("invalid from-tier %q (Arc supports hot to cold migration)", req.FromTier)
 	}
 	if req.ToTier != "" && req.ToTier != "cold" {
-		return nil, fmt.Errorf("invalid to-tier %q (Arc supports hot to cold migration)", req.ToTier)
+		return fmt.Errorf("invalid to-tier %q (Arc supports hot to cold migration)", req.ToTier)
+	}
+	return nil
+}
+
+// MigrateTiering calls POST /api/v1/tiering/migrate.
+func (c *Client) MigrateTiering(ctx context.Context, req TieringMigrationRequest) (*TieringMigrationResult, error) {
+	if err := ValidateTieringMigrationRequest(req); err != nil {
+		return nil, err
 	}
 	var out TieringMigrationResult
 	body, err := c.tieringJSON(ctx, http.MethodPost, tieringBase+"/migrate", req, 4<<20, &out)

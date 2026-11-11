@@ -292,10 +292,24 @@ func TestTieringReviewPartialScanAndConflictDetails(t *testing.T) {
 	}
 	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(409)
-		_, _ = w.Write([]byte(`{"error":"wrong node","message":"Retry against the primary writer"}`))
+		_, _ = w.Write([]byte(`{"error":"Migration runs on the primary writer only; this node is not the primary writer","role":"reader","message":"Retry against the primary writer, or wait for the scheduled cycle: this node keeps its tier metadata in sync on every tick."}`))
 	})
 	_, err := cli.MigrateTiering(context.Background(), TieringMigrationRequest{})
 	if err == nil || !strings.Contains(err.Error(), "Retry against the primary writer") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+// Arc's JSON encoder escapes "&" as \u0026, so a signature can reach the raw
+// error text in that form; the ported patterns must still remove it.
+func TestTieringRedactsJSONEscapedCredentials(t *testing.T) {
+	for _, text := range []string{
+		`PUT https://acct.blob.core.windows.net/arc-cold/metrics/cpu/2026/10/02/cpu_20261002_daily.parquet?sv=2022-11-02\u0026se=2026-11-12T00%3A00%3A00Z\u0026sig=SECRETsig%2B%3D`,
+		`upload failed: sv=2022-11-02\u0026sig=SECRETsig%3D`,
+		`DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=SECRETkey==;EndpointSuffix=core.windows.net`,
+	} {
+		if got := redactTieringText(text); strings.Contains(got, "SECRET") {
+			t.Errorf("redactTieringText(%q) = %q", text, got)
+		}
 	}
 }
