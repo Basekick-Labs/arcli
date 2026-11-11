@@ -134,17 +134,34 @@ arcli license status
 arcli license status -c prod -o json
 arcli cluster files --database metrics
 arcli compaction status
+arcli governance policy list
+arcli governance policy list -o csv
+arcli governance usage batch
 arcli retention list
 arcli mqtt health
 arcli mqtt subscription list
 arcli backup create --wait
 arcli logs --level warn --since 6h
+arcli admin query active
+arcli admin query history --limit 200
+arcli admin query show <query-id>
+arcli admin query cancel <query-id>
 arcli scheduler cq reload
 arcli scheduler retention trigger
 arcli audit log --since 2026-01-01T02:30:00.123456789+02:30 --limit 100
 arcli audit log -o csv
 arcli audit stats --since 2026-01-01T02:30:00.123456789+02:30
 ```
+
+Query governance commands require an Enterprise licence with the feature enabled, and an admin token when authentication is enabled. Policies and counters are per-node and are not replicated: configure each node separately. Behind a load balancer, aggregate quotas can be N times the configured limit across N nodes.
+
+Policy limits accept `0` for unlimited. On create, omitted limits are also unlimited and override `governance.default_*` values; pass at least one limit flag or explicitly use `arcli governance policy create batch --unlimited`. Updates preserve fields whose flags are omitted, but use read-then-write without version checks, so concurrent updates can lose changes. Use numeric token IDs to show or delete policies left behind by deleted tokens. Usage marks a policy with ID 0 as server defaults, untracked quota counters as `n/a`, and unrestricted rate limits as `unlimited`. JSON keeps the raw server counters and policy ID. Governance timestamps use UTC RFC3339 by default in table, CSV and text output; `--time-output rfc3339nano` shows fractional seconds. JSON retains available timestamp precision. Unavailable routes preserve the server HTTP error; a 404 alone does not identify configuration or license causes.
+
+Query management requires an admin token when authentication is enabled and an Arc Enterprise license with the `query_management` feature enabled. Arc registers these routes only when `query_management.enabled` is true (default false) and the license includes the feature; a missing route reports the server's HTTP 404 error followed by a hint to check `query_management.enabled`, the license, the server log, and the Arc version. Cancellation prompts for confirmation; pass `--yes` for scripted use.
+
+Query management is per node: target the node that runs the query. Requests are not forwarded, and history is lost on node restart. History is bounded by `query_management.history_size` (100 by default), even with a larger `--limit`. Active lists are sorted oldest first. List tables show SQL on one line (line breaks and tabs become spaces) shortened to 120 characters; `show` keeps the full SQL, and CSV/JSON keep the SQL as Arc returns it (Arc cuts active-query SQL to 200 bytes; history and `show` carry it whole). Tables and CSV include `forwarded_to`; Arc 26.09.4 does not report it, so it stays empty there. The cancellation prompt names the target endpoint.
+
+Query-management table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON preserves the original response; CSV retains original SQL text, including line breaks.
 
 MQTT commands inspect subsystem health and aggregate statistics, then list,
 show, create, update, delete, and control individual subscriptions. List output
