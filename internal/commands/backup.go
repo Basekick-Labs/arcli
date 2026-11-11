@@ -159,7 +159,10 @@ func describeProgress(w io.Writer, p *client.BackupProgress, to timeOutput) {
 		fmt.Fprintf(w, "error:      %s\n", clean(p.Error))
 	}
 	if p.CompactionPause != "" {
-		fmt.Fprintf(w, "compaction pause: %s\n", clean(p.CompactionPause))
+		fmt.Fprintf(w, "compaction:\n  pause:    %s\n", clean(p.CompactionPause))
+		if p.CompactionPause == "lost" {
+			fmt.Fprintln(w, "  warning: restore lost its compaction pause; inspect the restore error and server log")
+		}
 	}
 	// What the counts above do not say: which files, what the restored backup
 	// already lacked, and warehouse files a restore had nowhere to put. The
@@ -725,9 +728,11 @@ func newBackupRestoreCmd() *cobra.Command {
 
 Data files from the backup are written over the server's storage
 unconditionally; existing files at the same paths are replaced. Run it
-on a quiescent server: stop writers first, and stop compaction on standalone
-servers. Arc pauses compaction cluster-wide during a cluster restore. In
-cluster mode restored files are not registered in the cluster manifest.
+on a quiescent server: stop writers first. Arc 27.01.1+ (currently unreleased)
+pauses compaction cluster-wide and registers restored files in the cluster
+manifest. On older clusters, including 26.06–26.09, stop compaction yourself;
+restored files are not registered in the cluster manifest. Stop compaction
+manually on standalone servers too.
 
 By default the metadata store (tokens, policies, continuous queries) is
 restored on a standalone node if the backup contains it, but skipped on a
@@ -736,7 +741,8 @@ start. Use --with-metadata to request it explicitly; clusters refuse that
 request. --data-only explicitly skips metadata and config. --with-config
 also restores the server config file (staged as well). The restore runs in
 the background; --wait polls until it finishes and reports compaction-pause
-state changes on a cluster (--wait-timeout defaults to 2h).
+observed state changes on a cluster; polling may miss intermediate states
+(--wait-timeout defaults to 2h).
 
 On a cluster, only the primary writer can restore a backup. A node
 that is not the primary writer returns HTTP 503 after confirmation,
@@ -874,6 +880,9 @@ before the restore starts.`,
 				}
 				lastPause = progress.CompactionPause
 				fmt.Fprintf(stderr, "compaction pause: %s\n", clean(lastPause))
+				if lastPause == "lost" {
+					fmt.Fprintln(stderr, "warning: restore lost its compaction pause; inspect the restore error and server log")
+				}
 			}
 			reportPause(started.Progress)
 			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout, reportPause)

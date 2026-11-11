@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -196,5 +197,15 @@ func TestBackup_RestoreFlagBoundaries(t *testing.T) {
 				t.Errorf("default must omit restore_metadata: %s", req["restore_metadata"])
 			}
 		})
+	}
+}
+
+func TestBackupProgressCompactionPauseBlock(t *testing.T) {
+	var out bytes.Buffer
+	describeProgress(&out, &client.BackupProgress{Operation: "restore", Status: "failed", CompactionPause: "lost"}, timeOutput{})
+	for _, want := range []string{"operation:  restore", "status:     failed", "compaction:\n  pause:    lost", "restore lost its compaction pause"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q: %s", want, out.String())
+		}
 	}
 }

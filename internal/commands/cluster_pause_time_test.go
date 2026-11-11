@@ -17,8 +17,8 @@ func TestClusterPauseExpiryTimeOutput(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"default", nil, "until 2026-10-27T12:06:00Z"},
-		{"nano", []string{"--time-output", "rfc3339nano"}, "until 2026-10-27T12:06:00.123456789Z"},
+		{"default", nil, "lease expires 2026-10-27T12:06:00Z"},
+		{"nano", []string{"--time-output", "rfc3339nano"}, "lease expires 2026-10-27T12:06:00.123456789Z"},
 		{"json", []string{"-o", "json"}, "2026-10-27T15:06:00.123456789+03:00"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

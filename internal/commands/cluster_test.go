@@ -134,7 +134,7 @@ func TestClusterStatus_CompactionPause(t *testing.T) {
 	}
 	for _, want := range []string{
 		"compaction:  paused by n1 for restore backup-20261027-120000-abcdef12",
-		"until 2026-10-27T12:06:00Z",
+		"lease expires 2026-10-27T12:06:00Z",
 		"waiting for n2",
 	} {
 		if !strings.Contains(out, want) {
@@ -147,8 +147,8 @@ func TestClusterStatus_CompactionPause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "compaction:") {
-		t.Errorf("inactive pause should not be shown:\n%s", out)
+	if !strings.Contains(out, "pause lease expired") {
+		t.Errorf("expired pause should be shown:\n%s", out)
 	}
 
 	response = `{"enabled":true,"mode":"cluster","running":true,"cluster_name":"prod","nodes":[],"raft":{"enabled":false},"compaction_pause":{"active":true,"generation":7,"requested_by":"n1","reason":"restore backup-20261027-120000-abcdef12","requested_at":"2026-10-27T12:00:00Z","expires_at":"2026-10-27T12:06:00Z","expired":false,"acks":["n1"],"pending_acks":["n2"]}}`
