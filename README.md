@@ -138,6 +138,8 @@ arcli governance policy list
 arcli governance policy list -o csv
 arcli governance usage batch
 arcli retention list
+arcli mqtt health
+arcli mqtt subscription list
 arcli backup create --wait
 arcli logs --level warn --since 6h
 arcli admin query active
@@ -161,6 +163,35 @@ Query management is per node: target the node that runs the query. Requests are 
 
 Query-management table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON preserves the original response; CSV retains original SQL text, including line breaks.
 
+MQTT commands inspect subsystem health and aggregate statistics, then list,
+show, create, update, delete, and control individual subscriptions. List output
+supports table, JSON, and CSV; object output supports table and JSON. Supply
+create and update configuration as JSON with `--config-file` or `--config-stdin`;
+all MQTT endpoints require an admin token. Keep files containing broker
+credentials private (`chmod 600`); arcli does not accept broker credentials as
+command-line flags and omits usernames and broker URL userinfo from subscription
+output. Delete, stop, pause, and restart prompt for confirmation; pass `--yes`
+for non-interactive use.
+
+Subscriptions are per node and are not replicated. Pause is effectively stop;
+a stopped subscription with `auto_start: true` starts again when Arc restarts.
+Stop a running subscription before updating (409 otherwise). In update input,
+`"password": ""` clears the password, `"topic_mapping": {}` clears mappings,
+and `"topic_mapping": null` leaves mappings unchanged. Arc rejects `"topics": []`
+(at least one topic is required).
+Mapping rules can be strings or objects (measurement/tags, supported by Arc 27.01
+and main). Input accepts writable fields only: `show -o json` includes read-only
+fields such as `id` and cannot be piped directly into update.
+Broker userinfo and sensitive query parameters (any name containing `token`,
+`pass`, `pwd`, `secret`, `key`, `sig`, `auth`, `cred`, `jwt` or `session`) are
+redacted and count as credentials for file permissions. When Arc cannot parse a
+credential-bearing broker URL, arcli withholds the parse detail, which can quote
+pieces of the password. On Windows use `--config-stdin`
+for credentials because Unix permission bits cannot verify Windows ACLs.
+Health exits nonzero when degraded/unhealthy (a disabled MQTT subsystem, which
+Arc reports with HTTP 200, exits 0); create exits nonzero if the returned
+subscription status is `error`, after displaying the created subscription.
+
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
 `cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
@@ -178,6 +209,8 @@ The command tree also covers API tokens, continuous queries, schedulers, predica
 Active, expired, invalid, and configured-but-unlicensed states retain the server's status. A missing or null license block is normal for OSS and is distinct from `unlicensed`: JSON returns `{"configured": false, "license": null}`. Present licenses use `{"configured": true, "license": {...}}`; optional fields are omitted when absent or null, while explicit zero days and `false` site-license values are retained. Unknown server status values are preserved. Successfully reading any of these states exits 0; configuration, request, decoding, and output failures exit nonzero. Installing licenses or configuring license keys/files belongs to the Arc server.
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
+
+MQTT CSV output preserves non-secret values, including whitespace and control characters, separately from terminal sanitization. Subscription credentials remain redacted in every output format. Table and text timestamps use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds, and JSON retains fractional-second precision. Route-missing and server-reported MQTT-disabled 503 errors retain their HTTP status and message, with credentials scrubbed. Unknown subscription IDs return 404 on Arc main; on Arc 26.09.4, show returns 404, start may return 500, and stop may return 409.
 
 ## Output and automation
 
