@@ -57,6 +57,11 @@ func ValidateGovernancePolicyRequest(req GovernancePolicyRequest) error {
 	if req.TokenID <= 0 {
 		return fmt.Errorf("token id must be a positive integer")
 	}
+	return ValidateGovernanceLimits(req)
+}
+
+// ValidateGovernanceLimits checks limits independently of token resolution.
+func ValidateGovernanceLimits(req GovernancePolicyRequest) error {
 	limits := []struct {
 		name  string
 		value int

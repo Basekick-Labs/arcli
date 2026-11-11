@@ -4,8 +4,10 @@ package commands
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strconv"
 
@@ -21,8 +23,10 @@ func newGovernanceCmd() *cobra.Command {
 		Short: "Manage query governance policies and usage (Enterprise)",
 		Long: `Manage query-governance policies and per-token usage.
 
-The governance endpoints require an admin token and an Enterprise licence
-with query governance enabled. A limit of 0 means unlimited.
+The governance endpoints require an Enterprise licence with query governance
+enabled, and an admin token when authentication is enabled. A limit of 0 means unlimited.
+Policies and counters are per-node and are not replicated. Configure each node
+separately; behind a load balancer, aggregate quotas can be N times the limit.
 Displayed timestamps use UTC RFC3339 by default; --time-output rfc3339nano
 shows fractional seconds. JSON retains the available timestamp precision. Unavailable routes retain
 the server HTTP error without inferring configuration or license causes.`,
@@ -40,7 +44,13 @@ func newGovernancePolicyCmd() *cobra.Command {
 func resolveGovernancePolicyRef(ctx context.Context, cli *client.Client, ref string) (*client.TokenInfo, *client.GovernancePolicy, error) {
 	token, err := resolveTokenRef(ctx, cli, ref)
 	if err != nil {
-		return nil, nil, err
+		var httpErr *client.HTTPError
+		id, parseErr := strconv.ParseInt(ref, 10, 64)
+		if parseErr != nil || id <= 0 || !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+			return nil, nil, err
+		}
+		// Deleted tokens can leave policies behind; a numeric ID remains usable.
+		token = &client.TokenInfo{ID: id}
 	}
 	policy, err := cli.GetGovernancePolicy(ctx, token.ID)
 	if err != nil {
@@ -74,6 +84,19 @@ func newGovernancePolicyListCmd() *cobra.Command {
 			policies, err := cli.ListGovernancePolicies(ctx)
 			if err != nil {
 				return err
+			}
+			// Arc does not populate token_name. Enrichment is best-effort so
+			// orphan policies and restricted token-list access remain usable.
+			if tokens, err := cli.ListTokens(ctx); err == nil {
+				names := make(map[int64]string, len(tokens))
+				for _, token := range tokens {
+					names[token.ID] = token.Name
+				}
+				for i := range policies {
+					if name, ok := names[policies[i].TokenID]; ok {
+						policies[i].TokenName = name
+					}
+				}
 			}
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), struct {
@@ -194,9 +217,12 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 	var to timeOutput
 	var outputFormat string
 	var limits governanceLimitFlags
+	var unlimited bool
 	c := &cobra.Command{
 		Use:   "create <token-id|name>",
-		Short: "Create a query-governance policy (admin)",
+		Short: "Create a query-governance policy",
+		Long: `Create a per-node policy. Omitted limits are unlimited and override server defaults.
+Pass at least one limit flag, or --unlimited to explicitly disable every limit.`,
 		Example: `  arcli governance policy create batch --rate-limit-per-minute 30 --max-queries-per-day 5000
   arcli governance policy create 12 --max-rows-per-query 10000 --max-scan-duration-sec 60`,
 		Args: cobra.ExactArgs(1),
@@ -204,8 +230,13 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 			if !validObjectFormat(outputFormat) {
 				return fmt.Errorf("invalid --output %q (valid: table, json)", outputFormat)
 			}
-			req := limits.request(1)
-			if err := client.ValidateGovernancePolicyRequest(req); err != nil {
+			if !governanceLimitFlagsChanged(cmd) && !unlimited {
+				return fmt.Errorf("pass at least one governance limit flag or --unlimited (omitted limits override server defaults with unlimited)")
+			}
+			if unlimited && governanceLimitFlagsChanged(cmd) {
+				return fmt.Errorf("--unlimited cannot be combined with limit flags")
+			}
+			if err := client.ValidateGovernanceLimits(limits.request(0)); err != nil {
 				return err
 			}
 			cli, _, err := f.client(cmd)
@@ -218,9 +249,19 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req.TokenID = token.ID
+			req := limits.request(token.ID)
 			ctx, cancel = f.ctx(cmd)
 			defer cancel()
+			existing, err := cli.GetGovernancePolicy(ctx, token.ID)
+			if err == nil && existing.ID != 0 {
+				return fmt.Errorf("governance policy already exists for token %q (id %d); use `arcli governance policy update`", clean(token.Name), token.ID)
+			}
+			if err != nil {
+				var httpErr *client.HTTPError
+				if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+					return err
+				}
+			}
 			policy, err := cli.CreateGovernancePolicy(ctx, req)
 			if err != nil {
 				return err
@@ -240,6 +281,7 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	to.add(c)
 	limits.add(c)
+	c.Flags().BoolVar(&unlimited, "unlimited", false, "explicitly create a policy with every limit unlimited")
 	return c
 }
 
@@ -252,7 +294,9 @@ func newGovernancePolicyUpdateCmd() *cobra.Command {
 		Use:   "update <token-id|name>",
 		Short: "Update selected limits on a token's query-governance policy (admin)",
 		Long: `Update one or more policy limits. Arc replaces the complete policy on PUT,
-so arcli reads the current policy and merges only the flags you pass.`,
+so arcli reads the current policy and merges only the flags you pass.
+Arc has no PATCH or version check: concurrent updates can lose changes.
+Policies apply only to the contacted node and are not replicated.`,
 		Example: `  arcli governance policy update batch --rate-limit-per-minute 45
   arcli governance policy update 12 --max-rows-per-query 0`,
 		Args: cobra.ExactArgs(1),
@@ -263,8 +307,8 @@ so arcli reads the current policy and merges only the flags you pass.`,
 			if !governanceLimitFlagsChanged(cmd) {
 				return fmt.Errorf("nothing to update (pass at least one governance limit flag)")
 			}
-			validation := limits.request(1)
-			if err := client.ValidateGovernancePolicyRequest(validation); err != nil {
+			validation := limits.request(0)
+			if err := client.ValidateGovernanceLimits(validation); err != nil {
 				return err
 			}
 			cli, _, err := f.client(cmd)
@@ -315,7 +359,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 				return err
 			}
 			ctx, cancel := f.ctx(cmd)
-			token, policy, err := resolveGovernancePolicyRef(ctx, cli, args[0])
+			token, _, err := resolveGovernancePolicyRef(ctx, cli, args[0])
 			cancel()
 			if err != nil {
 				return err
@@ -328,7 +372,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 			if err := cli.DeleteGovernancePolicy(ctx, token.ID); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Deleted governance policy for token %q (id %d)\n", clean(policy.TokenName), token.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted governance policy for token %q (id %d)\n", clean(token.Name), token.ID)
 			return nil
 		},
 	}
@@ -440,27 +484,53 @@ func writeGovernancePolicyInfo(w io.Writer, p *client.GovernancePolicy, to timeO
 	fmt.Fprintf(w, "max queries per hour:   %s\n", governanceLimit(p.MaxQueriesPerHour))
 	fmt.Fprintf(w, "max queries per day:    %s\n", governanceLimit(p.MaxQueriesPerDay))
 	fmt.Fprintf(w, "max rows per query:     %s\n", governanceLimit(p.MaxRowsPerQuery))
-	fmt.Fprintf(w, "max scan duration:      %s sec\n", governanceLimit(p.MaxScanDurationSec))
+	fmt.Fprintf(w, "max scan duration:      %s\n", governanceDuration(p.MaxScanDurationSec))
 	fmt.Fprintf(w, "created:                %s\n", to.Server(p.CreatedAt, "-"))
 	fmt.Fprintf(w, "updated:                %s\n", to.Server(p.UpdatedAt, "-"))
 }
 
+func governanceDuration(value int) string {
+	if value == 0 {
+		return "unlimited"
+	}
+	return strconv.Itoa(value) + " sec"
+}
+
+func governanceUsageValue(value, limit int, absent string) string {
+	if limit <= 0 {
+		return absent
+	}
+	return strconv.Itoa(value)
+}
+
 func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy *client.GovernancePolicy, to timeOutput) {
 	fmt.Fprintf(w, "token id:                       %d\n", usage.TokenID)
-	fmt.Fprintf(w, "queries this hour:              %d\n", usage.QueriesThisHour)
-	fmt.Fprintf(w, "queries this day:               %d\n", usage.QueriesThisDay)
+	limits := client.GovernancePolicy{}
+	noHour, noDay, noRate := "n/a (policy unavailable)", "n/a (policy unavailable)", "n/a (policy unavailable)"
+	if policy != nil {
+		limits = *policy
+		noHour, noDay, noRate = "n/a (no hourly quota)", "n/a (no daily quota)", "unlimited"
+	}
+	fmt.Fprintf(w, "queries this hour:              %s\n", governanceUsageValue(usage.QueriesThisHour, limits.MaxQueriesPerHour, noHour))
+	fmt.Fprintf(w, "queries this day:               %s\n", governanceUsageValue(usage.QueriesThisDay, limits.MaxQueriesPerDay, noDay))
 	fmt.Fprintf(w, "hour resets:                    %s\n", to.Server(usage.HourResetAt, "-"))
 	fmt.Fprintf(w, "day resets:                     %s\n", to.Server(usage.DayResetAt, "-"))
-	fmt.Fprintf(w, "remaining rate limit per minute: %d\n", usage.RateLimitRemainingPerMin)
-	fmt.Fprintf(w, "remaining rate limit per hour:   %d\n", usage.RateLimitRemainingPerHour)
+	fmt.Fprintf(w, "remaining rate limit per minute: %s\n", governanceUsageValue(usage.RateLimitRemainingPerMin, limits.RateLimitPerMinute, noRate))
+	fmt.Fprintf(w, "remaining rate limit per hour:   %s\n", governanceUsageValue(usage.RateLimitRemainingPerHour, limits.RateLimitPerHour, noRate))
 	if policy == nil {
-		fmt.Fprintln(w, "policy:                         none")
+		fmt.Fprintln(w, "policy:                         unavailable")
 		return
 	}
+	if policy.ID == 0 {
+		fmt.Fprintln(w, "policy:                         server defaults (no token policy)")
+	} else {
+		fmt.Fprintln(w, "policy:                         token policy")
+	}
+	fmt.Fprintln(w, "scope:                          this node only (not replicated)")
 	fmt.Fprintf(w, "policy rate limit per minute:   %s\n", governanceLimit(policy.RateLimitPerMinute))
 	fmt.Fprintf(w, "policy rate limit per hour:     %s\n", governanceLimit(policy.RateLimitPerHour))
 	fmt.Fprintf(w, "policy max queries per hour:    %s\n", governanceLimit(policy.MaxQueriesPerHour))
 	fmt.Fprintf(w, "policy max queries per day:     %s\n", governanceLimit(policy.MaxQueriesPerDay))
 	fmt.Fprintf(w, "policy max rows per query:      %s\n", governanceLimit(policy.MaxRowsPerQuery))
-	fmt.Fprintf(w, "policy max scan duration:       %s sec\n", governanceLimit(policy.MaxScanDurationSec))
+	fmt.Fprintf(w, "policy max scan duration:       %s\n", governanceDuration(policy.MaxScanDurationSec))
 }

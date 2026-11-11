@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-const governancePolicyJSON = `{"id":4,"token_id":12,"token_name":"batch","rate_limit_per_minute":30,"rate_limit_per_hour":600,"max_queries_per_hour":500,"max_queries_per_day":5000,"max_rows_per_query":10000,"max_scan_duration_sec":60,"created_at":"2026-10-27T10:00:00Z","updated_at":"2026-10-27T10:00:00Z"}`
+const governancePolicyJSON = `{"id":4,"token_id":12,"rate_limit_per_minute":30,"rate_limit_per_hour":600,"max_queries_per_hour":500,"max_queries_per_day":5000,"max_rows_per_query":10000,"max_scan_duration_sec":60,"created_at":"2026-10-27T10:00:00Z","updated_at":"2026-10-27T10:00:00Z"}`
 
 func TestGovernanceListAndNullNormalization(t *testing.T) {
 	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +64,7 @@ func TestGovernanceCreateValidatesAndDecodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requests != 1 || policy.ID != 4 || policy.TokenID != 12 || policy.TokenName != "batch" || policy.MaxRowsPerQuery != 10000 {
+	if requests != 1 || policy.ID != 4 || policy.TokenID != 12 || policy.TokenName != "" || policy.MaxRowsPerQuery != 10000 {
 		t.Errorf("requests=%d policy=%+v", requests, policy)
 	}
 	if got != base {
@@ -97,7 +97,7 @@ func TestGovernanceGetUpdateDeleteAndUsage(t *testing.T) {
 	})
 	ctx := context.Background()
 	policy, err := cli.GetGovernancePolicy(ctx, 12)
-	if err != nil || policy.TokenName != "batch" {
+	if err != nil || policy.TokenName != "" {
 		t.Fatalf("policy=%+v err=%v", policy, err)
 	}
 	updated, err := cli.UpdateGovernancePolicy(ctx, 12, GovernancePolicyRequest{RateLimitPerMinute: 45})

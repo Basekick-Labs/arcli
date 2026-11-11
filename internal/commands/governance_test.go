@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-const commandGovernancePolicy = `{"id":4,"token_id":12,"token_name":"batch","rate_limit_per_minute":30,"rate_limit_per_hour":600,"max_queries_per_hour":500,"max_queries_per_day":5000,"max_rows_per_query":10000,"max_scan_duration_sec":60,"created_at":"2026-10-27T10:00:00Z","updated_at":"2026-10-27T10:00:00Z"}`
+const commandGovernancePolicy = `{"id":4,"token_id":12,"rate_limit_per_minute":30,"rate_limit_per_hour":600,"max_queries_per_hour":500,"max_queries_per_day":5000,"max_rows_per_query":10000,"max_scan_duration_sec":60,"created_at":"2026-10-27T10:00:00Z","updated_at":"2026-10-27T10:00:00Z"}`
 
 func governanceCommandServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
@@ -27,6 +27,10 @@ func TestGovernanceCommandListFormats(t *testing.T) {
 	srv := governanceCommandServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer admin-token" {
 			t.Errorf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Path == "/api/v1/auth/tokens" {
+			_, _ = w.Write([]byte(`{"tokens":[{"id":12,"name":"batch"}]}`))
+			return
 		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/governance/policies" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
@@ -128,6 +132,12 @@ func TestGovernanceCreateAndDelete(t *testing.T) {
 			_, _ = w.Write([]byte(`{"success":true,"policy":` + commandGovernancePolicy + `}`))
 		case "/api/v1/governance/policies/12":
 			if r.Method == http.MethodGet {
+				if created == nil {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"error":"No policy found for this token"}`))
+					return
+				}
+
 				_, _ = w.Write([]byte(`{"success":true,"policy":` + commandGovernancePolicy + `}`))
 				return
 			}

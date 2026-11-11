@@ -61,7 +61,11 @@ func TestGovernanceTimestampOutput(t *testing.T) {
 // seconds, and an unset timestamp is empty in CSV.
 func TestGovernancePolicyListTimeOutputFlag(t *testing.T) {
 	governanceCommandServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"success":true,"policies":[{"id":1,"token_id":12,"token_name":"batch","created_at":"2026-10-27T10:00:00.5Z","updated_at":""}],"count":1}`))
+		if r.URL.Path == "/api/v1/auth/tokens" {
+			_, _ = w.Write([]byte(`{"tokens":[{"id":12,"name":"batch"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"policies":[{"id":1,"token_id":12,"created_at":"2026-10-27T10:00:00.5Z","updated_at":""}],"count":1}`))
 	})
 	out, _, err := execCmd(t, newGovernancePolicyListCmd(), "-o", "csv")
 	if err != nil || !strings.Contains(out, ",2026-10-27T10:00:00Z,\n") {

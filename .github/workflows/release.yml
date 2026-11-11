@@ -80,7 +80,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -90,7 +90,7 @@ jobs:
         uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: 'v2.5.2'
 
@@ -108,6 +108,21 @@ jobs:
             echo "args=" >> "$GITHUB_OUTPUT"
           fi
 
+      # The RPMs are signed (nfpm, .goreleaser.yaml): rpm 6.1 refuses an
+      # unsigned package. The armored key comes from RPM_SIGNING_KEY; a
+      # missing secret fails the release rather than ship unsigned RPMs.
+      - name: Write the RPM signing key
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+        run: |
+          if [ -z "${RPM_SIGNING_KEY}" ]; then
+            echo "::error::RPM_SIGNING_KEY is not set; refusing to publish unsigned RPMs"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "${RPM_SIGNING_KEY}" > "${RUNNER_TEMP}/rpm-signing.asc"
+          echo "RPM_SIGNING_KEY_FILE=${RUNNER_TEMP}/rpm-signing.asc" >> "$GITHUB_ENV"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
@@ -116,6 +131,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          NFPM_PASSPHRASE: ${{ secrets.RPM_SIGNING_PASSPHRASE }}
 
       - name: Check the GHCR package is publicly pullable
         # A package is private the first time it is created; there is no
