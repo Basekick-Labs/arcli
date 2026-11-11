@@ -48,11 +48,12 @@ func TestSchedulerActions_PreserveDistinctArcErrors(t *testing.T) {
 		status  int
 		message string
 	}{
-		{"admin permission", http.StatusForbidden, "Permission denied: admin permission required"},
-		{"missing entitlement", http.StatusForbidden, "Enterprise license required for scheduler controls"},
-		{"licensed scheduler unavailable", http.StatusServiceUnavailable, "Scheduler is not running"},
-		{"retention role restriction", http.StatusConflict, "Retention trigger failed: retention: node role is not primary writer"},
-		{"already running", http.StatusConflict, "Scheduler operation is already running"},
+		{"admin permission", http.StatusForbidden, "Permission denied: admin required"},
+		{"missing entitlement", http.StatusForbidden, "CQ scheduler is not running: Enterprise license required"},
+		{"scheduler not running (Arc 26.09)", http.StatusServiceUnavailable, "Retention scheduler is not running - enterprise license required"},
+		{"retention role restriction", http.StatusConflict, "Retention trigger refused: retention: node role is not primary writer"},
+		{"retention role restriction (Arc 26.09)", http.StatusInternalServerError, "Retention trigger failed: retention: node role is not primary writer"},
+		{"already running", http.StatusConflict, "Retention trigger refused: retention: a cycle is already running"},
 	}
 	for _, action := range actions {
 		for _, tc := range cases {

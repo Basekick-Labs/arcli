@@ -17,7 +17,7 @@ import (
 func newSchedulerCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "scheduler",
-		Short: "Inspect the continuous-query and retention schedulers",
+		Short: "Inspect and administer the continuous-query and retention schedulers",
 	}
 	c.AddCommand(newSchedulerStatusCmd(), newSchedulerCQCmd(), newSchedulerRetentionCmd())
 	return c
@@ -42,7 +42,11 @@ func newSchedulerCQReloadCmd() *cobra.Command {
 		Short: "Reload all active continuous queries into the scheduler (admin)",
 		Long: `Reload all active continuous queries into the scheduler
 (POST /api/v1/schedulers/cq/reload). This refreshes scheduled jobs; it does
-not execute a query. Use "arcli cq execute <id|name>" to run one query now.`,
+not execute a query. Use "arcli cq execute <id|name>" to run one query now.
+
+Each node keeps its own CQ jobs and the reload applies to the node it
+reaches; on a cluster only the primary writer runs them. Reload the primary
+writer, and any node that may take over from it, for the change to apply.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -56,6 +60,9 @@ not execute a query. Use "arcli cq execute <id|name>" to run one query now.`,
 			defer cancel()
 			res, err := cli.ReloadCQScheduler(ctx)
 			if err != nil {
+				if clientGaveUp(err) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "arcli stopped waiting (timeout %s or interrupt); the reload may still complete server-side — check `arcli scheduler status`\n", f.timeout)
+				}
 				return err
 			}
 			if outputFormat == output.FormatJSON {
@@ -98,7 +105,14 @@ func newSchedulerRetentionTriggerCmd() *cobra.Command {
 (POST /api/v1/schedulers/retention/trigger). Policies may permanently delete
 old data. This is different from "arcli retention execute <id|name>", which
 runs one selected policy. The server does not provide a dry run for this
-scheduler action, so arcli asks for confirmation; pass --yes for scripts.`,
+scheduler action, so arcli asks for confirmation; pass --yes for scripts.
+
+Arc runs the policies before it answers. If arcli stops waiting (--timeout or
+ctrl-C), the run may still be going server-side; check each policy with
+"arcli retention executions <id|name>". Arc runs every policy even when one
+fails and then reports the failure, so an error does not mean nothing was
+deleted. On a cluster only the primary writer runs the trigger; other nodes
+refuse it (HTTP 409 on newer Arc, HTTP 500 on Arc 26.09 and earlier).`,
 		Example: `  arcli scheduler retention trigger
   arcli scheduler retention trigger --yes -o json`,
 		Args: cobra.NoArgs,
@@ -117,6 +131,9 @@ scheduler action, so arcli asks for confirmation; pass --yes for scripts.`,
 			defer cancel()
 			res, err := cli.TriggerRetentionScheduler(ctx)
 			if err != nil {
+				if clientGaveUp(err) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "arcli stopped waiting (timeout %s or interrupt); the retention run may still be going server-side — check `arcli retention executions <id|name>` for each policy\n", f.timeout)
+				}
 				return err
 			}
 			if outputFormat == output.FormatJSON {

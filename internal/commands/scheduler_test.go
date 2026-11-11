@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -75,9 +76,9 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 		{
 			name:   "admin permission",
 			status: http.StatusForbidden,
-			body:   `{"error":"Permission denied: admin permission required"}`,
+			body:   `{"error":"Permission denied: admin required"}`,
 			newCmd: newSchedulerCQReloadCmd,
-			want:   []string{"Permission denied: admin permission required", "HTTP 403"},
+			want:   []string{"Permission denied: admin required", "HTTP 403"},
 		},
 		{
 			name:   "disabled scheduler",
@@ -90,10 +91,10 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 		{
 			name:   "role gate",
 			status: http.StatusConflict,
-			body:   `{"error":"Retention trigger failed: retention: node role is not primary writer"}`,
+			body:   `{"error":"Retention trigger refused: retention: node role is not primary writer"}`,
 			args:   []string{"--yes"},
 			newCmd: newSchedulerRetentionTriggerCmd,
-			want:   []string{"Retention trigger failed: retention: node role is not primary writer", "HTTP 409"},
+			want:   []string{"Retention trigger refused: retention: node role is not primary writer", "HTTP 409"},
 		},
 	}
 	for _, tc := range cases {
@@ -117,5 +118,47 @@ func TestSchedulerActionErrorsStayVisibleOnStderr(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A client timeout after a confirmed trigger must say the run continues on the
+// server: Arc keeps deleting after the client disconnects. Other errors must
+// not carry that hint.
+func TestSchedulerRetentionTrigger_TimeoutSaysRunContinues(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+		}
+		_, _ = w.Write([]byte(`{"message":"Retention triggered successfully"}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+	writeTestConfig(t, srv.URL, "tok")
+	_, stderr, err := execCmd(t, newSchedulerRetentionTriggerCmd(), "--yes", "--timeout", "50ms")
+	if err == nil || !strings.Contains(stderr, "may still be going server-side") || !strings.Contains(stderr, "retention executions") {
+		t.Errorf("stderr=%q err=%v", stderr, err)
+	}
+	out, stderr, err := execCmd(t, newSchedulerRetentionTriggerCmd(), "--yes", "--timeout", "50ms", "-o", "json")
+	if err == nil || out != "" || !strings.Contains(stderr, "may still be going server-side") {
+		t.Errorf("json out=%q stderr=%q err=%v", out, stderr, err)
+	}
+	_, stderr, err = execCmd(t, newSchedulerCQReloadCmd(), "--timeout", "50ms")
+	if err == nil || !strings.Contains(stderr, "may still complete server-side") {
+		t.Errorf("cq reload stderr=%q err=%v", stderr, err)
+	}
+}
+
+func TestSchedulerRetentionTrigger_ServerErrorHasNoTimeoutHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"Retention trigger failed: retention: node role is not primary writer"}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	_, stderr, err := execCmd(t, newSchedulerRetentionTriggerCmd(), "--yes")
+	if err == nil || strings.Contains(stderr, "server-side") {
+		t.Errorf("stderr=%q err=%v", stderr, err)
 	}
 }
