@@ -6,8 +6,8 @@
 // `compaction`; PR7 added `retention`, `cq`, `scheduler`; PR8 added
 // `delete` and `backup`; PR9 added `logs` and `import stats`; PR10a added
 // build metadata in --version and shell completion (completion.go);
-// PR11 added `sample` (sample.go + internal/sample); PR12 adds Enterprise
-// RBAC administration (rbac.go).
+// PR11 added `sample` (sample.go + internal/sample); PR12 adds governance
+// and Enterprise RBAC administration (rbac.go).
 package commands
 
 import (
@@ -84,6 +84,7 @@ First-time setup:
 		newLicenseCmd(),
 		newClusterCmd(),
 		newCompactionCmd(),
+		newGovernanceCmd(),
 		newRetentionCmd(),
 		newCQCmd(),
 		newSchedulerCmd(),
