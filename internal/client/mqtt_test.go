@@ -1,0 +1,374 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+)
+
+func TestMQTTClientCoversHealthStatsCRUDAndLifecycle(t *testing.T) {
+	var calls []string
+	var createBody map[string]json.RawMessage
+	var updateBody map[string]json.RawMessage
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assertAuthHeaders(t, r)
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/v1/mqtt/health":
+			_, _ = w.Write([]byte(`{"status":"healthy","healthy":true,"subscriptions":{"total":1,"running":1,"stopped":0,"errors":0}}`))
+		case "GET /api/v1/mqtt/stats":
+			_, _ = w.Write([]byte(`{"success":true,"stats":{"subscriptions":[{"id":"s1","name":"ingest","status":"running","messages_received":5,"messages_failed":1,"bytes_received":1024,"reconnects":2}],"summary":{"total_subscriptions":1,"running":1,"stopped":0,"error":0,"total_messages":5,"total_failed":1,"total_bytes":1024}}}`))
+		case "GET /api/v1/mqtt/subscriptions/":
+			_, _ = w.Write([]byte(`{"success":true,"subscriptions":[{"id":"s1","name":"ingest","broker":"mqtts://broker.example:8883","username":"broker-user","has_password":true,"status":"running"}],"count":1}`))
+		case "GET /api/v1/mqtt/subscriptions/s1":
+			_, _ = w.Write([]byte(`{"success":true,"subscription":{"id":"s1","name":"ingest","broker":"mqtts://broker.example:8883","username":"broker-user","has_password":true,"status":"running"}}`))
+		case "POST /api/v1/mqtt/subscriptions/":
+			if err := json.NewDecoder(r.Body).Decode(&createBody); err != nil {
+				t.Errorf("decode create request: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"success":true,"subscription":{"id":"s2","name":"created","broker":"mqtts://broker.example:8883","has_password":true,"status":"stopped"}}`))
+		case "PUT /api/v1/mqtt/subscriptions/s1":
+			if err := json.NewDecoder(r.Body).Decode(&updateBody); err != nil {
+				t.Errorf("decode update request: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"subscription":{"id":"s1","name":"updated","status":"stopped"}}`))
+		case "DELETE /api/v1/mqtt/subscriptions/s1":
+			_, _ = w.Write([]byte(`{"success":true,"message":"Subscription deleted"}`))
+		case "POST /api/v1/mqtt/subscriptions/s1/start", "POST /api/v1/mqtt/subscriptions/s1/stop", "POST /api/v1/mqtt/subscriptions/s1/pause", "POST /api/v1/mqtt/subscriptions/s1/restart":
+			_, _ = w.Write([]byte(`{"success":true,"message":"Subscription action completed"}`))
+		case "GET /api/v1/mqtt/subscriptions/s1/stats":
+			_, _ = w.Write([]byte(`{"success":true,"stats":{"id":"s1","name":"ingest","status":"running","messages_received":5,"messages_failed":1,"bytes_received":1024,"reconnects":2}}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+
+	ctx := context.Background()
+	health, err := cli.MQTTHealth(ctx)
+	if err != nil || health.Status != "healthy" || health.Subscriptions == nil || health.Subscriptions.Running != 1 {
+		t.Fatalf("health=%+v err=%v", health, err)
+	}
+	stats, err := cli.MQTTStats(ctx)
+	if err != nil || stats.Summary.TotalMessages != 5 || len(stats.Subscriptions) != 1 {
+		t.Fatalf("stats=%+v err=%v", stats, err)
+	}
+	list, err := cli.ListMQTTSubscriptions(ctx)
+	if err != nil || len(list) != 1 || list[0].HasPassword != true {
+		t.Fatalf("list=%+v err=%v", list, err)
+	}
+	got, err := cli.GetMQTTSubscription(ctx, "s1")
+	if err != nil || got.ID != "s1" {
+		t.Fatalf("get=%+v err=%v", got, err)
+	}
+	qos := 0
+	created, err := cli.CreateMQTTSubscription(ctx, MQTTSubscriptionCreateRequest{
+		Name: "created", Broker: "mqtts://broker.example:8883", Topics: []string{"sensors/#"},
+		QoS: &qos, Database: "metrics", Username: "broker-user", Password: "do-not-log-me",
+	})
+	if err != nil || created.ID != "s2" {
+		t.Fatalf("create=%+v err=%v", created, err)
+	}
+	if string(createBody["password"]) != `"do-not-log-me"` || string(createBody["qos"]) != "0" {
+		t.Errorf("create body missing password or explicit QoS 0: %s", createBody)
+	}
+	newPassword := "updated-secret"
+	updated, err := cli.UpdateMQTTSubscription(ctx, "s1", MQTTSubscriptionUpdateRequest{Password: &newPassword})
+	if err != nil || updated.Name != "updated" || string(updateBody["password"]) != `"updated-secret"` {
+		t.Fatalf("update=%+v body=%s err=%v", updated, updateBody, err)
+	}
+	if err := cli.DeleteMQTTSubscription(ctx, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"start", "stop", "pause", "restart"} {
+		if _, err := cli.MQTTSubscriptionAction(ctx, "s1", action); err != nil {
+			t.Errorf("%s: %v", action, err)
+		}
+	}
+	if _, err := cli.MQTTSubscriptionAction(ctx, "s1", "delete"); err == nil {
+		t.Fatal("unsupported action should fail before sending a request")
+	}
+	if _, err := cli.GetMQTTSubscription(ctx, " "); err == nil {
+		t.Fatal("blank subscription id should fail before sending a request")
+	}
+	subStats, err := cli.MQTTSubscriptionStats(ctx, "s1")
+	if err != nil || subStats.MessagesReceived != 5 {
+		t.Fatalf("subscription stats=%+v err=%v", subStats, err)
+	}
+	want := []string{
+		"GET /api/v1/mqtt/health", "GET /api/v1/mqtt/stats", "GET /api/v1/mqtt/subscriptions/",
+		"GET /api/v1/mqtt/subscriptions/s1", "POST /api/v1/mqtt/subscriptions/", "PUT /api/v1/mqtt/subscriptions/s1",
+		"DELETE /api/v1/mqtt/subscriptions/s1", "POST /api/v1/mqtt/subscriptions/s1/start",
+		"POST /api/v1/mqtt/subscriptions/s1/stop", "POST /api/v1/mqtt/subscriptions/s1/pause",
+		"POST /api/v1/mqtt/subscriptions/s1/restart", "GET /api/v1/mqtt/subscriptions/s1/stats",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("calls = %v", calls)
+	}
+	serialized, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(serialized), "broker-user") || strings.Contains(string(serialized), `"username"`) || strings.Contains(string(serialized), `"password"`) {
+		t.Errorf("subscription JSON leaked credential fields: %s", serialized)
+	}
+}
+
+func TestMQTTClientPreservesDisabledPermissionAndNotFoundErrors(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/mqtt/subscriptions/disabled":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"success":false,"error":"MQTT subsystem disabled"}`))
+		case "/api/v1/mqtt/subscriptions/forbidden":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"success":false,"error":"Permission denied: admin required"}`))
+		case "/api/v1/mqtt/subscriptions/invalid":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"success":false,"error":"invalid qos"}`))
+		case "/api/v1/mqtt/subscriptions/missing":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"error":"Subscription not found"}`))
+		case "/api/v1/mqtt/subscriptions/":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Cannot GET /api/v1/mqtt/subscriptions/"}`))
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"ok","time":"t","uptime":"1s"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	for _, tc := range []struct {
+		id     string
+		status int
+		text   string
+	}{
+		{"disabled", http.StatusServiceUnavailable, "MQTT subsystem disabled"},
+		{"forbidden", http.StatusForbidden, "Permission denied"},
+		{"invalid", http.StatusBadRequest, "invalid qos"},
+		{"missing", http.StatusNotFound, "Subscription not found"},
+	} {
+		_, err := cli.GetMQTTSubscription(context.Background(), tc.id)
+		var he *HTTPError
+		if !errors.As(err, &he) || he.Status != tc.status || !strings.Contains(he.Message, tc.text) {
+			t.Errorf("%s error = %v", tc.id, err)
+		}
+	}
+	_, err := cli.ListMQTTSubscriptions(context.Background())
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Message != "Cannot GET /api/v1/mqtt/subscriptions/" || strings.Contains(err.Error(), "mqtt.enabled") {
+		t.Errorf("missing route error = %v", err)
+	}
+	var fde *FeatureDisabledError
+	if errors.As(err, &fde) {
+		t.Errorf("MQTT must not report FeatureDisabledError: %v", err)
+	}
+	// Arc registers the MQTT routes even when MQTT is disabled (that answers
+	// 503), so the hint names no config key.
+	const want = "Cannot GET /api/v1/mqtt/subscriptions/ (HTTP 404); Arc is reachable but did not register this route; check the license, the server log, and that this Arc version supports this command"
+	if err == nil || !strings.HasSuffix(err.Error(), want) {
+		t.Errorf("missing route error = %v\nwant suffix %q", err, want)
+	}
+}
+
+func TestMQTTClientRejectsDotSegmentIDsBeforeRequest(t *testing.T) {
+	for _, id := range []string{".", ".."} {
+		for _, action := range []string{"get", "update", "delete", "action", "stats"} {
+			t.Run(id+"/"+action, func(t *testing.T) {
+				var paths []string
+				mux := http.NewServeMux()
+				mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.URL.Path)
+					_, _ = w.Write([]byte(`{"success":true,"subscription":{"id":"other"},"stats":{},"message":"done"}`))
+				})
+				cli, _ := newAuthTestClient(t, mux.ServeHTTP)
+				ctx := context.Background()
+				var err error
+				switch action {
+				case "get":
+					_, err = cli.GetMQTTSubscription(ctx, id)
+				case "update":
+					_, err = cli.UpdateMQTTSubscription(ctx, id, MQTTSubscriptionUpdateRequest{})
+				case "delete":
+					err = cli.DeleteMQTTSubscription(ctx, id)
+				case "action":
+					_, err = cli.MQTTSubscriptionAction(ctx, id, "start")
+				case "stats":
+					_, err = cli.MQTTSubscriptionStats(ctx, id)
+				}
+				if err == nil || len(paths) != 0 {
+					t.Fatalf("error=%v, request paths=%v; want rejected ID without requests", err, paths)
+				}
+			})
+		}
+	}
+}
+
+func TestMQTTObjectMappingAndCredentialErrors(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"subscriptions":[{"id":"s1","topic_mapping":{"a":"simple","b":{"measurement":"temp","tags":{"site":"factory"}}}}]}`))
+			return
+		}
+		var req map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if !strings.Contains(string(req["topic_mapping"]), `"measurement"`) {
+			t.Errorf("object rule lost: %s", req["topic_mapping"])
+		}
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid broker URL: tcp://u:s3cr%zz@host:1883 password separate-secret"}`))
+	})
+	list, err := cli.ListMQTTSubscriptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !strings.Contains(string(list[0].TopicMapping["b"]), `"measurement"`) {
+		t.Fatalf("mapping: %+v", list)
+	}
+	_, err = cli.CreateMQTTSubscription(context.Background(), MQTTSubscriptionCreateRequest{Broker: "tcp://u:s3cr%zz@host:1883", Password: "separate-secret", TopicMapping: list[0].TopicMapping})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, secret := range []string{"s3cr%zz", "separate-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("secret leaked: %v", err)
+		}
+	}
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != 400 {
+		t.Fatalf("lost HTTP status: %v", err)
+	}
+}
+
+func TestMQTTBrokerQueryCredentials(t *testing.T) {
+	for _, broker := range []string{"ws://host/mqtt?token=QSsecret123&keep=yes", "tcp://u:s3cr%zz@host:1883", "ws://host/mqtt?X-Amz-Signature=QSsecret123", "ws://host/mqtt?password=bad%zz"} {
+		if !MQTTBrokerHasCredentials(broker) {
+			t.Errorf("not detected: %s", broker)
+		}
+		safe := ScrubMQTTBroker(broker)
+		for _, secret := range []string{"QSsecret123", "s3cr%zz", "bad%zz"} {
+			if strings.Contains(safe, secret) {
+				t.Errorf("leaked %s", safe)
+			}
+		}
+	}
+}
+
+// Brokers whose password contains '/', '#', '?', '"' or an unencoded '@'
+// either fail url.Parse or put part of the password in the host; sensitive
+// query keys are matched by substring. Every one must lose its secret, and an
+// '@' inside a query value must survive.
+func TestMQTTBrokerCredentialEdgeCases(t *testing.T) {
+	cases := []struct {
+		broker, want string
+		secrets      []string
+	}{
+		{"tcp://u:1234/ss@broker.example:1883", "tcp://broker.example:1883", []string{"1234/ss"}},
+		{"tcp://u:HSpa#ss@broker.example:1883", "tcp://broker.example:1883", []string{"HSpa"}},
+		{`tcp://u:QTp"w%zz@broker.example:1883`, "tcp://broker.example:1883", []string{"QTp"}},
+		{"tcp://u:12?ss@broker.example:1883", "tcp://broker.example:1883", []string{"12?ss"}},
+		{"tcp://u:p@ss@broker.example:1883", "tcp://broker.example:1883", []string{"p@ss"}},
+		{"ws://broker.example/mqtt?auth_token=AT1&private_key=PK1&jwt=JW1&auth=AU1&keep=yes",
+			"ws://broker.example/mqtt?auth_token=<redacted>&private_key=<redacted>&jwt=<redacted>&auth=<redacted>&keep=yes",
+			[]string{"AT1", "PK1", "JW1", "AU1"}},
+		{"ws://broker.example/mqtt;to%6Ben=ENC1", "ws://broker.example/mqtt;to%6Ben=<redacted>", []string{"ENC1"}},
+	}
+	for _, tc := range cases {
+		if !MQTTBrokerHasCredentials(tc.broker) {
+			t.Errorf("%q: credentials not detected", tc.broker)
+		}
+		if got := ScrubMQTTBroker(tc.broker); got != tc.want {
+			t.Errorf("ScrubMQTTBroker(%q) = %q, want %q", tc.broker, got, tc.want)
+		}
+	}
+	for _, broker := range []string{"ws://broker.example/mqtt?user=ops@example.com", "tcp://broker.example:1883"} {
+		if MQTTBrokerHasCredentials(broker) {
+			t.Errorf("%q: false credential detection", broker)
+		}
+		if got := ScrubMQTTBroker(broker); got != broker {
+			t.Errorf("ScrubMQTTBroker(%q) = %q, want unchanged", broker, got)
+		}
+	}
+}
+
+// Arc's broker validation error is `invalid broker URL: <url.Parse error>`
+// (arc internal/mqtt/subscription.go validateBrokerURL); the url.Parse reason
+// quotes password fragments (`invalid port ":SLpa" after host`). The fixture
+// builds Arc's exact message from url.Parse itself.
+func TestMQTTBrokerParseErrorWithholdsPasswordFragments(t *testing.T) {
+	for _, tc := range []struct{ broker, fragment string }{
+		{"tcp://u:s3cr%zz@broker.example:1883", "%zz"},
+		{"tcp://u:SLpa/ss@broker.example:1883", "SLpa"},
+		{"tcp://u:HSpa#ss@broker.example:1883", "HSpa"},
+		{`tcp://u:QTp"w%zz@broker.example:1883`, "QTp"},
+		{"ws://bro%zzker.example/mqtt?token=QSsecret123", "QSsecret123"},
+	} {
+		_, parseErr := url.Parse(tc.broker)
+		if parseErr == nil {
+			t.Fatalf("%q: fixture must fail url.Parse", tc.broker)
+		}
+		arcMessage := "validation error: invalid broker URL: " + parseErr.Error()
+		cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": arcMessage})
+		})
+		_, err := cli.CreateMQTTSubscription(context.Background(), MQTTSubscriptionCreateRequest{Name: "pr61", Broker: tc.broker, Topics: []string{"a/b"}, Database: "pr61db"})
+		if err == nil {
+			t.Fatalf("%q: expected error", tc.broker)
+		}
+		if strings.Contains(err.Error(), tc.fragment) || !strings.Contains(err.Error(), "invalid broker URL") {
+			t.Errorf("%q: error %q", tc.broker, err)
+		}
+		var he *HTTPError
+		if !errors.As(err, &he) || he.Status != http.StatusBadRequest {
+			t.Errorf("%q: lost HTTP status: %v", tc.broker, err)
+		}
+	}
+	// A broker URL error that echoes nothing keeps Arc's detail.
+	const scheme = "validation error: invalid broker URL: must start with one of: [tcp:// ssl:// ws:// wss:// mqtt:// mqtts://]"
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": scheme})
+	})
+	_, err := cli.CreateMQTTSubscription(context.Background(), MQTTSubscriptionCreateRequest{Name: "pr61", Broker: "ftp://u:pw@broker.example", Topics: []string{"a/b"}, Database: "pr61db"})
+	if err == nil || !strings.Contains(err.Error(), "must start with one of") {
+		t.Errorf("scheme error lost: %v", err)
+	}
+}
+
+// Only URL-shaped response strings are broker candidates: names and topics
+// with '@', '%' or '?key=' keep their exact value.
+func TestMQTTResponseScrubKeepsNonURLValues(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"count":1,"subscriptions":[{"id":"1d7f2fc8-d62c-4385-a8c3-7b463fb3d78b","name":"pr61/50%/a@b","broker":"tcp://u:1234/ss@broker.example:1883","topics":["pr61/cmd?key=v"],"status":"stopped"}]}`))
+	})
+	list, err := cli.ListMQTTSubscriptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "pr61/50%/a@b" || list[0].Topics[0] != "pr61/cmd?key=v" || list[0].Broker != "tcp://broker.example:1883" {
+		t.Fatalf("list = %+v", list)
+	}
+}
+
+// Without the "invalid broker URL" marker (another Arc message or version),
+// the literal scrub still finds a broker that url.Error echoed with %q.
+func TestMQTTTextScrubFindsQuotedBroker(t *testing.T) {
+	broker := `tcp://u:QTp"w%zz@broker.example:1883`
+	secrets, creds := mqttRequestSecrets(MQTTSubscriptionCreateRequest{Broker: broker})
+	_, parseErr := url.Parse(broker)
+	if !creds || parseErr == nil {
+		t.Fatalf("creds=%t parseErr=%v", creds, parseErr)
+	}
+	if got := scrubMQTTText("dial failed: "+parseErr.Error(), secrets); strings.Contains(got, "QTp") {
+		t.Fatalf("leaked: %s", got)
+	}
+}

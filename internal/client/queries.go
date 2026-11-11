@@ -1,0 +1,194 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+)
+
+const (
+	// QueryHistoryMaxLimit is the largest history page accepted by Arc.
+	QueryHistoryMaxLimit = 1000
+	// QueryHistoryDefaultLimit is Arc's default history page size.
+	QueryHistoryDefaultLimit = 50
+
+	// queryManagementConfigKey is the server setting the query-management
+	// routes depend on: Arc registers them only when
+	// query_management.enabled is true (default false) and the license
+	// includes query management.
+	queryManagementConfigKey = "query_management.enabled"
+)
+
+// queriesGet is getRaw with a route-missing 404 given the neutral hint of
+// classifyFeatureRouteMissing; every other error is unchanged (a handler
+// 404 such as "Query not found" is not route-missing).
+func (c *Client) queriesGet(ctx context.Context, path string, limit int64) ([]byte, error) {
+	body, err := c.getRaw(ctx, path, limit)
+	if err != nil {
+		return nil, c.classifyFeatureRouteMissing(ctx, err, "query management", queryManagementConfigKey)
+	}
+	return body, nil
+}
+
+// ManagedQuery mirrors the query metadata returned by Arc's query-management API.
+// Active-query responses omit the history-only fields.
+type ManagedQuery struct {
+	ID             string     `json:"id"`
+	SQL            string     `json:"sql"`
+	TokenID        int64      `json:"token_id,omitempty"`
+	TokenName      string     `json:"token_name,omitempty"`
+	RemoteAddr     string     `json:"remote_addr,omitempty"`
+	Status         string     `json:"status"`
+	StartTime      time.Time  `json:"start_time"`
+	EndTime        *time.Time `json:"end_time,omitempty"`
+	DurationMs     float64    `json:"duration_ms,omitempty"`
+	RowCount       int        `json:"row_count,omitempty"`
+	RowCap         int        `json:"row_cap,omitempty"`
+	Error          string     `json:"error,omitempty"`
+	IsParallel     bool       `json:"is_parallel"`
+	ForwardedTo    string     `json:"forwarded_to,omitempty"`
+	PartitionCount int        `json:"partition_count,omitempty"`
+}
+
+// QueryList is the typed view of an active-query or query-history response.
+// Raw preserves the full server response for JSON output.
+type QueryList struct {
+	Queries []ManagedQuery  `json:"queries"`
+	Count   int             `json:"count"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+// ManagedQueryResult is the typed response from GET /api/v1/queries/:id.
+type ManagedQueryResult struct {
+	Query ManagedQuery    `json:"query"`
+	Raw   json.RawMessage `json:"-"`
+}
+
+// QueryCancelResult is the typed response from DELETE /api/v1/queries/:id.
+type QueryCancelResult struct {
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+// ValidateQueryID rejects unsafe path input without assuming a server ID format.
+func ValidateQueryID(id string) error {
+	if id == "" || id == "." || len(id) > 256 || strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid query id: expected a nonempty path segment of at most 256 bytes")
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("invalid query id: control characters are not allowed")
+		}
+	}
+	return nil
+}
+
+// ActiveQueries calls GET /api/v1/queries/active.
+func (c *Client) ActiveQueries(ctx context.Context) (*QueryList, error) {
+	body, err := c.queriesGet(ctx, "/api/v1/queries/active", 16<<20)
+	if err != nil {
+		return nil, err
+	}
+	return decodeQueryList(body)
+}
+
+// QueryHistory calls GET /api/v1/queries/history. A zero limit leaves the
+// server's default unchanged; non-zero limits must be within Arc's bounds.
+func (c *Client) QueryHistory(ctx context.Context, limit int) (*QueryList, error) {
+	if limit != 0 && (limit < 1 || limit > QueryHistoryMaxLimit) {
+		return nil, fmt.Errorf("limit must be between 1 and %d (got %d)", QueryHistoryMaxLimit, limit)
+	}
+	path := "/api/v1/queries/history"
+	if limit != 0 {
+		q := url.Values{}
+		q.Set("limit", strconv.Itoa(limit))
+		path += "?" + q.Encode()
+	}
+	body, err := c.queriesGet(ctx, path, 32<<20)
+	if err != nil {
+		return nil, err
+	}
+	return decodeQueryList(body)
+}
+
+// GetManagedQuery calls GET /api/v1/queries/:id.
+func (c *Client) GetManagedQuery(ctx context.Context, id string) (*ManagedQueryResult, error) {
+	if err := ValidateQueryID(id); err != nil {
+		return nil, err
+	}
+	body, err := c.queriesGet(ctx, "/api/v1/queries/"+url.PathEscape(id), 4<<20)
+	if err != nil {
+		return nil, err
+	}
+	var out ManagedQueryResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode query: %w", err)
+	}
+	if out.Query.ID == "" {
+		return nil, fmt.Errorf("decode query: response is missing query")
+	}
+	out.Raw = body
+	return &out, nil
+}
+
+// CancelManagedQuery calls DELETE /api/v1/queries/:id.
+func (c *Client) CancelManagedQuery(ctx context.Context, id string) (*QueryCancelResult, error) {
+	if err := ValidateQueryID(id); err != nil {
+		return nil, err
+	}
+	path := "/api/v1/queries/" + url.PathEscape(id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.cfg.Endpoint+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.setCrossDBHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("DELETE %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, c.classifyFeatureRouteMissing(ctx, decodeWriteError(resp.StatusCode, body), "query management", queryManagementConfigKey)
+	}
+	var out QueryCancelResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode query cancellation: %w", err)
+	}
+	if !out.Success {
+		return nil, fmt.Errorf("decode query cancellation: server response did not report success")
+	}
+	out.Raw = body
+	return &out, nil
+}
+
+func decodeQueryList(body []byte) (*QueryList, error) {
+	var out QueryList
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode queries: %w", err)
+	}
+	if out.Queries == nil {
+		out.Queries = []ManagedQuery{}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(body, &fields) == nil && fields != nil {
+			fields["queries"] = json.RawMessage("[]")
+			if normalised, err := json.Marshal(fields); err == nil {
+				body = normalised
+			}
+		}
+	}
+	out.Raw = body
+	return &out, nil
+}
