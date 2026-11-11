@@ -44,11 +44,11 @@ func TestRBACReviewDeleteWarningsAndNames(t *testing.T) {
 		args  []string
 		wants []string
 	}{
-		{[]string{"organization", "delete", "2"}, []string{`organization "tenant"`, "measurement permissions", "no teams", "coarse token permissions", "HTTP 409", "cluster.rbac.max_cascade_descendants"}},
-		{[]string{"team", "delete", "3"}, []string{`team "readers"`, "measurement permissions", "no teams", "HTTP 409"}},
-		{[]string{"role", "delete", "4"}, []string{`role "metrics*"`, "measurement permissions", "HTTP 409"}},
+		{[]string{"organization", "delete", "2"}, []string{`organization "tenant"`, "measurement permissions", "only team", "coarse token permissions", "HTTP 409", "cluster.rbac.max_cascade_descendants"}},
+		{[]string{"team", "delete", "3"}, []string{`team "readers"`, "measurement permissions", "only team", "HTTP 409"}},
+		{[]string{"role", "delete", "4"}, []string{"role id 4", `database pattern "metrics*"`, "measurement permissions"}},
 		{[]string{"measurement", "delete", "5"}, []string{"last measurement permission", "widens", "all measurements"}},
-		{[]string{"token", "team", "remove", "8", "3"}, []string{`token "ci"`, "no teams", "coarse token permissions", "widen access"}},
+		{[]string{"token", "team", "remove", "8", "3"}, []string{`token "ci"`, `team "readers" (id 3)`, "last team", "coarse token permissions (read,write)", "widen access"}},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args, "-"), func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestRBACReviewDeleteWarningsAndNames(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("mutation after decline: %s", r.Method)
 				}
-				w.Write([]byte(`{"organization":{"id":2,"name":"tenant"},"team":{"id":3,"name":"readers"},"role":{"id":4,"database_pattern":"metrics*"},"token":{"id":8,"name":"ci"}}`))
+				w.Write([]byte(`{"organization":{"id":2,"name":"tenant"},"team":{"id":3,"name":"readers"},"role":{"id":4,"team_id":3,"database_pattern":"metrics*"},"token":{"id":8,"name":"ci","permissions":["read","write"]},"teams":[{"id":3,"organization_id":2,"name":"readers","enabled":true}]}`))
 			}))
 			defer srv.Close()
 			writeTestConfig(t, srv.URL, "admin-secret")
@@ -70,6 +70,13 @@ func TestRBACReviewDeleteWarningsAndNames(t *testing.T) {
 				if !strings.Contains(stderr, want) {
 					t.Errorf("missing %q in %q", want, stderr)
 				}
+			}
+			// The warning is printed once, not repeated inside the prompt.
+			if n := strings.Count(stderr, "Warning:"); n > 1 || strings.Count(stderr, "widen") > 1 {
+				t.Errorf("warning repeated in %q", stderr)
+			}
+			if tc.args[0] == "role" && strings.Contains(stderr, "HTTP 409") {
+				t.Errorf("role delete has no cascade cap in Arc: %q", stderr)
 			}
 		})
 	}
@@ -159,5 +166,94 @@ func TestRBACDeleteUsesFreshDeadlineAfterConfirmation(t *testing.T) {
 				t.Fatalf("error=%v deletes=%d", err, deletes)
 			}
 		})
+	}
+}
+
+// Removing a membership widens access only when it is the token's last team and
+// the token's coarse permissions grant something (Arc checkPermissionUncached
+// falls back to them; coarse admin bypasses RBAC already). The warning must
+// fire in exactly that case.
+func TestRBACTokenTeamRemoveWarnsOnlyWhenAccessWidens(t *testing.T) {
+	const (
+		readers = `{"id":3,"organization_id":2,"name":"readers","enabled":true,"created_at":"2026-11-11T22:42:29Z"}`
+		writers = `{"id":5,"organization_id":2,"name":"writers","enabled":false,"created_at":"2026-11-11T22:42:29Z"}`
+	)
+	cases := []struct {
+		name        string
+		permissions string
+		teams       string // empty: the membership read fails
+		want        string // empty: no warning
+	}{
+		{"last team", `["read","write"]`, `[` + readers + `]`, `Warning: this is the token's last team; it falls back to its coarse token permissions (read,write)`},
+		{"last team, read only", `["read"]`, `[` + readers + `]`, `coarse token permissions (read)`},
+		{"another team remains", `["read","write"]`, `[` + readers + `,` + writers + `]`, ""},
+		{"not a member", `["read","write"]`, `[` + writers + `]`, ""},
+		{"no coarse permissions", `[]`, `[` + readers + `]`, ""},
+		{"coarse admin", `["admin"]`, `[` + readers + `]`, ""},
+		{"membership read fails", `["read"]`, "", "Warning: could not read the token's teams"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deletes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method + " " + r.URL.Path {
+				case "GET /api/v1/auth/tokens/8":
+					w.Write([]byte(`{"success":true,"token":{"id":8,"name":"ci","permissions":` + tc.permissions + `,"enabled":true,"expires_at":null}}`))
+				case "GET /api/v1/auth/tokens/8/teams":
+					if tc.teams == "" {
+						w.WriteHeader(http.StatusInternalServerError)
+						w.Write([]byte(`{"success":false,"error":"Failed to get token teams"}`))
+						return
+					}
+					w.Write([]byte(`{"success":true,"teams":` + tc.teams + `,"count":1}`))
+				case "DELETE /api/v1/auth/tokens/8/teams/3":
+					deletes++
+					w.Write([]byte(`{"success":true,"message":"Token removed from team"}`))
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+			writeTestConfig(t, srv.URL, "admin-secret")
+			_, stderr, err := execCmd(t, NewRoot(BuildInfo{}), "rbac", "token", "team", "remove", "8", "3", "--yes")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deletes != 1 {
+				t.Fatalf("deletes = %d, want 1", deletes)
+			}
+			if tc.want == "" {
+				if stderr != "" {
+					t.Errorf("unexpected warning: %q", stderr)
+				}
+			} else if !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr = %q, want %q", stderr, tc.want)
+			}
+		})
+	}
+}
+
+func TestRBACTokenTeamRemoveUsesFreshDeadlineAfterConfirmation(t *testing.T) {
+	deletes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/v1/auth/tokens/8":
+			_, _ = w.Write([]byte(`{"success":true,"token":{"id":8,"name":"ci","permissions":["read"],"enabled":true}}`))
+		case "GET /api/v1/auth/tokens/8/teams":
+			_, _ = w.Write([]byte(`{"success":true,"teams":[{"id":3,"organization_id":2,"name":"readers","enabled":true}],"count":1}`))
+		case "DELETE /api/v1/auth/tokens/8/teams/3":
+			deletes++
+			_, _ = w.Write([]byte(`{"success":true}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin")
+	root := NewRoot(BuildInfo{})
+	root.SetIn(&delayedRBACConfirmation{})
+	_, _, err := execCmd(t, root, "rbac", "token", "team", "remove", "8", "3", "--timeout", "100ms")
+	if err != nil || deletes != 1 {
+		t.Fatalf("error=%v deletes=%d", err, deletes)
 	}
 }

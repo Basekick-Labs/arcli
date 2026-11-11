@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -336,8 +337,8 @@ func newRBACOrganizationDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			prompt := fmt.Sprintf("Delete organization %q (id %d) and all its teams, roles, measurement permissions, and token memberships?", clean(item.Name), id)
-			if err := confirmRBACDelete(cmd, prompt, rbacCascadeWarning+" "+rbacMembershipWarning, yes); err != nil {
+			prompt := fmt.Sprintf("Delete organization %q (id %d) and all its teams, roles, measurement permissions, and token memberships? %s", clean(item.Name), id, rbacCascadeNote)
+			if err := confirmRBACDelete(cmd, prompt, rbacMembershipWarning, yes); err != nil {
 				return err
 			}
 			deleteCtx, deleteCancel := f.ctx(cmd)
@@ -548,8 +549,8 @@ func newRBACTeamDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			prompt := fmt.Sprintf("Delete team %q (id %d) and all its roles, measurement permissions, and token memberships?", clean(item.Name), id)
-			if err := confirmRBACDelete(cmd, prompt, rbacCascadeWarning+" "+rbacMembershipWarning, yes); err != nil {
+			prompt := fmt.Sprintf("Delete team %q (id %d) and all its roles, measurement permissions, and token memberships? %s", clean(item.Name), id, rbacCascadeNote)
+			if err := confirmRBACDelete(cmd, prompt, rbacMembershipWarning, yes); err != nil {
 				return err
 			}
 			deleteCtx, deleteCancel := f.ctx(cmd)
@@ -759,8 +760,8 @@ func newRBACRoleDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			prompt := fmt.Sprintf("Delete role %q (id %d) and all its measurement permissions?", clean(item.DatabasePattern), id)
-			if err := confirmRBACDelete(cmd, prompt, rbacCascadeWarning, yes); err != nil {
+			prompt := fmt.Sprintf("Delete role id %d (team id %d, database pattern %q) and all its measurement permissions?", id, item.TeamID, clean(item.DatabasePattern))
+			if err := confirmRBACDelete(cmd, prompt, "", yes); err != nil {
 				return err
 			}
 			deleteCtx, deleteCancel := f.ctx(cmd)
@@ -1022,10 +1023,14 @@ func newRBACTokenTeamsRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmRBACDelete(cmd, fmt.Sprintf("Remove token %q (id %d) from team id %d?", clean(token.Name), token.ID, teamID), rbacMembershipWarning, yes); err != nil {
+			team, warning := tokenTeamRemovalWarning(ctx, cli, token, teamID)
+			if err := confirmRBACDelete(cmd, fmt.Sprintf("Remove token %q (id %d) from %s?", clean(token.Name), token.ID, team), warning, yes); err != nil {
 				return err
 			}
-			if err := cli.RemoveTokenFromTeam(ctx, token.ID, teamID); err != nil {
+			// Fresh deadline: the confirmation must not consume the mutation's budget.
+			removeCtx, removeCancel := f.ctx(cmd)
+			defer removeCancel()
+			if err := cli.RemoveTokenFromTeam(removeCtx, token.ID, teamID); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Removed token %q (id %d) from team id %d\n", clean(token.Name), token.ID, teamID)
@@ -1037,15 +1042,48 @@ func newRBACTokenTeamsRemoveCmd() *cobra.Command {
 	return c
 }
 
-// Warn unconditionally: a preflight count cannot guarantee membership state at
-// deletion time, and Arc exposes no atomic check-and-delete API. --yes skips
-// only the interactive prompt, never the access warning.
-const rbacMembershipWarning = "Any token left with no teams falls back to its coarse token permissions, which can widen access to every database."
-const rbacCascadeWarning = "A cluster may reject this deletion with HTTP 409 when cluster.rbac.max_cascade_descendants is exceeded."
+// Team and organization deletes warn unconditionally: Arc has no route that
+// lists a team's member tokens, so finding the tokens left with no teams would
+// take one request per token. --yes skips only the prompt, never the warning.
+const rbacMembershipWarning = "Any token whose only team is deleted here falls back to its coarse token permissions, which can widen access to every database."
+
+// Arc applies the cascade cap to organization and team deletes on every node,
+// standalone included (internal/auth/rbac_manager.go DeleteOrganization/DeleteTeam).
+const rbacCascadeNote = "Arc refuses it with HTTP 409 if the cascade exceeds cluster.rbac.max_cascade_descendants (default 50000)."
+
+// tokenTeamRemovalWarning names the team and warns only when removing it
+// leaves the token with no teams and its coarse permissions grant something:
+// a token with no teams falls back to them (Arc rbac_manager.go
+// checkPermissionUncached), while a coarse admin token bypasses RBAC already.
+// The membership read is advisory: if it fails, the command still runs and
+// prints the conditional warning instead.
+func tokenTeamRemovalWarning(ctx context.Context, cli *client.Client, token *client.TokenInfo, teamID int64) (string, string) {
+	label := fmt.Sprintf("team id %d", teamID)
+	if slices.Contains(token.Permissions, "admin") {
+		return label, ""
+	}
+	teams, err := cli.ListTokenTeams(ctx, token.ID)
+	if err != nil {
+		return label, fmt.Sprintf("could not read the token's teams (%v). If this is its last team, it falls back to its coarse token permissions, which can widen access to every database.", err)
+	}
+	member := false
+	for _, t := range teams {
+		if t.ID == teamID {
+			member = true
+			label = fmt.Sprintf("team %q (id %d)", clean(t.Name), teamID)
+		}
+	}
+	if !member || len(teams) != 1 || len(token.Permissions) == 0 {
+		return label, ""
+	}
+	return label, fmt.Sprintf("this is the token's last team; it falls back to its coarse token permissions (%s), which can widen access to every database.", clean(strings.Join(token.Permissions, ",")))
+}
 
 func confirmRBACDelete(cmd *cobra.Command, prompt, warning string, yes bool) error {
-	if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+warning); err != nil {
-		return err
+	if warning != "" {
+		if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+warning); err != nil {
+			return err
+		}
 	}
-	return confirmOrAbort(cmd, prompt+" "+warning, yes)
+	return confirmOrAbort(cmd, prompt, yes)
 }

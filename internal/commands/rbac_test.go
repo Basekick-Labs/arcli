@@ -136,15 +136,15 @@ func TestRBACTokenTeamsResolvesExactTokenName(t *testing.T) {
 
 func TestRBACDestructiveCommandsNeedConfirmation(t *testing.T) {
 	cases := []struct {
-		name             string
-		args             []string
-		wantLookupBefore bool
+		name        string
+		args        []string
+		wantLookups int32
 	}{
-		{"organization", []string{"rbac", "organization", "delete", "2"}, true},
-		{"team", []string{"rbac", "team", "delete", "3"}, true},
-		{"role", []string{"rbac", "role", "delete", "4"}, true},
-		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, false},
-		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, true},
+		{"organization", []string{"rbac", "organization", "delete", "2"}, 1},
+		{"team", []string{"rbac", "team", "delete", "3"}, 1},
+		{"role", []string{"rbac", "role", "delete", "4"}, 1},
+		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, 0},
+		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,8 +156,12 @@ func TestRBACDestructiveCommandsNeedConfirmation(t *testing.T) {
 					_, _ = w.Write([]byte(`{"organization":{"id":2,"name":"tenant"},"team":{"id":3,"name":"readers"},"role":{"id":4,"database_pattern":"metrics*"}}`))
 					return
 				}
-				if tc.wantLookupBefore && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8" {
+				if tc.wantLookups > 0 && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8" {
 					_, _ = w.Write([]byte(`{"token":{"id":8,"name":"ci","permissions":["read"],"enabled":true,"expires_at":null}}`))
+					return
+				}
+				if tc.wantLookups > 0 && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8/teams" {
+					_, _ = w.Write([]byte(`{"success":true,"teams":[{"id":3,"organization_id":2,"name":"readers","enabled":true}],"count":1}`))
 					return
 				}
 				t.Errorf("destructive request without confirmation: %s %s", r.Method, r.URL.Path)
@@ -171,12 +175,8 @@ func TestRBACDestructiveCommandsNeedConfirmation(t *testing.T) {
 			if err == nil || err.Error() != want {
 				t.Fatalf("error = %v, want %q", err, want)
 			}
-			wantRequests := int32(0)
-			if tc.wantLookupBefore {
-				wantRequests = 1
-			}
-			if got := requests.Load(); got != wantRequests {
-				t.Errorf("requests = %d, want %d", got, wantRequests)
+			if got := requests.Load(); got != tc.wantLookups {
+				t.Errorf("requests = %d, want %d", got, tc.wantLookups)
 			}
 		})
 	}
@@ -188,12 +188,14 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 		args   []string
 		method string
 		path   string
+		warn   bool
 	}{
-		{"organization", []string{"rbac", "organization", "delete", "2"}, http.MethodDelete, "/api/v1/rbac/organizations/2"},
-		{"team", []string{"rbac", "team", "delete", "3"}, http.MethodDelete, "/api/v1/rbac/teams/3"},
-		{"role", []string{"rbac", "role", "delete", "4"}, http.MethodDelete, "/api/v1/rbac/roles/4"},
-		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, http.MethodDelete, "/api/v1/rbac/measurement-permissions/5"},
-		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, http.MethodDelete, "/api/v1/auth/tokens/8/teams/3"},
+		{"organization", []string{"rbac", "organization", "delete", "2"}, http.MethodDelete, "/api/v1/rbac/organizations/2", true},
+		{"team", []string{"rbac", "team", "delete", "3"}, http.MethodDelete, "/api/v1/rbac/teams/3", true},
+		// Deleting a role removes its grants with it; nothing widens.
+		{"role", []string{"rbac", "role", "delete", "4"}, http.MethodDelete, "/api/v1/rbac/roles/4", false},
+		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, http.MethodDelete, "/api/v1/rbac/measurement-permissions/5", true},
+		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, http.MethodDelete, "/api/v1/auth/tokens/8/teams/3", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,6 +208,10 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 				}
 				if tc.name == "token membership" && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8" {
 					_, _ = w.Write([]byte(`{"token":{"id":8,"name":"ci","permissions":["read"],"enabled":true,"expires_at":null}}`))
+					return
+				}
+				if tc.name == "token membership" && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8/teams" {
+					_, _ = w.Write([]byte(`{"success":true,"teams":[{"id":3,"organization_id":2,"name":"readers","enabled":true}],"count":1}`))
 					return
 				}
 				if r.Method != tc.method || r.URL.Path != tc.path {
@@ -223,8 +229,8 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(stderr, "Warning:") {
-				t.Errorf("missing safety warning: %q", stderr)
+			if got := strings.Contains(stderr, "Warning:"); got != tc.warn {
+				t.Errorf("warning printed = %v, want %v: %q", got, tc.warn, stderr)
 			}
 			if out == "" {
 				t.Error("expected confirmation of the completed action")

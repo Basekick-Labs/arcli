@@ -167,6 +167,14 @@ Active, expired, invalid, and configured-but-unlicensed states retain the server
 
 `arcli rbac` manages Enterprise organizations, teams, roles, measurement permissions, and token team memberships. List commands support table, JSON, and CSV output; destructive operations prompt for confirmation and accept `--yes` for scripts. Token references accept a numeric id or an exact name. Arc registers the RBAC routes only when `auth.enabled` is true; a missing route reports the server's HTTP 404 error followed by a hint to check `auth.enabled`, the license, the server log, and the Arc version.
 
+RBAC access safety:
+
+- Measurement permissions restrict a role to the permitted measurement patterns. Deleting a role's last measurement permission restores its access to every measurement matching its database pattern; `rbac measurement delete` always warns about this, because Arc has no route that maps a permission id to its role.
+- A token with no teams falls back to its coarse token permissions, which can widen access to every database. `rbac token team remove` warns when the team is the token's last one and the token has coarse permissions other than `admin` (an admin token bypasses RBAC either way). `rbac team delete` and `rbac organization delete` always warn, because Arc has no route that lists a team's tokens. Warnings are printed with `--yes` too.
+- Arc refuses an organization or team delete with HTTP 409 when the cascade exceeds `cluster.rbac.max_cascade_descendants` (default 50000).
+- An organization's `--enabled=false` does not revoke access (Arc 26.09.4 and current main); disable the team instead. Adding an admin token to a team does not restrict it.
+- A role with `--permission admin` grants read, write and delete on the databases its pattern matches (every database for `*`); it does not grant cluster or token administration. `--permission` accepts repeated or comma-separated values (`--permission read,write`).
+
 ## Output and automation
 
 Commands support the formats appropriate to their API:
@@ -226,11 +234,3 @@ gofmt -l .
 ## License
 
 [Apache-2.0](LICENSE)
-
-### RBAC access safety
-
-Measurement permissions restrict a role to the explicitly permitted measurement patterns. Removing the last measurement permission restores the role's access to all measurements matching its database pattern.
-
-Removing a token's last team makes it fall back to its coarse token permissions, which can widen access to every database. Deleting a team or organization can have the same effect. The CLI always warns about these conditional risks, including with `--yes`; it cannot atomically check membership state at deletion time. Cascade prompts identify the organization/team name or role database pattern and mention measurement permissions. A cluster can reject a cascade with HTTP 409 when `cluster.rbac.max_cascade_descendants` is exceeded.
-
-An organization's `--enabled=false` currently does not revoke access; disable the team to revoke its grants. Adding an admin token to a team does not restrict that token. A role's `--permission admin --database-pattern '*'` grants read/write/delete on every database, not cluster administration. Permissions accept comma-separated or repeated flags (`--permission read,write`). Numeric token references resolve as IDs first; add results echo the resolved token name.
