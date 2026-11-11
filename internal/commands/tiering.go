@@ -23,7 +23,7 @@ import (
 func newTieringCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "tiering",
-		Short: "Inspect and manage tiered storage",
+		Short: "Inspect and manage tiered storage (Enterprise)",
 		Long: `Inspect and manage Arc tiered storage (/api/v1/tiering/*).
 
 These endpoints require an administrator token and an Enterprise licence
