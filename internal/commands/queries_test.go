@@ -254,13 +254,13 @@ func TestManagedQueryCSVHeadersAndUnsetTimes(t *testing.T) {
 }
 
 func TestManagedQueryRenderingRealFields(t *testing.T) {
-	const payload = `{"queries":[{"id":"newer","sql":"SELECT\nlong\tstatement","start_time":"2026-11-11T01:00:00Z","forwarded_to":"reader-1"},{"id":"older","sql":"SELECT 1","start_time":"2026-11-11T00:00:00Z"}],"count":2}`
+	const payload = `{"success":true,"queries":[{"id":"dadf4a56-099","sql":"SELECT\nlong\tstatement","status":"running","start_time":"2026-11-11T01:00:00Z","forwarded_to":"reader-1"},{"id":"c0f60411-9a6","sql":"SELECT 1","status":"running","start_time":"2026-11-11T00:00:00Z"}],"count":2}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(payload)) }))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "admin")
 	for _, format := range []string{"table", "csv"} {
 		out, _, err := execCmd(t, newQueriesActiveCmd(), "-o", format)
-		if err != nil || !strings.Contains(out, "reader-1") || strings.Index(out, "older") > strings.Index(out, "newer") {
+		if err != nil || !strings.Contains(out, "reader-1") || strings.Index(out, "c0f60411-9a6") > strings.Index(out, "dadf4a56-099") {
 			t.Fatalf("%s: %q %v", format, out, err)
 		}
 		if format == "table" && !strings.Contains(out, "SELECT long statement") {
@@ -268,7 +268,7 @@ func TestManagedQueryRenderingRealFields(t *testing.T) {
 		}
 	}
 	out, _, err := execCmd(t, newQueriesActiveCmd(), "-o", "json")
-	if err != nil || strings.Index(out, "older") < strings.Index(out, "newer") {
+	if err != nil || strings.Index(out, "c0f60411-9a6") < strings.Index(out, "dadf4a56-099") {
 		t.Errorf("raw JSON reordered: %q %v", out, err)
 	}
 	if got := managedQuerySQL(strings.Repeat("世", 130), 120); len([]rune(got)) != 120 || !strings.HasSuffix(got, "…") {
@@ -282,7 +282,7 @@ func TestManagedQueryRenderingRealFields(t *testing.T) {
 func TestQueryCancelNotFoundNodeHint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"Query not found"}`))
+		_, _ = w.Write([]byte(`{"success":false,"error":"Query not found"}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "admin")
@@ -293,25 +293,107 @@ func TestQueryCancelNotFoundNodeHint(t *testing.T) {
 }
 
 func TestQueryCancelConfirmationInputs(t *testing.T) {
-	for _, kind := range []string{"decline", "eof", "pipe", "file", "null", "accept"} {
-		t.Run(kind, func(t *testing.T) {
+	const nonInteractive = "confirmation required but stdin is not a terminal; pass --yes"
+	for _, tc := range []struct {
+		input   string
+		yes     bool
+		wantErr string
+	}{
+		{input: "decline", wantErr: "aborted"},
+		{input: "eof", wantErr: "aborted"},
+		{input: "pipe", wantErr: nonInteractive},
+		{input: "file", wantErr: nonInteractive},
+		{input: "null", wantErr: nonInteractive},
+		{input: "accept"},
+		{input: "decline", yes: true},
+		{input: "pipe", yes: true},
+		{input: "null", yes: true},
+	} {
+		name := tc.input
+		if tc.yes {
+			name += "/--yes"
+		}
+		t.Run(name, func(t *testing.T) {
 			requests := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests++
+				if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/queries/"+commandTestQueryID {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+				}
 				_, _ = w.Write([]byte(`{"success":true,"message":"Query cancelled"}`))
 			}))
 			defer srv.Close()
 			writeTestConfig(t, srv.URL, "admin")
-			cmd := newQueriesCancelCmd()
-			cmd.SetIn(confirmationInput(t, kind))
-			_, _, err := execCmd(t, cmd, commandTestQueryID)
-			if kind == "accept" {
-				if err != nil || requests != 1 {
-					t.Fatalf("%v requests=%d", err, requests)
+			args := []string{"admin", "query", "cancel", commandTestQueryID}
+			if tc.yes {
+				args = append(args, "--yes")
+			}
+			root := NewRoot(BuildInfo{Version: "test"})
+			root.SetIn(confirmationInput(t, tc.input))
+			out, errOut, err := execCmd(t, root, args...)
+			wantOut, wantRequests := "Query cancelled ("+commandTestQueryID+")\n", 1
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
 				}
-			} else if err == nil || requests != 0 {
-				t.Fatalf("%v requests=%d", err, requests)
+				wantOut, wantRequests = "", 0
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if out != wantOut {
+				t.Errorf("stdout = %q, want %q", out, wantOut)
+			}
+			wantPrompt := ""
+			if !tc.yes && (tc.input == "decline" || tc.input == "eof" || tc.input == "accept") {
+				wantPrompt = "Cancel query \"" + commandTestQueryID + "\" on " + srv.URL + "? [y/N] "
+			}
+			if errOut != wantPrompt {
+				t.Errorf("stderr = %q, want %q", errOut, wantPrompt)
+			}
+			if requests != wantRequests {
+				t.Errorf("requests = %d, want %d", requests, wantRequests)
 			}
 		})
+	}
+}
+
+// List tables shorten long SQL; show, CSV and JSON keep it whole.
+func TestManagedQueryLongSQLTruncatedOnlyInListTables(t *testing.T) {
+	long := "SELECT host, avg(usage) AS avg_usage, max(usage) AS max_usage, min(usage) AS min_usage, count(*) AS samples_in_window_total\nFROM cpu\nWHERE usage > 1\nGROUP BY host ORDER BY host"
+	oneLine := strings.ReplaceAll(long, "\n", " ")
+	query := map[string]any{"id": commandTestQueryID, "sql": long, "token_id": 1, "token_name": "admin", "remote_addr": "127.0.0.1", "status": "completed", "start_time": "2026-11-11T22:41:42Z", "end_time": "2026-11-11T22:41:42Z", "duration_ms": 29, "row_count": 10, "is_parallel": false}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/"+commandTestQueryID) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "query": query})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "queries": []any{query}, "count": 1})
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin")
+	for _, action := range []string{"active", "history"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", action)
+		if err != nil || !strings.Contains(out, string([]rune(oneLine)[:119])+"…") || strings.Contains(out, "ORDER BY host") {
+			t.Errorf("%s table did not shorten SQL to 120 characters: %q %v", action, out, err)
+		}
+		out, _, err = execCmd(t, NewRoot(BuildInfo{}), "admin", "query", action, "-o", "csv")
+		if err != nil || !strings.Contains(out, long) {
+			t.Errorf("%s CSV lost SQL: %q %v", action, out, err)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", "show", commandTestQueryID)
+	if err != nil || !strings.Contains(out, oneLine) || strings.Contains(out, "…") {
+		t.Errorf("show shortened SQL: %q %v", out, err)
+	}
+}
+
+func TestManagedQueryEndpointDropsCredentials(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://127.0.0.1:18000":                         "http://127.0.0.1:18000",
+		"https://user:secret@arc.example.com:8000/x?t=1": "https://arc.example.com:8000",
+	} {
+		if got := managedQueryEndpoint(in); got != want {
+			t.Errorf("managedQueryEndpoint(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

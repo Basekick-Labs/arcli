@@ -28,8 +28,9 @@ func newQueriesCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "query",
 		Short: "Inspect and manage running and completed queries (Arc Enterprise)",
-		Long: `Inspect and manage Arc query activity. These endpoints require an Arc Enterprise licence with the query_management
-feature enabled, and an admin token when authentication is enabled.
+		Long: `Inspect and manage Arc query activity. These endpoints require an Arc
+Enterprise license with the query_management feature enabled, and an admin
+token when authentication is enabled.
 
 Target the node that runs the query. Registries are per node and requests are
 not forwarded; a different node may return 404. History is lost on node restart.
@@ -57,8 +58,12 @@ func newQueriesActiveCmd() *cobra.Command {
 		Long: `List active queries (GET /api/v1/queries/active).
 
 Output includes the query id, status, token, client address, start time,
-duration, SQL, and forwarded-to node. Target the node that runs the query.
-Rows are sorted by start time, oldest first. Supports table, JSON, and CSV output.`,
+duration, SQL, and forwarded-to node (Arc 26.09.4 does not report the
+forwarded-to node for active queries; history and show do). Target the node
+that runs the query. Rows are sorted by start time, oldest first. Arc itself
+cuts active-query SQL to 200 bytes; the table shortens it further to 120
+characters, while CSV and JSON keep it as Arc returns it ("arcli admin query
+show" has the full SQL). Supports table, JSON, and CSV output.`,
 		Example: `  arcli admin query active
   arcli admin query active -o json
   arcli admin query active -o csv`,
