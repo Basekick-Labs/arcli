@@ -39,7 +39,7 @@ disabled and exits 0; the other subcommands exit 1 with the server's
 reason. Node removal requires an admin token and must be sent to the
 raft leader.`,
 	}
-	c.AddCommand(newClusterStatusCmd(), newClusterNodesCmd(), newClusterNodeCmd(), newClusterHealthCmd())
+	c.AddCommand(newClusterStatusCmd(), newClusterFilesCmd(), newClusterNodesCmd(), newClusterNodeCmd(), newClusterHealthCmd())
 	return c
 }
 
@@ -117,6 +117,122 @@ unchanged in both cases; check "enabled" to branch in scripts.`,
 	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
 	return c
+}
+
+func newClusterFilesCmd() *cobra.Command {
+	var (
+		f            connFlags
+		outputFormat string
+		database     string
+		cursor       string
+		limit        int
+		noHeader     bool
+		to           timeOutput
+	)
+	c := &cobra.Command{
+		Use:   "file",
+		Short: "Page through the cluster file manifest",
+		Long: `List one bounded page from the cluster file manifest (GET /api/v1/cluster/files).
+
+Each request is paginated; use --cursor with the previous page's next_cursor
+to continue. The server response must include next_cursor; older Arc versions
+without pagination support are rejected instead of treating a full manifest
+as one page. JSON preserves files, total, and next_cursor. CSV writes the
+page count and continuation cursor to stderr so stdout remains valid CSV.
+Table and CSV timestamps are UTC RFC3339 by default; --time-output
+rfc3339nano shows fractional seconds. JSON keeps the server's values.
+CSV preserves original field values. Use --no-header to omit column headers.`,
+		Example: `  arcli cluster file
+  arcli cluster file --database metrics --limit 500 -o json
+  arcli cluster file --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !validListFormat(outputFormat) {
+				return fmt.Errorf("invalid --output %q (valid: table, json, csv)", outputFormat)
+			}
+			if err := client.ValidateClusterFilesArgs(database, cursor, limit); err != nil {
+				return err
+			}
+			cli, _, err := f.client(cmd)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := f.ctx(cmd)
+			defer cancel()
+			page, err := cli.ClusterFiles(ctx, database, cursor, limit)
+			if err != nil {
+				return err
+			}
+			if outputFormat == output.FormatJSON {
+				return writeRawJSON(cmd.OutOrStdout(), page.Raw)
+			}
+			if err := renderClusterFiles(cmd.OutOrStdout(), page.Files, noHeader, outputFormat == output.FormatCSV, to); err != nil {
+				return err
+			}
+			w := cmd.OutOrStdout()
+			if outputFormat == output.FormatCSV {
+				w = cmd.ErrOrStderr()
+			}
+			if _, err := fmt.Fprintf(w, "files on this page: %d\n", page.Total); err != nil {
+				return err
+			}
+			if page.NextCursor != "" {
+				_, err := fmt.Fprintf(w, "next cursor: %s\n", clean(page.NextCursor))
+				return err
+			}
+			return nil
+		},
+	}
+	f.add(c)
+	to.add(c)
+	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json|csv")
+	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
+	c.Flags().StringVar(&database, "database", "", "filter by database")
+	c.Flags().IntVar(&limit, "limit", client.ClusterFilesDefaultLimit, "maximum files in this page (1-10000)")
+	c.Flags().StringVar(&cursor, "cursor", "", "continue after a path returned as next_cursor")
+	return c
+}
+
+var clusterFileTableHeaders = []string{"PATH", "DATABASE", "MEASUREMENT", "TIER", "SIZE", "PARTITION TIME", "ORIGIN NODE", "SHA256"}
+
+var clusterFileCSVHeaders = []string{"path", "database", "measurement", "tier", "size_bytes", "sha256", "partition_time", "origin_node_id", "created_at", "lsn", "cov2_inherited", "compaction_job"}
+
+// renderClusterFiles preserves the server's manifest order, which is also
+// the order used by its path-based continuation cursor.
+func renderClusterFiles(w io.Writer, files []client.ClusterFile, noHeader, asCSV bool, to timeOutput) error {
+	if asCSV {
+		cw := csv.NewWriter(w)
+		if !noHeader {
+			if err := cw.Write(clusterFileCSVHeaders); err != nil {
+				return err
+			}
+		}
+		for _, file := range files {
+			row := []string{
+				file.Path, file.Database, file.Measurement, file.Tier,
+				strconv.FormatInt(file.SizeBytes, 10), file.SHA256, to.Val(file.PartitionTime, ""),
+				file.OriginNodeID, to.Val(file.CreatedAt, ""), strconv.FormatUint(file.LSN, 10),
+				strconv.FormatBool(file.CoverageInherited), file.CompactionJob,
+			}
+			if err := cw.Write(row); err != nil {
+				return err
+			}
+		}
+		cw.Flush()
+		return cw.Error()
+	}
+	rows := make([][]string, 0, len(files))
+	for _, file := range files {
+		rows = append(rows, []string{
+			clean(file.Path), clean(file.Database), clean(file.Measurement), clean(file.Tier), humanBytes(file.SizeBytes),
+			to.Val(file.PartitionTime, "-"), clean(file.OriginNodeID), clean(file.SHA256),
+		})
+	}
+	headers := clusterFileTableHeaders
+	if noHeader {
+		headers = nil
+	}
+	return output.Table(w, headers, rows)
 }
 
 // ---- nodes -----------------------------------------------------------------

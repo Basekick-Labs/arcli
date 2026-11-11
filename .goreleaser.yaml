@@ -106,6 +106,14 @@ nfpms:
     rpm:
       summary: CLI for Arc time-series databases
       group: Applications/Databases
+      # rpm 6.1 (Fedora 45) refuses an unsigned package by default. Signed
+      # with the Basekick Labs package key (packaging/RPM-GPG-KEY-basekick,
+      # shared with Arc); the release workflow writes the key from the
+      # RPM_SIGNING_KEY secret and passes NFPM_PASSPHRASE, and refuses to
+      # run without the secret, so an unsigned RPM cannot be released. CI's
+      # snapshot sets the variable empty and skips signing.
+      signature:
+        key_file: "{{ .Env.RPM_SIGNING_KEY_FILE }}"
     contents:
       - src: .gen/completions/arcli.bash
         dst: /usr/share/bash-completion/completions/arcli
@@ -247,6 +255,8 @@ release:
   replace_existing_artifacts: true
   preflight:
     fail_on_error: true
+  extra_files:
+    - glob: packaging/RPM-GPG-KEY-basekick
   footer: |
     ---
     ### Install
@@ -259,7 +269,7 @@ release:
     {{- else }}
     | Homebrew | `brew install basekick-labs/tap/arcli` |
     | Debian / Ubuntu | `sudo dpkg -i arcli_{{ .Version }}_amd64.deb` (or `_arm64.deb`) |
-    | RHEL / Fedora | `sudo rpm -i arcli-{{ .Version }}-1.x86_64.rpm` (or `.aarch64.rpm`) |
+    | RHEL / Fedora | `sudo rpm --import https://github.com/Basekick-Labs/arcli/releases/download/{{ .Tag }}/RPM-GPG-KEY-basekick` then `sudo dnf install -y ./arcli-{{ .Version }}-1.x86_64.rpm` (or `.aarch64.rpm`) |
     | Arch | `sudo pacman -U arcli-{{ .Version }}-1-x86_64.pkg.tar.zst` (or `-aarch64`) |
     {{- end }}
     | Docker | `docker run --rm ghcr.io/basekick-labs/arcli:{{ .Version }} --version` |
