@@ -190,7 +190,7 @@ func TestBackup_StatusIdleAndRestoreBody(t *testing.T) {
 		case r.URL.Path == "/api/v1/backup/restore":
 			_ = json.NewDecoder(r.Body).Decode(&raw)
 			w.WriteHeader(202)
-			_, _ = w.Write([]byte(`{"backup_id":"backup-20260907-201105-a0f5e600","message":"Restore started","status":"running","restart_required":true,"staged":true}`))
+			_, _ = w.Write([]byte(`{"backup_id":"backup-20260907-201105-a0f5e600","message":"Restore started","status":"running","mode":"replace","restart_required":true,"staged":true}`))
 		}
 	})
 	ctx := context.Background()
@@ -200,7 +200,7 @@ func TestBackup_StatusIdleAndRestoreBody(t *testing.T) {
 	}
 	f := false
 	res, err := cli.RestoreBackup(ctx, "backup-20260907-201105-a0f5e600", RestoreOptions{RestoreMetadata: &f, RestoreConfig: &f})
-	if err != nil || !res.RestartRequired || !res.Staged {
+	if err != nil || !res.RestartRequired || !res.Staged || res.Mode != "replace" {
 		t.Errorf("res=%+v err=%v", res, err)
 	}
 	if raw["confirm"] != true || raw["restore_metadata"] != false || raw["restore_config"] != false {
@@ -208,6 +208,14 @@ func TestBackup_StatusIdleAndRestoreBody(t *testing.T) {
 	}
 	if _, has := raw["restore_data"]; has {
 		t.Error("nil restore_data must be omitted")
+	}
+	if _, has := raw["mode"]; has {
+		t.Error("nil mode must be omitted so the server can apply its default")
+	}
+	mode := "replace"
+	res, err = cli.RestoreBackup(ctx, "backup-20260907-201105-a0f5e600", RestoreOptions{Mode: &mode})
+	if err != nil || res.Mode != "replace" || raw["mode"] != "replace" {
+		t.Errorf("explicit mode: request=%v response=%+v err=%v", raw, res, err)
 	}
 }
 

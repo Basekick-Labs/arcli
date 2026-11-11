@@ -1,0 +1,461 @@
+package commands
+
+import (
+	"encoding/csv"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestTieringFilesFormatsAndFilters(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/tiering/files" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		queries = append(queries, r.URL.RawQuery)
+		_, _ = w.Write([]byte(`{"files":[{"id":1,"path":"metrics/cpu/1.parquet","database":"metrics","measurement":"cpu","partition_time":"2026-10-31T00:00:00Z","tier":"cold","size_bytes":1024,"created_at":"2026-10-31T00:00:00Z"}],"count":1}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+
+	for _, tc := range []struct {
+		format  string
+		filters []string
+		want    string
+	}{
+		{"table", []string{"--tier", "cold"}, "PATH"},
+		{"csv", []string{"--database", "metrics"}, "path,database,measurement,tier,size_bytes"},
+	} {
+		args := append([]string{"tiering", "file"}, tc.filters...)
+		args = append(args, "--limit", "2", "--output", tc.format)
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+		if err != nil || !strings.Contains(out, tc.want) || !strings.Contains(out, "metrics/cpu/1.parquet") {
+			t.Errorf("%s output=%q err=%v", tc.format, out, err)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "--output", "json", "--limit", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got["count"] != float64(1) {
+		t.Fatalf("json = %q err=%v", out, err)
+	}
+	for _, query := range queries {
+		if !strings.Contains(query, "limit=2") {
+			t.Errorf("query = %q", query)
+		}
+	}
+	if !strings.Contains(queries[0], "tier=cold") || !strings.Contains(queries[1], "database=metrics") || queries[2] != "limit=2" {
+		t.Errorf("queries = %v", queries)
+	}
+}
+
+func TestTieringObjectCommandsRenderEndpointResponses(t *testing.T) {
+	paths := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths[r.URL.Path]++
+		switch r.URL.Path {
+		case "/api/v1/tiering/status":
+			_, _ = w.Write([]byte(`{"enabled":true,"license_valid":true,"quarantined_files":1,"tiers":{"hot":{"tier":"hot","enabled":true,"backend":"local","file_count":4,"total_size_mb":2}},"last_scan":{"files_scanned":4,"truncated":false},"future":true}`))
+		case "/api/v1/tiering/stats":
+			_, _ = w.Write([]byte(`{"tier_stats":{"cold":{"tier":"cold","enabled":true,"backend":"s3","file_count":2,"total_size_mb":9}},"recent_migrations":[{"id":3,"file_path":"metrics/cpu/a.parquet","database":"metrics","from_tier":"hot","to_tier":"cold","size_bytes":2048,"started_at":"2026-10-31T00:00:00Z"}]}`))
+		case "/api/v1/tiering/migrate":
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode migrate request: %v", err)
+			}
+			if req["database"] != "metrics" || req["measurement"] != "cpu" || req["dry_run"] != true {
+				t.Errorf("migrate request = %v", req)
+			}
+			_, _ = w.Write([]byte(`{"status":"dry_run","would_migrate":2,"total_bytes":2048,"from_tier":"hot","to_tier":"cold"}`))
+		case "/api/v1/tiering/scan":
+			_, _ = w.Write([]byte(`{"files_scanned":6,"files_registered":5,"files_skipped":1,"errors":0,"cold_synced":2,"hot_retired":1,"hot_rows_written":3,"truncated":false}`))
+		case "/api/v1/tiering/policies/":
+			_, _ = w.Write([]byte(`{"policies":[{"id":8,"database":"metrics","hot_only":false,"hot_max_age_days":30,"created_at":"2026-10-31T00:00:00Z","updated_at":"2026-10-31T00:00:00Z"}],"count":1}`))
+		case "/api/v1/tiering/policies/metrics":
+			_, _ = w.Write([]byte(`{"id":8,"database":"metrics","hot_only":false,"hot_max_age_days":30,"created_at":"2026-10-31T00:00:00Z","updated_at":"2026-10-31T00:00:00Z"}`))
+		case "/api/v1/tiering/policies/metrics/effective":
+			_, _ = w.Write([]byte(`{"database":"metrics","hot_only":false,"hot_max_age_days":14,"source":"global"}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+
+	checks := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"tiering", "status"}, "quarantined files"},
+		{[]string{"tiering", "status", "--output", "json"}, `"future": true`},
+		{[]string{"tiering", "stats"}, "metrics/cpu/a.parquet"},
+		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run", "--yes"}, "would migrate"},
+		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run", "--yes", "--output", "json"}, `"would_migrate": 2`},
+		{[]string{"tiering", "scan"}, "files scanned"},
+		{[]string{"tiering", "policy", "list", "--output", "csv"}, "database,hot_only,hot_max_age_days"},
+		{[]string{"tiering", "policy", "list", "--output", "json"}, `"count": 1`},
+		{[]string{"tiering", "policy", "show", "metrics"}, "hot max age days"},
+		{[]string{"tiering", "policy", "show", "metrics", "--output", "json"}, `"hot_max_age_days": 30`},
+		{[]string{"tiering", "policy", "effective", "metrics"}, "source"},
+	}
+	for _, tc := range checks {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), tc.args...)
+		if err != nil || !strings.Contains(out, tc.want) {
+			t.Errorf("%v output=%q err=%v, want %q", tc.args, out, err, tc.want)
+		}
+	}
+	for _, path := range []string{
+		"/api/v1/tiering/status", "/api/v1/tiering/stats", "/api/v1/tiering/migrate",
+		"/api/v1/tiering/scan", "/api/v1/tiering/policies/", "/api/v1/tiering/policies/metrics",
+		"/api/v1/tiering/policies/metrics/effective",
+	} {
+		if paths[path] == 0 {
+			t.Errorf("endpoint not exercised: %s", path)
+		}
+	}
+}
+
+func TestTieringPolicySetValidatesAgeAndDeletePrompts(t *testing.T) {
+	var deletes int
+	var putBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/tiering/policies/metrics" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodPut:
+			if err := json.NewDecoder(r.Body).Decode(&putBody); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"message":"Policy updated successfully","database":"metrics","policy":{"id":7,"database":"metrics","hot_only":true,"hot_max_age_days":0}}`))
+		case http.MethodDelete:
+			deletes++
+			_, _ = w.Write([]byte(`{"message":"Policy deleted, database now uses global defaults","database":"metrics"}`))
+		default:
+			t.Errorf("method = %s", r.Method)
+		}
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+
+	_, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics", "--hot-max-age-days", "-1")
+	if err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("negative age error = %v", err)
+	}
+	if deletes != 0 || putBody != nil {
+		t.Fatalf("invalid policy input reached server: put=%v deletes=%d", putBody, deletes)
+	}
+
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics", "--hot-only", "--hot-max-age-days", "0", "--output", "json")
+	if err != nil || !strings.Contains(out, "Policy updated successfully") || putBody["hot_only"] != true || putBody["hot_max_age_days"] != float64(0) {
+		t.Fatalf("set output=%q body=%v err=%v", out, putBody, err)
+	}
+
+	root := NewRoot(BuildInfo{})
+	root.SetIn(confirmationInput(t, "decline"))
+	out, stderr, err := execCmd(t, root, "tiering", "policy", "delete", "metrics")
+	if err == nil || err.Error() != "aborted" || out != "" || !strings.Contains(stderr, `Delete the custom tiering policy for database "metrics"?`) || deletes != 0 {
+		t.Fatalf("declined delete: out=%q stderr=%q err=%v deletes=%d", out, stderr, err, deletes)
+	}
+
+	out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "delete", "metrics", "--yes", "--output", "json")
+	if err != nil || !strings.Contains(out, "global defaults") || deletes != 1 {
+		t.Fatalf("confirmed delete: out=%q err=%v deletes=%d", out, err, deletes)
+	}
+}
+
+func TestTieringPolicyDeleteRefusesNonInteractiveStdin(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"message":"deleted"}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	root := NewRoot(BuildInfo{})
+	root.SetIn(confirmationInput(t, "pipe"))
+	_, _, err := execCmd(t, root, "tiering", "policy", "delete", "metrics")
+	if err == nil || !strings.Contains(err.Error(), "stdin is not a terminal; pass --yes") || requests != 0 {
+		t.Fatalf("err=%v requests=%d", err, requests)
+	}
+}
+
+func TestTieringCommandsRegistered(t *testing.T) {
+	root := NewRoot(BuildInfo{Version: "test"})
+	for _, path := range [][]string{
+		{"tiering", "status"}, {"tiering", "file"}, {"tiering", "stats"},
+		{"tiering", "migrate"}, {"tiering", "scan"}, {"tiering", "policy", "list"},
+		{"tiering", "policy", "show"}, {"tiering", "policy", "set"},
+		{"tiering", "policy", "delete"}, {"tiering", "policy", "effective"},
+	} {
+		if _, _, err := root.Find(path); err != nil {
+			t.Errorf("missing command %v: %v", path, err)
+		}
+	}
+}
+
+func TestTieringFileCSVPreservesValuesAndTimestamps(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testTieringFileCSV(t, nil, "2026-10-31T07:04:56Z") })
+	t.Run("rfc3339nano", func(t *testing.T) {
+		testTieringFileCSV(t, []string{"--time-output", "rfc3339nano"}, "2026-10-31T07:04:56.123456789Z")
+	})
+}
+
+func testTieringFileCSV(t *testing.T, extra []string, utc string) {
+	stamp := "2026-10-31T12:34:56.123456789+05:30"
+	raw := `{"files":[{"path":"a,\"b\"\n\t\u001b[31m","database":" db ","measurement":"cpu\tload","tier":"cold","size_bytes":1024,"partition_time":"` + stamp + `","created_at":"` + stamp + `","migrated_at":"` + stamp + `","quarantined_at":"` + stamp + `","quarantine_reason":""}],"count":1,"future":9007199254740993}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, noHeader := range []bool{false, true} {
+		args := append([]string{"tiering", "file", "--output", "csv"}, extra...)
+		if noHeader {
+			args = append(args, "--no-header")
+		}
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !noHeader {
+			want := []string{"path", "database", "measurement", "tier", "size_bytes", "partition_time", "created_at", "migrated_at", "quarantined_at", "quarantine_reason"}
+			if !reflect.DeepEqual(records[0], want) {
+				t.Fatalf("headers=%q", records[0])
+			}
+			records = records[1:]
+		}
+		want := []string{"a,\"b\"\n\t\x1b[31m", " db ", "cpu\tload", "cold", "1024", utc, utc, utc, utc, ""}
+		if len(records) != 1 || !reflect.DeepEqual(records[0], want) {
+			t.Fatalf("CSV=%q want=%q", records, want)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "file"}, extra...)...)
+	if err != nil || !strings.Contains(out, utc) || strings.Contains(out, "\x1b") || (extra == nil && strings.Contains(out, ".123")) {
+		t.Fatalf("table=%q err=%v", out, err)
+	}
+	out, _, err = execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "file", "--output", "json"}, extra...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	dec := json.NewDecoder(strings.NewReader(out))
+	dec.UseNumber()
+	if err := dec.Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	dec = json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("JSON changed: %s", out)
+	}
+}
+
+func TestTieringPolicyCSVPreservesValuesAndTimestamps(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testTieringPolicyCSV(t, nil, "2026-10-31T05:33:04Z") })
+	t.Run("rfc3339nano", func(t *testing.T) {
+		testTieringPolicyCSV(t, []string{"--time-output", "rfc3339nano"}, "2026-10-31T05:33:04.123456789Z")
+	})
+}
+
+func testTieringPolicyCSV(t *testing.T, extra []string, utc string) {
+	raw := `{"policies":[{"database":" db,\"x\"\n\t\u001b[31m ","hot_only":false,"created_at":"2026-10-31T02:03:04.123456789-03:30","updated_at":"2026-10-31T02:03:04.123456789-03:30"}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, noHeader := range []bool{false, true} {
+		args := append([]string{"tiering", "policy", "list", "--output", "csv"}, extra...)
+		if noHeader {
+			args = append(args, "--no-header")
+		}
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !noHeader {
+			if !reflect.DeepEqual(rows[0], []string{"database", "hot_only", "hot_max_age_days", "created_at", "updated_at"}) {
+				t.Fatalf("headers=%q", rows[0])
+			}
+			rows = rows[1:]
+		}
+		want := []string{" db,\"x\"\n\t\x1b[31m ", "false", "", utc, utc}
+		if len(rows) != 1 || !reflect.DeepEqual(rows[0], want) {
+			t.Fatalf("CSV=%q", rows)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "policy", "list"}, extra...)...)
+	if err != nil || !strings.Contains(out, utc) || strings.Contains(out, "\x1b") || (extra == nil && strings.Contains(out, ".123")) {
+		t.Fatalf("table=%q err=%v", out, err)
+	}
+}
+
+func TestTieringSingularFileHelp(t *testing.T) {
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "--help")
+	if err != nil || !strings.Contains(out, "arcli tiering file") {
+		t.Fatalf("help=%q err=%v", out, err)
+	}
+	cmd, _, _ := NewRoot(BuildInfo{}).Find([]string{"tiering", "files"})
+	if cmd != nil && cmd.Name() == "files" {
+		t.Fatal("plural files command still registered")
+	}
+}
+
+// Unset or zero timestamps are empty in CSV and "-" in the table.
+func TestTieringFileZeroTimestamps(t *testing.T) {
+	raw := `{"files":[{"path":"p","database":"db","measurement":"m","tier":"hot","size_bytes":1,"partition_time":"0001-01-01T00:00:00Z","created_at":"","migrated_at":null}],"count":1}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(raw)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "-o", "csv", "--no-header")
+	if err != nil || out != "p,db,m,hot,1,,,,,\n" {
+		t.Fatalf("CSV=%q err=%v", out, err)
+	}
+	out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "file")
+	if err != nil || strings.Contains(out, "0001") || strings.Count(out, " - ") < 5 {
+		t.Fatalf("table=%q err=%v", out, err)
+	}
+}
+
+func TestTieringReviewSafeOutputAndSortedStats(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/tiering/stats":
+			_, _ = w.Write([]byte(`{"tier_stats":{"hot":{"file_count":2},"cold":{"file_count":1}},"recent_migrations":[{"error":"https://h/p?sig=SECRET"}]}`))
+		case "/api/v1/tiering/files":
+			_, _ = w.Write([]byte(`{"files":[{"path":"p","quarantine_reason":"AccountKey=SECRET"}],"count":1}`))
+		case "/api/v1/tiering/scan":
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"error":"scan failed sig=SECRET","result":{"files_scanned":7,"errors":1}}`))
+		case "/api/v1/tiering/status":
+			_, _ = w.Write([]byte(`{"enabled":true,"license_valid":true,"quarantined_files":0,"cold_metadata":{"authoritative":false,"reason":"no cold-tier metadata sync has recorded every cold object against this database yet"},"cold_missing_objects":{"lost":2,"hot_copy":0,"sample":["metrics/cpu/2026/10/02/cpu_20261002_000000_1_daily.parquet","metrics/cpu/2026/10/03/cpu_20261003_000000_1_daily.parquet"],"checked_at":"2026-11-11T22:48:40Z"}}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, format := range []string{"table", "json", "csv"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "-o", format)
+		if err != nil || strings.Contains(out, "SECRET") || !strings.Contains(out, "REDACTED") {
+			t.Fatalf("file %s: %s %v", format, out, err)
+		}
+	}
+	for _, format := range []string{"table", "json"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "stats", "-o", format)
+		if err != nil || strings.Contains(out, "SECRET") {
+			t.Fatalf("stats: %s %v", out, err)
+		}
+		if format == "table" && (strings.Contains(out, "ENABLED") || strings.Contains(out, "BACKEND") || strings.Index(out, "cold") > strings.Index(out, "hot")) {
+			t.Fatalf("stats columns/order: %s", out)
+		}
+		out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "scan", "-o", format)
+		if err == nil || strings.Contains(out+err.Error(), "SECRET") || !strings.Contains(out, "7") {
+			t.Fatalf("partial scan: %s %v", out, err)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "status")
+	if err != nil || !strings.Contains(out, "cold metadata authoritative: false") || !strings.Contains(out, "cold missing objects lost: 2") ||
+		!strings.Contains(out, "cold missing objects sample: metrics/cpu/2026/10/02/cpu_20261002_000000_1_daily.parquet, metrics/cpu/2026/10/03/cpu_20261003_000000_1_daily.parquet") || strings.Contains(out, `["`) {
+		t.Fatalf("status: %s %v", out, err)
+	}
+}
+
+func TestTieringReviewPolicySetRequiresExplicitFlags(t *testing.T) {
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics")
+	if err == nil || !strings.Contains(err.Error(), "omitted policy fields are reset") {
+		t.Fatalf("%s %v", out, err)
+	}
+	c := newTieringPolicySetCmd()
+	if !strings.Contains(c.Long, "resets to false") {
+		t.Fatal("replacement semantics absent from help")
+	}
+}
+
+func TestTieringReviewTimeoutGuidance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, args := range [][]string{{"migrate", "--yes"}, {"scan"}} {
+		op := args[0]
+		_, stderr, err := execCmd(t, NewRoot(BuildInfo{}), append(append([]string{"tiering"}, args...), "--timeout", "1ms")...)
+		if err == nil || !strings.Contains(stderr, "continues server-side") {
+			t.Fatalf("%s: stderr=%s err=%v", op, stderr, err)
+		}
+	}
+}
+
+func TestTieringReviewPolicyHelpAndColdFilesNote(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":"No custom policy for this database","message":"Using global defaults"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"message":"Policy updated successfully","database":"metrics","policy":{"id":0,"database":"metrics","hot_only":true,"hot_max_age_days":null,"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"},"cold_files":{"note":"hot_only affects future tiering only; it does not restore existing cold files.","recorded_before_update":3,"scope":"node_local_metadata"}}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	_, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "show", "metrics")
+	if err == nil || !strings.Contains(err.Error(), "policy effective metrics") {
+		t.Fatalf("missing effective guidance: %v", err)
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics", "--hot-only")
+	if err != nil || !strings.Contains(out, "cold files note: hot_only affects future tiering only; it does not restore existing cold files.") || !strings.Contains(out, "cold files recorded before update: 3") || strings.Contains(out, `{"note"`) {
+		t.Fatalf("cold files: %s %v", out, err)
+	}
+}
+
+// Arc 26.09 ignores dry_run and the filters, runs a full cycle and answers
+// {"message","status":"completed"}; arcli must say so on stderr, still print
+// the response, and exit non-zero.
+func TestTieringMigrateWarnsWhenServerIgnoresRequest(t *testing.T) {
+	const legacy = `{"message":"Migration completed successfully","status":"completed"}`
+	for _, tc := range []struct {
+		name, body, wantWarn, wantErr string
+		args                          []string
+	}{
+		{"dry-run ignored", legacy, "ignored --dry-run", "instead of the requested dry run", []string{"--database", "metrics", "--dry-run", "--yes"}},
+		{"filters ignored", legacy, "ignore --database and --measurement", "--database and --measurement were not applied", []string{"--database", "metrics", "--yes"}},
+		{"current dry run", `{"status":"dry_run","would_migrate":0,"total_bytes":0,"from_tier":"hot","to_tier":"cold"}`, "", "", []string{"--database", "metrics", "--dry-run", "--yes"}},
+		{"current filtered", `{"message":"Migration completed successfully","status":"completed","migrated":3,"errors":0}`, "", "", []string{"--database", "metrics", "--yes"}},
+		{"legacy unfiltered", legacy, "", "", []string{"--yes"}},
+	} {
+		for _, format := range []string{"table", "json"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+				defer srv.Close()
+				writeTestConfig(t, srv.URL, "tok")
+				out, stderr, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "migrate", "-o", format}, tc.args...)...)
+				if !strings.Contains(out, "status") {
+					t.Fatalf("response not printed: out=%q", out)
+				}
+				if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				if tc.wantWarn == "" && stderr != "" || tc.wantWarn != "" && !strings.Contains(stderr, tc.wantWarn) {
+					t.Fatalf("stderr = %q, want %q", stderr, tc.wantWarn)
+				}
+			})
+		}
+	}
+}
