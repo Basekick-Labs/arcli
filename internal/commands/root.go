@@ -96,6 +96,7 @@ First-time setup:
 		newAuditCmd(),
 		newSampleCmd(),
 		newMQTTCmd(),
+		newTieringCmd(),
 	)
 	installCompletions(root)
 	return root

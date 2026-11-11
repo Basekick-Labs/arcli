@@ -141,6 +141,9 @@ arcli governance usage batch
 arcli retention list
 arcli mqtt health
 arcli mqtt subscription list
+arcli tiering status
+arcli tiering file --tier cold --limit 100 --output csv
+arcli tiering policy list
 arcli backup create --wait
 arcli logs --level warn --since 6h
 arcli admin query active
@@ -197,11 +200,17 @@ subscription status is `error`, after displaying the created subscription.
 
 RBAC table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON retains available timestamp precision.
 
+Tiering commands require an administrator token and an Enterprise licence with tiering enabled. File listings are limited to 100 entries by default; Arc 26.09 and earlier ignore --tier with --database, so arcli rejects that combination for compatibility. There is no offset or cursor. `--limit 0` returns an empty page. In `tiering file -o json`, `count` is the number of files returned (at most `--limit`), not the total number of indexed files. Policy deletion and every form of `tiering migrate`, including `--dry-run`, prompt for confirmation unless `--yes` is passed; without `--yes` they refuse a non-interactive stdin. Arc 26.09 and earlier ignore `tiering migrate --dry-run`, `--database` and `--measurement` and run a real, full, unfiltered migration cycle over every eligible file, so the prompt for those forms says so. arcli cannot detect the server version beforehand; when the response shows that a full cycle ran instead, it prints a warning on stderr and exits non-zero.
+
+Tiering status, files, statistics and scans are per node. Run migrations against the primary writer; reader conflicts retain the server's retry guidance. A timeout or interrupt stops the CLI waiting but migration or scanning continues server-side; inspect status before retrying. Failed scans print available partial results and still exit nonzero.
+
+`tiering policy set` is a full replacement and requires at least one policy flag. Omitted `--hot-only` resets to false (allowing cold migration); omitted `--hot-max-age-days` resets to the global default. Pass both flags to preserve an existing setting while changing the other. `policy show` reads only a custom policy; use `policy effective` to see inherited defaults.
+
 `cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
 
 Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV writes sizes in bytes and string fields verbatim (no control-character cleaning, unlike the table); JSON preserves the original response, including pagination.
 
-The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
+The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, compaction, and tiered storage. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
 
 `scheduler cq reload` refreshes all active continuous queries in the scheduler; use `cq execute` to run one query immediately. `scheduler retention trigger` runs every active retention policy and may permanently delete old data, so it prompts for confirmation; pass `--yes` for scripted use. Use `retention execute <id|name>` to run one selected policy. Scheduler errors preserve Arc's status and message; the codes depend on the Arc version. Arc 26.09 and earlier answer 503 `... is not running - enterprise license required` whenever the scheduler is not running, and 500 when a node other than the primary writer is asked to trigger retention, a run is already in progress, or a policy fails. On those versions, if the license lapses after startup, the trigger answers 200 without running anything, so a 200 does not prove a run happened. Newer Arc answers 403 when the license is missing, lacks the feature or was revoked; 503 when the scheduler is disabled or failed to start; 409 for the role or already-running cases; and 500 when a policy fails. Arc runs every policy even when one fails, so an error does not mean nothing was deleted. The retention trigger runs every policy before Arc answers: if arcli stops waiting, the run may still be going server-side (`retention executions <id|name>` shows each policy's result). Each node keeps its own CQ jobs and only the primary writer runs them, so reload the primary writer (and any node that may take over).
 
@@ -224,6 +233,8 @@ RBAC access safety:
 - Arc refuses an organization or team delete with HTTP 409 when the cascade exceeds `cluster.rbac.max_cascade_descendants` (default 50000).
 - An organization's `--enabled=false` does not revoke access (Arc 26.09.4 and current main); disable the team instead. Adding an admin token to a team does not restrict it.
 - A role with `--permission admin` grants read, write and delete on the databases its pattern matches (every database for `*`); it does not grant cluster or token administration. `--permission` accepts repeated or comma-separated values (`--permission read,write`).
+
+Tiering file and policy CSV output preserves original values with lowercase snake_case headers. Table and CSV timestamps use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Unset timestamps are empty in CSV. JSON retains the original response, including null arrays, except that backend credentials in diagnostics are redacted. A missing route preserves the HTTP status and server message and does not imply that tiering is disabled.
 
 ## Output and automation
 
