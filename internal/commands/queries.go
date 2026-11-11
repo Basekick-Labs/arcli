@@ -3,9 +3,14 @@ package commands
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -23,8 +28,11 @@ func newQueriesCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "query",
 		Short: "Inspect and manage running and completed queries (Arc Enterprise)",
-		Long: `Inspect and manage Arc query activity. These endpoints require an admin
-token and an Arc Enterprise licence with the query_management feature enabled.
+		Long: `Inspect and manage Arc query activity. These endpoints require an Arc Enterprise licence with the query_management
+feature enabled, and an admin token when authentication is enabled.
+
+Target the node that runs the query. Registries are per node and requests are
+not forwarded; a different node may return 404. History is lost on node restart.
 
 Table and CSV timestamps are UTC RFC3339 by default; --time-output
 rfc3339nano shows fractional seconds. JSON preserves the original response.
@@ -49,7 +57,8 @@ func newQueriesActiveCmd() *cobra.Command {
 		Long: `List active queries (GET /api/v1/queries/active).
 
 Output includes the query id, status, token, client address, start time,
-duration, and SQL. Supports table, JSON, and CSV output.`,
+duration, SQL, and forwarded-to node. Target the node that runs the query.
+Rows are sorted by start time, oldest first. Supports table, JSON, and CSV output.`,
 		Example: `  arcli admin query active
   arcli admin query active -o json
   arcli admin query active -o csv`,
@@ -92,7 +101,9 @@ func newQueriesHistoryCmd() *cobra.Command {
 		Long: `List recently completed queries (GET /api/v1/queries/history).
 
 Arc returns the most recent 50 queries by default. Use --limit to request
-between 1 and 1000 entries. Supports table, JSON, and CSV output.`,
+between 1 and 1000 entries, limited by query_management.history_size (100 by
+default) and the queries retained since the node started. Target the node that
+runs the query. Supports table, JSON, and CSV output.`,
 		Example: `  arcli admin query history
   arcli admin query history --limit 200 -o csv`,
 		Args: cobra.NoArgs,
@@ -137,8 +148,8 @@ func newQueriesShowCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:     "show <query-id>",
 		Short:   "Show query details",
-		Long:    "Show full metadata for a query (GET /api/v1/queries/:id). Supports table and JSON output.",
-		Example: "  arcli admin query show 8f14e45fceea -o json",
+		Long:    "Show full metadata for a query (GET /api/v1/queries/:id). Target the node that runs the query. Supports table and JSON output.",
+		Example: "  arcli admin query show 6bce82c4-244 -o json",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -178,8 +189,8 @@ func newQueriesCancelCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:     "cancel <query-id>",
 		Short:   "Cancel an active query",
-		Long:    "Cancel an active query (DELETE /api/v1/queries/:id). Prompts before sending the request unless --yes is supplied.",
-		Example: "  arcli admin query cancel 8f14e45fceea --yes",
+		Long:    "Cancel an active query (DELETE /api/v1/queries/:id). Target the node that runs the query. Prompts before sending the request unless --yes is supplied.",
+		Example: "  arcli admin query cancel 6bce82c4-244 --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -192,13 +203,17 @@ func newQueriesCancelCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Cancel query %q?", args[0]), yes); err != nil {
+			if err := confirmOrAbort(cmd, fmt.Sprintf("Cancel query %q on %s?", args[0], managedQueryEndpoint(cli.Endpoint())), yes); err != nil {
 				return err
 			}
 			ctx, cancel := f.ctx(cmd)
 			defer cancel()
 			res, err := cli.CancelManagedQuery(ctx, args[0])
 			if err != nil {
+				var httpErr *client.HTTPError
+				if errors.As(err, &httpErr) && httpErr.Status == http.StatusNotFound && strings.Contains(httpErr.Message, "Query not found") {
+					return fmt.Errorf("%w; target the node that runs the query; query registries are per node", err)
+				}
 				return err
 			}
 			if outputFormat == output.FormatJSON {
@@ -222,6 +237,15 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 	if format == output.FormatJSON {
 		return writeRawJSON(cmd.OutOrStdout(), list.Raw)
 	}
+	queries := append([]client.ManagedQuery(nil), list.Queries...)
+	if !history {
+		sort.SliceStable(queries, func(i, j int) bool {
+			if queries[i].StartTime.Equal(queries[j].StartTime) {
+				return queries[i].ID < queries[j].ID
+			}
+			return queries[i].StartTime.Before(queries[j].StartTime)
+		})
+	}
 	if format == output.FormatCSV {
 		w := csv.NewWriter(cmd.OutOrStdout())
 		headers := managedQueryCSVHeaders(history)
@@ -230,7 +254,7 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 				return err
 			}
 		}
-		for _, query := range list.Queries {
+		for _, query := range queries {
 			if err := w.Write(managedQueryListRow(query, history, false, to)); err != nil {
 				return err
 			}
@@ -251,7 +275,7 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 		headers = nil
 	}
 	rows := make([][]string, 0, len(list.Queries))
-	for _, query := range list.Queries {
+	for _, query := range queries {
 		rows = append(rows, managedQueryListRow(query, history, true, to))
 	}
 	return output.Table(cmd.OutOrStdout(), headers, rows)
@@ -259,9 +283,9 @@ func renderManagedQueryList(cmd *cobra.Command, list *client.QueryList, format s
 
 func managedQueryListHeaders(history bool) []string {
 	if history {
-		return []string{"ID", "STATUS", "TOKEN", "CLIENT", "STARTED", "ENDED", "DURATION MS", "ROWS", "SQL"}
+		return []string{"ID", "STATUS", "TOKEN", "CLIENT", "STARTED", "ENDED", "DURATION MS", "ROWS", "SQL", "FORWARDED TO"}
 	}
-	return []string{"ID", "STATUS", "TOKEN", "CLIENT", "STARTED", "DURATION MS", "SQL"}
+	return []string{"ID", "STATUS", "TOKEN", "CLIENT", "STARTED", "DURATION MS", "SQL", "FORWARDED TO"}
 }
 
 // managedQueryCSVHeaders names the CSV columns in lower snake_case after
@@ -269,9 +293,9 @@ func managedQueryListHeaders(history bool) []string {
 // single JSON field: it combines token_name and token_id.
 func managedQueryCSVHeaders(history bool) []string {
 	if history {
-		return []string{"id", "status", "token", "remote_addr", "start_time", "end_time", "duration_ms", "row_count", "sql"}
+		return []string{"id", "status", "token", "remote_addr", "start_time", "end_time", "duration_ms", "row_count", "sql", "forwarded_to"}
 	}
-	return []string{"id", "status", "token", "remote_addr", "start_time", "duration_ms", "sql"}
+	return []string{"id", "status", "token", "remote_addr", "start_time", "duration_ms", "sql", "forwarded_to"}
 }
 
 // managedQueryListRow builds one table (terminal) or CSV row. An unset
@@ -281,15 +305,23 @@ func managedQueryListRow(query client.ManagedQuery, history, terminal bool, to t
 	if terminal {
 		none = "-"
 	}
+	token := managedQueryToken(query)
+	if !terminal && query.TokenName == "" && query.TokenID == 0 {
+		token = ""
+	}
+	sql := query.SQL
+	if terminal {
+		sql = managedQuerySQL(sql, 120)
+	}
 	row := []string{
-		query.ID, query.Status, managedQueryToken(query), query.RemoteAddr,
+		query.ID, query.Status, token, query.RemoteAddr,
 		to.Val(query.StartTime, none),
 	}
 	if history {
-		row = append(row, to.Ptr(query.EndTime, none), formatQueryDuration(query.DurationMs), strconv.Itoa(query.RowCount), query.SQL)
+		row = append(row, to.Ptr(query.EndTime, none), formatQueryDuration(query.DurationMs), strconv.Itoa(query.RowCount), sql, query.ForwardedTo)
 		return managedQueryCleanRow(row, terminal)
 	}
-	return managedQueryCleanRow(append(row, formatQueryDuration(query.DurationMs), query.SQL), terminal)
+	return managedQueryCleanRow(append(row, formatQueryDuration(query.DurationMs), sql, query.ForwardedTo), terminal)
 }
 
 func managedQueryToken(query client.ManagedQuery) string {
@@ -322,7 +354,8 @@ func renderManagedQuery(w io.Writer, query client.ManagedQuery, to timeOutput) e
 	rows := [][]string{
 		{"id", clean(query.ID)},
 		{"status", clean(query.Status)},
-		{"sql", clean(query.SQL)},
+		{"sql", managedQuerySQL(query.SQL, 0)},
+		{"forwarded to", cleanOrDash(query.ForwardedTo)},
 		{"token", clean(managedQueryToken(query))},
 		{"client", cleanOrDash(query.RemoteAddr)},
 		{"start time", to.Val(query.StartTime, "-")},
@@ -342,4 +375,22 @@ func cleanOrDash(s string) string {
 		return "-"
 	}
 	return clean(s)
+}
+
+// Strip credential-bearing URL components before naming the cancellation target.
+func managedQueryEndpoint(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "configured endpoint"
+	}
+	return clean(u.Scheme + "://" + u.Host)
+}
+
+func managedQuerySQL(sql string, limit int) string {
+	sql = clean(strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(sql))
+	runes := []rune(sql)
+	if limit > 0 && len(runes) > limit {
+		return string(runes[:limit-1]) + "…"
+	}
+	return sql
 }

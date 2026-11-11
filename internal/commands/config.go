@@ -138,6 +138,9 @@ func readTokenFromStdin(cmd *cobra.Command) (string, error) {
 		return "", fmt.Errorf("--token-stdin: stdin is a terminal; pipe the token in (e.g. `pass show arc | arcli config create --token-stdin ...`)")
 	}
 	line, err := bufio.NewReader(io.LimitReader(cmd.InOrStdin(), 4096)).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("--token-stdin: read token: %w", err)
+	}
 	if err != nil && line == "" {
 		return "", fmt.Errorf("--token-stdin: no token on stdin")
 	}

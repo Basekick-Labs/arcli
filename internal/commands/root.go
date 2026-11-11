@@ -89,6 +89,7 @@ First-time setup:
 		newBackupCmd(),
 		newLogsCmd(),
 		newAdminCmd(),
+		newAuditCmd(),
 		newSampleCmd(),
 	)
 	installCompletions(root)

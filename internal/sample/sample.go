@@ -221,11 +221,20 @@ func (m *Manifest) validate() error {
 				if strings.TrimSpace(p.Key) == "" {
 					return fmt.Errorf("%s: a part has an empty key", where)
 				}
+				// Part.Name is used as a local path component. Keep manifest
+				// keys in canonical URL-path form so backslashes cannot become
+				// filesystem separators on Windows, and traversal components
+				// cannot escape the download directory on any platform.
+				cleanKey := path.Clean(p.Key)
+				if strings.ContainsRune(p.Key, '\\') || path.IsAbs(p.Key) || cleanKey != p.Key ||
+					cleanKey == ".." || strings.HasPrefix(cleanKey, "../") {
+					return fmt.Errorf("%s: part key %q is not a clean relative path", where, p.Key)
+				}
 				if p.Bytes < 0 {
 					return fmt.Errorf("%s: part %s declares a negative size (%d)", where, p.Key, p.Bytes)
 				}
 				name := p.Name()
-				if name == "" || name == "." || name == "/" {
+				if name == "" || name == "." || name == ".." || name == "/" {
 					return fmt.Errorf("%s: part %q has no usable filename", where, p.Key)
 				}
 				if prev, dup := seen[name]; dup {

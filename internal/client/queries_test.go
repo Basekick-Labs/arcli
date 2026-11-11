@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const testQueryID = "8f14e45fceea"
+const testQueryID = "6bce82c4-244"
 
 func TestQueryManagementEndpoints(t *testing.T) {
 	var requests int
@@ -17,14 +17,14 @@ func TestQueryManagementEndpoints(t *testing.T) {
 		assertAuthHeaders(t, r)
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/queries/active":
-			_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"8f14e45fceea","sql":"SELECT 1","token_id":7,"token_name":"admin","remote_addr":"127.0.0.1","status":"running","start_time":"2026-10-27T10:00:00Z","duration_ms":12.5,"is_parallel":false}]}`))
+			_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"6bce82c4-244","sql":"SELECT 1","token_id":7,"token_name":"admin","remote_addr":"127.0.0.1","status":"running","start_time":"2026-10-27T10:00:00Z","duration_ms":12.5,"is_parallel":false}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/queries/history":
 			if got := r.URL.Query().Get("limit"); got != "" && got != "2" {
 				t.Errorf("history limit = %q", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"8f14e45fceea","sql":"SELECT 1","status":"completed","start_time":"2026-10-27T10:00:00Z","end_time":"2026-10-27T10:00:01Z","duration_ms":1000,"row_count":1,"row_cap":9,"is_parallel":false}]}`))
+			_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"6bce82c4-244","sql":"SELECT 1","status":"completed","start_time":"2026-10-27T10:00:00Z","end_time":"2026-10-27T10:00:01Z","duration_ms":1000,"row_count":1,"row_cap":9,"is_parallel":false}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/queries/"+testQueryID:
-			_, _ = w.Write([]byte(`{"success":true,"query":{"id":"8f14e45fceea","sql":"SELECT 1","status":"running","start_time":"2026-10-27T10:00:00Z","is_parallel":false},"extra":"preserved"}`))
+			_, _ = w.Write([]byte(`{"success":true,"query":{"id":"6bce82c4-244","sql":"SELECT 1","status":"running","start_time":"2026-10-27T10:00:00Z","is_parallel":false},"extra":"preserved"}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/queries/"+testQueryID:
 			_, _ = w.Write([]byte(`{"success":true,"message":"Query cancelled"}`))
 		default:
@@ -63,7 +63,7 @@ func TestQueryManagementValidationAndEmptyList(t *testing.T) {
 		requests++
 		_, _ = w.Write([]byte(`{"success":true,"count":0,"queries":null,"extra":"preserved"}`))
 	})
-	for _, id := range []string{"", "123", "8f14e45fceeg", "8F14E45FCEEA"} {
+	for _, id := range []string{"", ".", "..", "../query", "a/b", "a\\b", "a\n", strings.Repeat("a", 257)} {
 		if _, err := cli.GetManagedQuery(context.Background(), id); err == nil {
 			t.Errorf("invalid ID %q was accepted", id)
 		}
@@ -193,5 +193,13 @@ func TestQueryManagementNotFoundAndWrongEndpointHaveNoHint(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "did not register") || !strings.Contains(err.Error(), "does not answer like an Arc server") {
 		t.Fatalf("wrong endpoint got the hint: %v", err)
+	}
+}
+
+func TestQueryIDAcceptsOpaqueSafeIDs(t *testing.T) {
+	for _, id := range []string{"6bce82c4-244", "ad7a6883-ff4", "legacy012345", "UPPER-new", "opaque?query#fragment"} {
+		if err := ValidateQueryID(id); err != nil {
+			t.Errorf("%q: %v", id, err)
+		}
 	}
 }

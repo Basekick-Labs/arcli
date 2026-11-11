@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const commandTestQueryID = "8f14e45fceea"
+const commandTestQueryID = "6bce82c4-244"
 
 func fakeQueryManagementServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -20,20 +20,20 @@ func fakeQueryManagementServer(t *testing.T) *httptest.Server {
 		if r.Method != http.MethodGet {
 			t.Errorf("active method = %s", r.Method)
 		}
-		_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"8f14e45fceea","sql":"SELECT 1","token_id":7,"token_name":"admin","remote_addr":"127.0.0.1","status":"running","start_time":"2026-10-27T10:00:00Z","duration_ms":12.5,"is_parallel":false}]}`))
+		_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"6bce82c4-244","sql":"SELECT 1","token_id":7,"token_name":"admin","remote_addr":"127.0.0.1","status":"running","start_time":"2026-10-27T10:00:00Z","duration_ms":12.5,"is_parallel":false}]}`))
 	})
 	mux.HandleFunc("/api/v1/queries/history", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("limit"); got != "" && got != "2" {
 			t.Errorf("history limit = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"8f14e45fceea","sql":"SELECT 1","token_name":"admin","remote_addr":"127.0.0.1","status":"completed","start_time":"2026-10-27T10:00:00Z","end_time":"2026-10-27T10:00:01Z","duration_ms":1000,"row_count":1,"is_parallel":false}]}`))
+		_, _ = w.Write([]byte(`{"success":true,"count":1,"queries":[{"id":"6bce82c4-244","sql":"SELECT 1","token_name":"admin","remote_addr":"127.0.0.1","status":"completed","start_time":"2026-10-27T10:00:00Z","end_time":"2026-10-27T10:00:01Z","duration_ms":1000,"row_count":1,"is_parallel":false}]}`))
 	})
 	mux.HandleFunc("/api/v1/queries/"+commandTestQueryID, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			_, _ = w.Write([]byte(`{"success":true,"message":"Query cancelled"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"success":true,"query":{"id":"8f14e45fceea","sql":"SELECT 1","token_name":"admin","remote_addr":"127.0.0.1","status":"completed","start_time":"2026-10-27T10:00:00Z","end_time":"2026-10-27T10:00:01Z","duration_ms":1000,"row_count":1,"is_parallel":false}}`))
+		_, _ = w.Write([]byte(`{"success":true,"query":{"id":"6bce82c4-244","sql":"SELECT 1","token_name":"admin","remote_addr":"127.0.0.1","status":"completed","start_time":"2026-10-27T10:00:00Z","end_time":"2026-10-27T10:00:01Z","duration_ms":1000,"row_count":1,"is_parallel":false}}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -81,7 +81,7 @@ func TestQueriesCancelConfirmsAndSupportsYes(t *testing.T) {
 	c := newQueriesCancelCmd()
 	c.SetIn(strings.NewReader("n\n"))
 	_, stderr, err := execCmd(t, c, commandTestQueryID)
-	if err == nil || !strings.Contains(stderr, `Cancel query "`+commandTestQueryID+`"? [y/N]`) || requests != 0 {
+	if err == nil || !strings.Contains(stderr, `Cancel query "`+commandTestQueryID+`" on `+srv.URL+`? [y/N]`) || requests != 0 {
 		t.Fatalf("declined cancel: stderr=%q err=%v requests=%d", stderr, err, requests)
 	}
 	out, _, err := execCmd(t, newQueriesCancelCmd(), commandTestQueryID, "--yes")
@@ -96,8 +96,8 @@ func TestQueriesRejectInvalidInputsBeforeNetwork(t *testing.T) {
 		args    []string
 		want    string
 	}{
-		{newQueriesShowCmd, []string{"bad"}, "query id must be 12 hexadecimal characters"},
-		{newQueriesCancelCmd, []string{"bad", "--yes"}, "query id must be 12 hexadecimal characters"},
+		{newQueriesShowCmd, []string{"../bad"}, "invalid query id"},
+		{newQueriesCancelCmd, []string{"../bad", "--yes"}, "invalid query id"},
 		{newQueriesHistoryCmd, []string{"--limit", "1001"}, "--limit must be between 1 and 1000"},
 	}
 	for _, tc := range cases {
@@ -211,7 +211,7 @@ func TestManagedQueryPrecisionAndMultilineCSV(t *testing.T) {
 				}
 				if format == "csv" {
 					rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
-					if err != nil || len(rows) != 2 || rows[1][len(rows[1])-1] != sql {
+					if err != nil || len(rows) != 2 || rows[1][len(rows[1])-2] != sql {
 						t.Errorf("CSV changed SQL: %v %v", rows, err)
 					}
 				}
@@ -232,15 +232,15 @@ func TestManagedQueryPrecisionAndMultilineCSV(t *testing.T) {
 
 func TestManagedQueryCSVHeadersAndUnsetTimes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"count":1,"queries":[{"id":"8f14e45fceea","sql":"SELECT 1","status":"running","start_time":"0001-01-01T00:00:00Z","duration_ms":2}]}`))
+		_, _ = w.Write([]byte(`{"count":1,"queries":[{"id":"6bce82c4-244","sql":"SELECT 1","status":"running","start_time":"0001-01-01T00:00:00Z","duration_ms":2}]}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "admin")
 	for _, tc := range []struct {
 		action, header, row string
 	}{
-		{"active", "id,status,token,remote_addr,start_time,duration_ms,sql", commandTestQueryID + ",running,-,,,2,SELECT 1"},
-		{"history", "id,status,token,remote_addr,start_time,end_time,duration_ms,row_count,sql", commandTestQueryID + ",running,-,,,,2,0,SELECT 1"},
+		{"active", "id,status,token,remote_addr,start_time,duration_ms,sql,forwarded_to", commandTestQueryID + ",running,,,,2,SELECT 1,"},
+		{"history", "id,status,token,remote_addr,start_time,end_time,duration_ms,row_count,sql,forwarded_to", commandTestQueryID + ",running,,,,,2,0,SELECT 1,"},
 	} {
 		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "admin", "query", tc.action, "-o", "csv")
 		if err != nil || out != tc.header+"\n"+tc.row+"\n" {
@@ -250,5 +250,68 @@ func TestManagedQueryCSVHeadersAndUnsetTimes(t *testing.T) {
 		if err != nil || !strings.Contains(out, "STARTED") || !strings.Contains(out, "DURATION MS") {
 			t.Errorf("%s table headers changed: %q, err = %v", tc.action, out, err)
 		}
+	}
+}
+
+func TestManagedQueryRenderingRealFields(t *testing.T) {
+	const payload = `{"queries":[{"id":"newer","sql":"SELECT\nlong\tstatement","start_time":"2026-11-11T01:00:00Z","forwarded_to":"reader-1"},{"id":"older","sql":"SELECT 1","start_time":"2026-11-11T00:00:00Z"}],"count":2}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(payload)) }))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin")
+	for _, format := range []string{"table", "csv"} {
+		out, _, err := execCmd(t, newQueriesActiveCmd(), "-o", format)
+		if err != nil || !strings.Contains(out, "reader-1") || strings.Index(out, "older") > strings.Index(out, "newer") {
+			t.Fatalf("%s: %q %v", format, out, err)
+		}
+		if format == "table" && !strings.Contains(out, "SELECT long statement") {
+			t.Errorf("SQL words glued: %q", out)
+		}
+	}
+	out, _, err := execCmd(t, newQueriesActiveCmd(), "-o", "json")
+	if err != nil || strings.Index(out, "older") < strings.Index(out, "newer") {
+		t.Errorf("raw JSON reordered: %q %v", out, err)
+	}
+	if got := managedQuerySQL(strings.Repeat("世", 130), 120); len([]rune(got)) != 120 || !strings.HasSuffix(got, "…") {
+		t.Errorf("truncation: %q", got)
+	}
+	if got := managedQuerySQL(strings.Repeat("x", 200), 0); len(got) != 200 {
+		t.Errorf("show truncated: %q", got)
+	}
+}
+
+func TestQueryCancelNotFoundNodeHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Query not found"}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "admin")
+	_, _, err := execCmd(t, newQueriesCancelCmd(), commandTestQueryID, "--yes")
+	if err == nil || !strings.Contains(err.Error(), "target the node that runs the query") {
+		t.Fatalf("error: %v", err)
+	}
+}
+
+func TestQueryCancelConfirmationInputs(t *testing.T) {
+	for _, kind := range []string{"decline", "eof", "pipe", "file", "null", "accept"} {
+		t.Run(kind, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				_, _ = w.Write([]byte(`{"success":true,"message":"Query cancelled"}`))
+			}))
+			defer srv.Close()
+			writeTestConfig(t, srv.URL, "admin")
+			cmd := newQueriesCancelCmd()
+			cmd.SetIn(confirmationInput(t, kind))
+			_, _, err := execCmd(t, cmd, commandTestQueryID)
+			if kind == "accept" {
+				if err != nil || requests != 1 {
+					t.Fatalf("%v requests=%d", err, requests)
+				}
+			} else if err == nil || requests != 0 {
+				t.Fatalf("%v requests=%d", err, requests)
+			}
+		})
 	}
 }

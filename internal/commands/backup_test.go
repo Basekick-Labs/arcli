@@ -633,6 +633,7 @@ func TestBackup_DeleteRestoreAndGuards(t *testing.T) {
 // A failed backup must exit non-zero in JSON mode as well as table mode.
 func TestBackup_CreateWaitJSONFailedExitsNonZero(t *testing.T) {
 	fastPolls(t)
+	started := time.Now().UTC().Format(time.RFC3339Nano)
 	mux := http.NewServeMux()
 	var posted int32
 	mux.HandleFunc("/api/v1/backup/", func(w http.ResponseWriter, r *http.Request) {
@@ -647,7 +648,7 @@ func TestBackup_CreateWaitJSONFailedExitsNonZero(t *testing.T) {
 				_, _ = w.Write([]byte(`{"status":"idle"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"operation":"backup","backup_id":"backup-20260907-200001-00000001","status":"failed","total_files":1,"processed_files":0,"skipped_files":0,"total_bytes":0,"processed_bytes":0,"started_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","error":"disk full"}`))
+			_, _ = w.Write([]byte(`{"operation":"backup","backup_id":"backup-20260907-200001-00000001","status":"failed","total_files":1,"processed_files":0,"skipped_files":0,"total_bytes":0,"processed_bytes":0,"started_at":"` + started + `","error":"disk full"}`))
 		}
 	})
 	srv := httptest.NewServer(mux)
