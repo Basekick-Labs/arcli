@@ -178,7 +178,7 @@ func TestClusterFilePrecisionRawCSVAndNoHeader(t *testing.T) {
 	for _, nano := range []bool{false, true} {
 		for _, format := range []string{"table", "csv", "json"} {
 			for _, noHeader := range []bool{false, true} {
-				args := []string{"cluster", "file", "-o", format}
+				args := []string{"cluster", "files", "-o", format}
 				if noHeader {
 					args = append(args, "--no-header")
 				}

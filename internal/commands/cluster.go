@@ -142,8 +142,8 @@ as one page. JSON preserves files, total, and next_cursor. CSV writes the
 page count and continuation cursor to stderr so stdout remains valid CSV.
 Table and CSV timestamps are UTC RFC3339 by default; --time-output
 rfc3339nano shows fractional seconds. JSON keeps the server's values.
-CSV keeps raw values (sizes in bytes, strings unmodified). Use --no-header
-to omit column headers.`,
+CSV writes sizes in bytes and string fields verbatim (no control-character
+cleaning, unlike the table). Use --no-header to omit column headers.`,
 		Example: `  arcli cluster files
   arcli cluster files --database metrics --limit 500 -o json
   arcli cluster files --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
