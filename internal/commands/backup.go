@@ -159,7 +159,7 @@ func describeProgress(w io.Writer, p *client.BackupProgress, to timeOutput) {
 		fmt.Fprintf(w, "error:      %s\n", clean(p.Error))
 	}
 	if p.CompactionPause != "" {
-		fmt.Fprintf(w, "compaction:\n  pause:    %s\n", clean(p.CompactionPause))
+		fmt.Fprintf(w, "compaction: pause %s\n", clean(p.CompactionPause))
 		if p.CompactionPause == "lost" {
 			fmt.Fprintln(w, "  warning: restore lost its compaction pause; inspect the restore error and server log")
 		}

@@ -52,7 +52,7 @@ func fakeCompactionServer(t *testing.T, busyPolls int32) (*httptest.Server, *int
 		atomic.AddInt32(&triggers, 1)
 		if strings.Contains(r.URL.RawQuery, "database=paused") {
 			w.WriteHeader(409)
-			_, _ = w.Write([]byte(`{"error":"compaction is paused cluster-wide","paused":true}`))
+			_, _ = w.Write([]byte(`{"error":"compaction is paused cluster-wide","message":"a restore is running; retry when it ends","paused":true}`))
 			return
 		}
 		if strings.Contains(r.URL.RawQuery, "database=busy") {
@@ -179,7 +179,7 @@ func TestCompactionTrigger_ValidationWarningsAnd409(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 	_, _, err = execCmd(t, newCompactionTriggerCmd(), "--database", "paused")
-	if err == nil || err.Error() != "compaction is paused cluster-wide" {
+	if err == nil || err.Error() != "compaction is paused cluster-wide: a restore is running; retry when it ends" {
 		t.Errorf("paused response should be preserved: err = %v", err)
 	}
 	writeTestConfig(t, srv.URL, "reader")
@@ -307,6 +307,24 @@ func TestCompaction_DisabledServer(t *testing.T) {
 		_, _, err := execCmd(t, c())
 		if err == nil || !strings.Contains(err.Error(), "compaction is disabled on this server") {
 			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+func TestCompactionStats_ShowsClusterWidePause(t *testing.T) {
+	for _, tc := range []struct{ paused, want string }{
+		{`,"paused":true`, "cycle:           idle, paused cluster-wide by a restore (current id 8)\n"},
+		{`,"paused":false`, "cycle:           idle (current id 8)\n"},
+		{``, "cycle:           idle (current id 8)\n"}, // Arc 26.09 has no "paused"
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"active_jobs":0,"current_cycle_id":8,"cycle_running":false,"exclude_databases":[]` + tc.paused + `,"recent_jobs":[]}`))
+		}))
+		writeTestConfig(t, srv.URL, "tok")
+		out, _, err := execCmd(t, newCompactionStatsCmd())
+		srv.Close()
+		if err != nil || !strings.Contains(out, tc.want) {
+			t.Errorf("paused=%q: err=%v, want %q in:\n%s", tc.paused, err, tc.want, out)
 		}
 	}
 }

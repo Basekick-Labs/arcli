@@ -159,6 +159,9 @@ units in table mode; -o json carries the server's raw numbers.`,
 			if st.CycleRunning {
 				cycle = "running"
 			}
+			if st.Paused {
+				cycle += ", paused cluster-wide by a restore"
+			}
 			fmt.Fprintf(w, "cycle:           %s (current id %d)\n", cycle, st.CurrentCycleID)
 			fmt.Fprintln(w)
 			if len(st.Tiers) == 0 {

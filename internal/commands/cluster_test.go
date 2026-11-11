@@ -142,12 +142,12 @@ func TestClusterStatus_CompactionPause(t *testing.T) {
 		}
 	}
 
-	response = `{"enabled":true,"mode":"cluster","running":true,"cluster_name":"prod","nodes":[],"raft":{"enabled":false},"compaction_pause":{"active":false,"generation":7,"expired":true}}`
+	response = `{"enabled":true,"mode":"cluster","running":true,"cluster_name":"prod","nodes":[],"raft":{"enabled":false},"compaction_pause":{"active":false,"generation":7,"expired":true,"requested_by":"n1","reason":"restore backup-20261027-120000-abcdef12","requested_at":"2026-10-27T12:00:00Z","expires_at":"2026-10-27T12:06:00Z","acks":["n1","n2"],"pending_acks":[]}}`
 	out, _, err = execCmd(t, newClusterStatusCmd())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "pause lease expired") {
+	if !strings.Contains(out, "compaction:  pause lease expired (requested by n1 for restore backup-20261027-120000-abcdef12, lease expired 2026-10-27T12:06:00Z)") {
 		t.Errorf("expired pause should be shown:\n%s", out)
 	}
 

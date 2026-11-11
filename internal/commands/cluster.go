@@ -126,7 +126,7 @@ expected end of the pause.`,
 					pending = "waiting for " + strings.Join(nodes, ", ")
 				}
 				if pause.Expired {
-					fmt.Fprintf(w, "compaction:  pause lease expired (requested by %s for %s, lease expires %s); inspect the restore and server log\n", requestedBy, reason, to.Val(pause.ExpiresAt, "never"))
+					fmt.Fprintf(w, "compaction:  pause lease expired (requested by %s for %s, lease expired %s); inspect the restore and server log\n", requestedBy, reason, to.Val(pause.ExpiresAt, "never"))
 				} else {
 					fmt.Fprintf(w, "compaction:  paused by %s for %s, lease expires %s, %s\n", requestedBy, reason, to.Val(pause.ExpiresAt, "never"), pending)
 				}

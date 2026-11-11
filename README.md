@@ -133,7 +133,6 @@ arcli auth whoami
 arcli license status
 arcli license status -c prod -o json
 arcli cluster status
-
 arcli cluster files --database metrics
 arcli compaction status
 arcli retention list

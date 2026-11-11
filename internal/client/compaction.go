@@ -134,7 +134,8 @@ type CompactionJob struct {
 }
 
 // CompactionStats is GET /api/v1/compaction/stats. Tiers is nil when
-// the server omits the key (no tiers enabled).
+// the server omits the key (no tiers enabled). Paused is the cluster-wide
+// compaction pause a restore holds (Arc 27.01.1+); older servers omit it.
 type CompactionStats struct {
 	TotalJobsCompleted    int64           `json:"total_jobs_completed"`
 	TotalJobsFailed       int64           `json:"total_jobs_failed"`
@@ -143,6 +144,7 @@ type CompactionStats struct {
 	TotalManifestsRecover int64           `json:"total_manifests_recover"`
 	CycleRunning          bool            `json:"cycle_running"`
 	CurrentCycleID        int64           `json:"current_cycle_id"`
+	Paused                bool            `json:"paused"`
 	RecentJobs            []CompactionJob `json:"recent_jobs"`
 	Tiers                 []TierStats     `json:"tiers"`
 	Raw                   json.RawMessage `json:"-"`
