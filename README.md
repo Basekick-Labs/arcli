@@ -133,6 +133,7 @@ arcli auth whoami
 arcli rbac organization list
 arcli license status
 arcli license status -c prod -o json
+arcli cluster status
 arcli cluster files --database metrics
 arcli compaction status
 arcli governance policy list
@@ -196,11 +197,11 @@ Health exits nonzero when degraded/unhealthy (a disabled MQTT subsystem, which
 Arc reports with HTTP 200, exits 0); create exits nonzero if the returned
 subscription status is `error`, after displaying the created subscription.
 
-`backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
+`backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers before restoring. Arc 27.01.1+ (currently unreleased) pauses compaction cluster-wide and registers restored files in the cluster manifest. On older clusters, including 26.06–26.09, stop compaction yourself; restored files are not registered. Stop compaction manually on standalone servers too. `--wait` reports observed pause-state changes (polling may miss intermediate states), and `cluster status` shows active or expired pause leases and pending acknowledgements. Lease expiry is renewed during restore and is not the end time. A `lost` pause means the restore lost its lease; inspect the restore error and server log. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
 Use `arcli backup restore --mode merge|replace` with Arc 27.01.1+ (currently unreleased) to choose how cluster data is restored. If omitted, Arc uses merge for full backups and may use replace for scoped backups on a cluster. `backup list` reports cluster-manifest gaps, while `backup show` includes samples and distinguishes missing data from files excluded or reconciled during the backup.
 
-Cluster restore modes and restored-file manifest registration require Arc 27.01.1+ (currently unreleased), which also pauses compaction cluster-wide. On older clusters (26.06–26.09), stop compaction yourself and restored files are not registered; standalone servers also require stopped compaction. Older servers ignore `--mode` and merge, so an unechoed `--mode merge` is accepted; when Arc does not echo `--mode replace`, arcli warns and exits nonzero. The accepted restore may still run as a merge, so inspect `backup status` and verify data before retrying. A backup with known data gaps is refused for replace before the prompt. `backup list` subtracts reconciled skips and appends `skipped_reconciled` to CSV.
+Older servers ignore `--mode` and merge, so an unechoed `--mode merge` is accepted; when Arc does not echo `--mode replace`, arcli warns and exits nonzero. The accepted restore may still run as a merge, so inspect `backup status` and verify data before retrying. A backup with known data gaps is refused for replace before the prompt. `backup list` subtracts reconciled skips and appends `skipped_reconciled` to CSV.
 
 RBAC table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON retains available timestamp precision.
 

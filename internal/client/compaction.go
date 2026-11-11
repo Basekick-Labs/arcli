@@ -32,6 +32,18 @@ func (e *CompactionRunningError) Error() string {
 	return fmt.Sprintf("a compaction cycle is already running (cycle %d); wait for it to finish", e.CycleID)
 }
 
+// CompactionPausedError is Arc's 409 when compaction is paused cluster-wide.
+type CompactionPausedError struct {
+	Message string
+}
+
+func (e *CompactionPausedError) Error() string {
+	if e.Message == "" {
+		return "compaction is paused cluster-wide"
+	}
+	return scrubControls(e.Message)
+}
+
 // CompactionNotPermittedError is Arc's 503 response when the current node
 // cannot run a manually triggered compaction.
 type CompactionNotPermittedError struct {
@@ -122,7 +134,8 @@ type CompactionJob struct {
 }
 
 // CompactionStats is GET /api/v1/compaction/stats. Tiers is nil when
-// the server omits the key (no tiers enabled).
+// the server omits the key (no tiers enabled). Paused is the cluster-wide
+// compaction pause a restore holds (Arc 27.01.1+); older servers omit it.
 type CompactionStats struct {
 	TotalJobsCompleted    int64           `json:"total_jobs_completed"`
 	TotalJobsFailed       int64           `json:"total_jobs_failed"`
@@ -131,6 +144,7 @@ type CompactionStats struct {
 	TotalManifestsRecover int64           `json:"total_manifests_recover"`
 	CycleRunning          bool            `json:"cycle_running"`
 	CurrentCycleID        int64           `json:"current_cycle_id"`
+	Paused                bool            `json:"paused"`
 	RecentJobs            []CompactionJob `json:"recent_jobs"`
 	Tiers                 []TierStats     `json:"tiers"`
 	Raw                   json.RawMessage `json:"-"`
@@ -311,9 +325,24 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 	}
 	if resp.StatusCode == http.StatusConflict {
 		var conflict struct {
-			CycleID int64 `json:"cycle_id"`
+			CycleID int64  `json:"cycle_id"`
+			Paused  bool   `json:"paused"`
+			Error   string `json:"error"`
+			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &conflict)
+		if conflict.Paused {
+			// Arc's "message" carries the actionable half ("a restore is
+			// running; retry when it ends").
+			msg := conflict.Error
+			switch {
+			case msg == "":
+				msg = conflict.Message
+			case conflict.Message != "":
+				msg += ": " + conflict.Message
+			}
+			return nil, &CompactionPausedError{Message: msg}
+		}
 		return nil, &CompactionRunningError{CycleID: conflict.CycleID}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

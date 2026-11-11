@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 const standaloneBody = `{"enabled":false,"mode":"standalone","reason":"Enterprise license not configured"}`
@@ -72,6 +73,28 @@ func TestClusterStatus_EnabledDecodesAndKeepsRaw(t *testing.T) {
 	}
 	if !strings.Contains(string(st.Raw), `"router"`) {
 		t.Error("raw body must keep optional blocks")
+	}
+}
+
+func TestClusterStatus_DecodesCompactionPause(t *testing.T) {
+	body := `{"enabled":true,"mode":"cluster","running":true,"compaction_pause":{"active":true,"generation":7,"requested_by":"n1","reason":"restore backup-20261027-120000-abcdef12","requested_at":"2026-10-27T12:00:00Z","expires_at":"2026-10-27T12:06:00Z","expired":false,"acks":["n1"],"pending_acks":["n2"]}}`
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+
+	st, err := cli.ClusterStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pause := st.CompactionPause
+	if pause == nil || !pause.Active || pause.Generation != 7 || pause.RequestedBy != "n1" || pause.Reason != "restore backup-20261027-120000-abcdef12" || pause.ExpiresAt.UTC().Format(time.RFC3339) != "2026-10-27T12:06:00Z" {
+		t.Fatalf("compaction pause = %+v", pause)
+	}
+	if len(pause.Acks) != 1 || pause.Acks[0] != "n1" || len(pause.PendingAcks) != 1 || pause.PendingAcks[0] != "n2" {
+		t.Errorf("acks=%v pending=%v", pause.Acks, pause.PendingAcks)
+	}
+	if !strings.Contains(string(st.Raw), `"compaction_pause"`) {
+		t.Error("raw response must preserve the pause object")
 	}
 }
 

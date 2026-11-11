@@ -58,7 +58,10 @@ func newClusterStatusCmd() *cobra.Command {
 
 On a standalone server this prints "clustering: disabled" with the
 server's reason and exits 0. -o json passes the server body through
-unchanged in both cases; check "enabled" to branch in scripts.`,
+unchanged in both cases; check "enabled" to branch in scripts. An active
+cluster-wide compaction pause, or an expired unreleased pause, is included in
+the table output. The lease is renewed during restore; its expiry is not the
+expected end of the pause.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -104,6 +107,29 @@ unchanged in both cases; check "enabled" to branch in scripts.`,
 			}
 			if st.License != nil {
 				fmt.Fprintf(w, "license:     %s (valid: %t)\n", clean(st.License.Tier), st.License.Valid)
+			}
+			if pause := st.CompactionPause; pause != nil && (pause.Active || pause.Expired) {
+				requestedBy := clean(pause.RequestedBy)
+				if requestedBy == "" {
+					requestedBy = "unknown"
+				}
+				reason := clean(pause.Reason)
+				if reason == "" {
+					reason = "unspecified"
+				}
+				pending := "all nodes acknowledged"
+				if len(pause.PendingAcks) > 0 {
+					nodes := make([]string, 0, len(pause.PendingAcks))
+					for _, node := range pause.PendingAcks {
+						nodes = append(nodes, clean(node))
+					}
+					pending = "waiting for " + strings.Join(nodes, ", ")
+				}
+				if pause.Expired {
+					fmt.Fprintf(w, "compaction:  pause lease expired (requested by %s for %s, lease expired %s); inspect the restore and server log\n", requestedBy, reason, to.Val(pause.ExpiresAt, "never"))
+				} else {
+					fmt.Fprintf(w, "compaction:  paused by %s for %s, lease expires %s, %s\n", requestedBy, reason, to.Val(pause.ExpiresAt, "never"), pending)
+				}
 			}
 			if len(st.Nodes) == 0 {
 				_, err := fmt.Fprintln(w, "(no nodes)")

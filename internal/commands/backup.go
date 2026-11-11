@@ -106,7 +106,7 @@ func awaitOperationStart(ctx context.Context, cli *client.Client, want opStart) 
 
 // waitForOperation polls until the tracked operation leaves "running"
 // and returns the final progress with the raw status body it came in.
-func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expected *client.BackupProgress, waitTimeout time.Duration) (*client.BackupProgress, []byte, error) {
+func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expected *client.BackupProgress, waitTimeout time.Duration, onProgress func(*client.BackupProgress)) (*client.BackupProgress, []byte, error) {
 	deadline := time.Now().Add(waitTimeout)
 	interval := waitPollInterval
 	for {
@@ -124,6 +124,9 @@ func waitForOperation(cmd *cobra.Command, f *connFlags, cli *client.Client, expe
 		// start time are also needed to identify the operation we started.
 		if p.BackupID != expected.BackupID || p.Operation != expected.Operation || !p.StartedAt.Equal(expected.StartedAt) {
 			return nil, nil, fmt.Errorf("the server is now tracking a different operation (%s %s); ours has finished — see `arcli backup show %s` or `arcli backup list`", clean(p.Operation), clean(p.BackupID), clean(expected.BackupID))
+		}
+		if onProgress != nil {
+			onProgress(p)
 		}
 		if p.Status != "running" {
 			return p, st.Raw, nil
@@ -156,6 +159,12 @@ func describeProgress(w io.Writer, p *client.BackupProgress, to timeOutput) {
 		fmt.Fprintf(w, "error:      %s\n", clean(p.Error))
 	}
 	writeRestoreDetails(w, p)
+	if p.CompactionPause != "" {
+		fmt.Fprintf(w, "compaction: pause %s\n", clean(p.CompactionPause))
+		if p.CompactionPause == "lost" {
+			fmt.Fprintln(w, "  warning: restore lost its compaction pause; inspect the restore error and server log")
+		}
+	}
 	// What the counts above do not say: which files, what the restored backup
 	// already lacked, and warehouse files a restore had nowhere to put. The
 	// server already names the counts of a failed restore in its error, so
@@ -385,7 +394,7 @@ nodes receive HTTP 503 before the operation starts.`,
 				return nil
 			}
 			fmt.Fprintf(stderr, "Backup %s started; waiting...\n", clean(id))
-			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout)
+			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout, nil)
 			if err != nil {
 				return err
 			}
@@ -848,8 +857,9 @@ cluster. If restored, it is only STAGED: the server applies it at its next
 start. Use --with-metadata to request it explicitly; clusters refuse that
 request. --data-only explicitly skips metadata and config. --with-config
 also restores the server config file (staged as well). The restore runs in
-the background; --wait polls until it finishes (--wait-timeout defaults
-to 2h).
+the background; --wait polls until it finishes and reports compaction-pause
+observed state changes on a cluster; polling may miss intermediate states
+(--wait-timeout defaults to 2h).
 
 The restore mode is merge by default for a full backup. Arc may default a
 scoped cluster backup to replace; when --mode is omitted, arcli leaves that
@@ -1024,7 +1034,19 @@ before the restore starts.`,
 				return nil
 			}
 			fmt.Fprintf(stderr, "Restore of %s started; waiting...\n", clean(id))
-			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout)
+			lastPause := ""
+			reportPause := func(progress *client.BackupProgress) {
+				if progress.Operation != "restore" || progress.CompactionPause == "" || progress.CompactionPause == lastPause {
+					return
+				}
+				lastPause = progress.CompactionPause
+				fmt.Fprintf(stderr, "compaction pause: %s\n", clean(lastPause))
+				if lastPause == "lost" {
+					fmt.Fprintln(stderr, "warning: restore lost its compaction pause; inspect the restore error and server log")
+				}
+			}
+			reportPause(started.Progress)
+			final, raw, err := waitForOperation(cmd, &f, cli, started.Progress, waitTimeout, reportPause)
 			if err != nil {
 				return err
 			}

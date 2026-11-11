@@ -154,6 +154,9 @@ type BackupProgress struct {
 	ReplacedFiles                int64    `json:"replaced_files,omitempty"`
 	BackupUnregisteredSkipped    int64    `json:"backup_unregistered_skipped,omitempty"`
 	BackupManifestOnlyFiles      int64    `json:"backup_manifest_only_files,omitempty"`
+	// CompactionPause is the cluster-wide compaction pause state a cluster
+	// restore reports (Arc 27.01.1+): waiting, paused, released or lost.
+	CompactionPause string `json:"compaction_pause,omitempty"`
 }
 
 // BackupStatus is the decoded status endpoint: Idle when the server has
