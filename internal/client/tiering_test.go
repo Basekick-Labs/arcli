@@ -30,7 +30,7 @@ func TestTieringEndpointsDecodeAndKeepRawResponses(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`{"files":[{"id":3,"path":"metrics/cpu/1.parquet","database":"metrics","measurement":"cpu","tier":"cold","size_bytes":9}],"count":1}`))
 		case "/api/v1/tiering/stats":
-			_, _ = w.Write([]byte(`{"tier_stats":[{"tier":"cold","enabled":true,"backend":"s3","file_count":1,"total_size_mb":2}],"recent_migrations":[{"id":5,"file_path":"p","database":"metrics","from_tier":"hot","to_tier":"cold","size_bytes":9,"started_at":"2026-10-31T00:00:00Z"}]}`))
+			_, _ = w.Write([]byte(`{"tier_stats":{"cold":{"tier":"cold","enabled":true,"backend":"s3","file_count":1,"total_size_mb":2}},"recent_migrations":[{"id":5,"file_path":"p","database":"metrics","from_tier":"hot","to_tier":"cold","size_bytes":9,"started_at":"2026-10-31T00:00:00Z"}]}`))
 		case "/api/v1/tiering/migrate":
 			if r.Method != http.MethodPost {
 				t.Errorf("migrate method = %s", r.Method)
@@ -254,5 +254,48 @@ func TestTieringRouteMissingPreservesHTTPError(t *testing.T) {
 	const want = "Cannot GET /api/v1/tiering/status (HTTP 404); Arc is reachable but did not register this route; check tiered_storage.enabled, the license, the server log, and that this Arc version supports this command"
 	if !strings.HasSuffix(err.Error(), want) {
 		t.Fatalf("err = %q\nwant suffix %q", err.Error(), want)
+	}
+}
+
+func TestTieringReviewCredentialRedaction(t *testing.T) {
+	for _, text := range []string{
+		`Get "https://h/c?X-Amz-Signature=SECRET": EOF`,
+		`AccountKey=SECRET; SharedAccessSignature=sv=1&sig=SECRET; sig=SECRET`,
+		`parse "https://h/c?sig=SECRET\n": invalid URL`,
+	} {
+		raw, _ := json.Marshal(map[string]any{"tier_stats": map[string]any{"hot": map[string]any{"file_count": 1}}, "recent_migrations": []any{map[string]any{"error": text}}, "future": json.RawMessage(`9007199254740993`)})
+		cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(raw) })
+		stats, err := cli.TieringStats(context.Background())
+		if err != nil || len(stats.TierStats) != 1 {
+			t.Fatalf("stats=%+v err=%v", stats, err)
+		}
+		if strings.Contains(string(stats.Raw), "SECRET") || strings.Contains(stats.RecentMigrations[0].Error, "SECRET") || !strings.Contains(string(stats.Raw), "9007199254740993") {
+			t.Fatalf("unsafe or lossy response: %s", stats.Raw)
+		}
+	}
+}
+
+func TestTieringReviewPartialScanAndConflictDetails(t *testing.T) {
+	for _, status := range []int{500, 503} {
+		cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":"scan failed AccountKey=SECRET","message":"retry later","result":{"files_scanned":7,"errors":1,"truncated":true}}`))
+		})
+		result, raw, err := cli.ScanTieringFiles(context.Background())
+		var he *HTTPError
+		if result == nil || result.FilesScanned != 7 || !errors.As(err, &he) || he.Status != status || !strings.Contains(err.Error(), "retry later") {
+			t.Fatalf("result=%+v error=%v", result, err)
+		}
+		if strings.Contains(string(raw)+err.Error()+string(he.Body), "SECRET") {
+			t.Fatal("credential leaked")
+		}
+	}
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"wrong node","message":"Retry against the primary writer"}`))
+	})
+	_, err := cli.MigrateTiering(context.Background(), TieringMigrationRequest{})
+	if err == nil || !strings.Contains(err.Error(), "Retry against the primary writer") {
+		t.Fatalf("error=%v", err)
 	}
 }

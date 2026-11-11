@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,16 +18,18 @@ const (
 
 // TieringStatus mirrors GET /api/v1/tiering/status.
 type TieringStatus struct {
-	Enabled           bool                    `json:"enabled"`
-	LicenseValid      bool                    `json:"license_valid"`
-	Reason            string                  `json:"reason,omitempty"`
-	Tiers             map[string]TieringStats `json:"tiers,omitempty"`
-	QuarantinedFiles  int64                   `json:"quarantined_files"`
-	Scheduler         *TieringSchedulerStatus `json:"scheduler,omitempty"`
-	ReplicationEvents *TieringEventCounts     `json:"replication_events,omitempty"`
-	LastScan          *TieringScanResult      `json:"last_scan,omitempty"`
-	LastScanAt        *string                 `json:"last_scan_at,omitempty"`
-	Raw               json.RawMessage         `json:"-"`
+	Enabled            bool                    `json:"enabled"`
+	LicenseValid       bool                    `json:"license_valid"`
+	Reason             string                  `json:"reason,omitempty"`
+	Tiers              map[string]TieringStats `json:"tiers,omitempty"`
+	ColdMetadata       json.RawMessage         `json:"cold_metadata,omitempty"`
+	ColdMissingObjects json.RawMessage         `json:"cold_missing_objects,omitempty"`
+	QuarantinedFiles   int64                   `json:"quarantined_files"`
+	Scheduler          *TieringSchedulerStatus `json:"scheduler,omitempty"`
+	ReplicationEvents  *TieringEventCounts     `json:"replication_events,omitempty"`
+	LastScan           *TieringScanResult      `json:"last_scan,omitempty"`
+	LastScanAt         *string                 `json:"last_scan_at,omitempty"`
+	Raw                json.RawMessage         `json:"-"`
 }
 
 // TieringStats is one tier's entry in a status or statistics response.
@@ -98,7 +101,7 @@ type TieringMigrationRecord struct {
 
 // TieringMigrationStats is the body of GET /api/v1/tiering/stats.
 type TieringMigrationStats struct {
-	TierStats        []TieringStats           `json:"tier_stats"`
+	TierStats        map[string]TieringStats  `json:"tier_stats"`
 	RecentMigrations []TieringMigrationRecord `json:"recent_migrations"`
 	Raw              json.RawMessage          `json:"-"`
 }
@@ -173,7 +176,7 @@ func tieringPolicyPath(database string) string {
 // TieringStatus calls GET /api/v1/tiering/status.
 func (c *Client) TieringStatus(ctx context.Context) (*TieringStatus, error) {
 	var out TieringStatus
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodGet, tieringBase+"/status", nil, 4<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodGet, tieringBase+"/status", nil, 4<<20, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +192,7 @@ func (c *Client) ListTieringFiles(ctx context.Context, tier, database string, li
 		return nil, nil, fmt.Errorf("invalid tier %q (valid: hot, cold)", tier)
 	}
 	if tier != "" && database != "" {
-		return nil, nil, fmt.Errorf("--tier and --database cannot be combined: Arc applies the database filter first and ignores tier")
+		return nil, nil, fmt.Errorf("--tier and --database cannot be combined: Arc 26.09 and earlier ignore --tier with --database")
 	}
 	if database != "" {
 		if err := ValidateDatabaseName(database); err != nil {
@@ -210,7 +213,7 @@ func (c *Client) ListTieringFiles(ctx context.Context, tier, database string, li
 		Files []TieringFile `json:"files"`
 		Count int           `json:"count"`
 	}
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodGet, tieringBase+"/files?"+q.Encode(), nil, 16<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodGet, tieringBase+"/files?"+q.Encode(), nil, 16<<20, &out)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -223,12 +226,12 @@ func (c *Client) ListTieringFiles(ctx context.Context, tier, database string, li
 // TieringStats calls GET /api/v1/tiering/stats.
 func (c *Client) TieringStats(ctx context.Context) (*TieringMigrationStats, error) {
 	var out TieringMigrationStats
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodGet, tieringBase+"/stats", nil, 16<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodGet, tieringBase+"/stats", nil, 16<<20, &out)
 	if err != nil {
 		return nil, err
 	}
 	if out.TierStats == nil {
-		out.TierStats = []TieringStats{}
+		out.TierStats = map[string]TieringStats{}
 	}
 	if out.RecentMigrations == nil {
 		out.RecentMigrations = []TieringMigrationRecord{}
@@ -256,7 +259,7 @@ func (c *Client) MigrateTiering(ctx context.Context, req TieringMigrationRequest
 		return nil, fmt.Errorf("invalid to-tier %q (Arc supports hot to cold migration)", req.ToTier)
 	}
 	var out TieringMigrationResult
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodPost, tieringBase+"/migrate", req, 4<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodPost, tieringBase+"/migrate", req, 4<<20, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -267,8 +270,22 @@ func (c *Client) MigrateTiering(ctx context.Context, req TieringMigrationRequest
 // ScanTieringFiles calls POST /api/v1/tiering/scan.
 func (c *Client) ScanTieringFiles(ctx context.Context) (*TieringScanResult, json.RawMessage, error) {
 	var out TieringScanResult
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodPost, tieringBase+"/scan", nil, 4<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodPost, tieringBase+"/scan", nil, 4<<20, &out)
 	if err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && (he.Status == 500 || he.Status == 503) {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(he.Body, &fields) == nil {
+				partial := he.Body
+				if result, ok := fields["result"]; ok {
+					partial = result
+				}
+				var scanFields map[string]json.RawMessage
+				if json.Unmarshal(partial, &scanFields) == nil && scanFields["files_scanned"] != nil && json.Unmarshal(partial, &out) == nil {
+					return &out, he.Body, err
+				}
+			}
+		}
 		return nil, nil, err
 	}
 	return &out, body, nil
@@ -277,7 +294,7 @@ func (c *Client) ScanTieringFiles(ctx context.Context) (*TieringScanResult, json
 // ListTieringPolicies calls GET /api/v1/tiering/policies/.
 func (c *Client) ListTieringPolicies(ctx context.Context) (*TieringPolicyList, error) {
 	var out TieringPolicyList
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodGet, tieringBase+"/policies/", nil, 4<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodGet, tieringBase+"/policies/", nil, 4<<20, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +311,7 @@ func (c *Client) GetTieringPolicy(ctx context.Context, database string) (*Tierin
 		return nil, nil, err
 	}
 	var out TieringPolicy
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodGet, tieringPolicyPath(database), nil, 1<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodGet, tieringPolicyPath(database), nil, 1<<20, &out)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -310,7 +327,7 @@ func (c *Client) SetTieringPolicy(ctx context.Context, database string, req Tier
 		return nil, fmt.Errorf("hot-max-age-days must not be negative")
 	}
 	var out TieringPolicyMutation
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodPut, tieringPolicyPath(database), req, 1<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodPut, tieringPolicyPath(database), req, 1<<20, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +341,7 @@ func (c *Client) DeleteTieringPolicy(ctx context.Context, database string) (*Tie
 		return nil, err
 	}
 	var out TieringPolicyMutation
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodDelete, tieringPolicyPath(database), nil, 1<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodDelete, tieringPolicyPath(database), nil, 1<<20, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +355,7 @@ func (c *Client) EffectiveTieringPolicy(ctx context.Context, database string) (*
 		return nil, nil, err
 	}
 	var out EffectiveTieringPolicy
-	body, err := c.featureJSON(ctx, tieringFeature, tieringConfigKey, http.MethodGet, tieringPolicyPath(database)+"/effective", nil, 1<<20, &out)
+	body, err := c.tieringJSON(ctx, http.MethodGet, tieringPolicyPath(database)+"/effective", nil, 1<<20, &out)
 	if err != nil {
 		return nil, nil, err
 	}

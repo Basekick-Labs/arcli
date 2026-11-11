@@ -4,8 +4,11 @@ package commands
 
 import (
 	"encoding/csv"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +31,8 @@ with the tiering feature enabled. File listings are bounded by --limit;
 the current Arc API does not expose an offset or cursor for this endpoint.
 CSV preserves original field values with lowercase snake_case headers.
 Table and CSV timestamps use UTC RFC3339 by default; --time-output rfc3339nano
-shows fractional seconds. JSON retains the server response.`,
+shows fractional seconds. JSON retains the server response with credentials redacted.
+Status, files, stats and scans describe the connected node, not the whole cluster.`,
 	}
 	c.AddCommand(
 		newTieringStatusCmd(),
@@ -94,10 +98,10 @@ func newTieringFileCmd() *cobra.Command {
 
 The response is bounded by --limit (default 100). Arc currently accepts
 either a tier or database filter, plus limit, but has no offset or cursor
-parameter. The API ignores tier when database is also set, so arcli rejects
+parameter. Arc 26.09 and earlier ignore --tier with --database, so arcli rejects
 that combination rather than returning an incorrectly filtered list.
 In -o json output, "count" is the number of files returned (at most
---limit), not the total number of indexed files.`,
+--limit), not the total number of indexed files. --limit 0 returns an empty page.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
@@ -125,7 +129,7 @@ In -o json output, "count" is the number of files returned (at most
 	c.Flags().BoolVar(&noHeader, "no-header", false, "suppress column header row (table + csv)")
 	c.Flags().StringVar(&tier, "tier", "", "filter by tier: hot or cold")
 	c.Flags().StringVar(&database, "database", "", "filter by database")
-	c.Flags().IntVar(&limit, "limit", 100, "maximum number of files returned")
+	c.Flags().IntVar(&limit, "limit", 100, "maximum number of files returned (0 returns an empty page)")
 	return c
 }
 
@@ -202,6 +206,9 @@ measurement filters limit the cycle to one target.`,
 				Measurement: measurement, DryRun: dryRun,
 			})
 			if err != nil {
+				if clientGaveUp(err) && !dryRun {
+					fmt.Fprintln(cmd.ErrOrStderr(), "arcli stopped waiting; migration continues server-side. Check arcli tiering status and stats before retrying.")
+				}
 				return err
 			}
 			if outputFormat == output.FormatJSON {
@@ -244,13 +251,20 @@ func newTieringScanCmd() *cobra.Command {
 			ctx, cancel := f.ctx(cmd)
 			defer cancel()
 			result, raw, err := cli.ScanTieringFiles(ctx)
-			if err != nil {
+			if err != nil && clientGaveUp(err) {
+				fmt.Fprintln(cmd.ErrOrStderr(), "arcli stopped waiting; scan continues server-side. Check arcli tiering status before retrying.")
+			}
+			if result == nil {
 				return err
 			}
 			if outputFormat == output.FormatJSON {
-				return writeRawJSON(cmd.OutOrStdout(), raw)
+				if werr := writeRawJSON(cmd.OutOrStdout(), raw); werr != nil {
+					return werr
+				}
+			} else if werr := renderTieringScan(cmd.OutOrStdout(), result); werr != nil {
+				return werr
 			}
-			return renderTieringScan(cmd.OutOrStdout(), result)
+			return err
 		},
 	}
 	f.addWithTimeout(c, 2*time.Hour)
@@ -333,6 +347,10 @@ func newTieringPolicyShowCmd() *cobra.Command {
 			defer cancel()
 			policy, raw, err := cli.GetTieringPolicy(ctx, args[0])
 			if err != nil {
+				var he *client.HTTPError
+				if errors.As(err, &he) && he.Status == http.StatusNotFound {
+					return fmt.Errorf("%w; use arcli tiering policy effective %s to inspect the resolved policy", err, clean(args[0]))
+				}
 				return err
 			}
 			if outputFormat == output.FormatJSON {
@@ -362,11 +380,16 @@ func newTieringPolicySetCmd() *cobra.Command {
 
 --hot-only keeps the database out of future tier migrations. Set
 --hot-max-age-days to override the global age threshold; omit it to use the
-global default. The age must be zero or greater.`,
+global default. The age must be zero or greater. At least one policy flag is
+required. This is a full replacement: omitted --hot-only resets to false,
+and omitted --hot-max-age-days resets to the global default.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
 				return fmt.Errorf("invalid --output %q (valid: table, json)", outputFormat)
+			}
+			if !cmd.Flags().Changed("hot-only") && !cmd.Flags().Changed("hot-max-age-days") {
+				return fmt.Errorf("provide --hot-only or --hot-max-age-days; omitted policy fields are reset")
 			}
 			var age *int
 			if cmd.Flags().Changed("hot-max-age-days") {
@@ -394,7 +417,7 @@ global default. The age must be zero or greater.`,
 				}
 			}
 			if len(mutation.ColdFiles) > 0 && string(mutation.ColdFiles) != "null" {
-				fmt.Fprintf(cmd.OutOrStdout(), "cold files: %s\n", strings.TrimSpace(clean(string(mutation.ColdFiles))))
+				renderTieringDetails(cmd.OutOrStdout(), "cold files", mutation.ColdFiles)
 			}
 			return nil
 		},
@@ -495,6 +518,8 @@ func renderTieringStatus(w io.Writer, status *client.TieringStatus, to timeOutpu
 		{"reason", valueOrDash(status.Reason)},
 		{"quarantined files", strconv.FormatInt(status.QuarantinedFiles, 10)},
 	}
+	renderTieringDetails(w, "cold metadata", status.ColdMetadata)
+	renderTieringDetails(w, "cold missing objects", status.ColdMissingObjects)
 	if status.Scheduler != nil {
 		rows = append(rows,
 			[]string{"scheduler running", strconv.FormatBool(status.Scheduler.Running)},
@@ -577,10 +602,16 @@ func renderTieringStats(w io.Writer, stats *client.TieringMigrationStats, to tim
 		fmt.Fprintln(w, "(no tier statistics)")
 	} else {
 		rows := make([][]string, 0, len(stats.TierStats))
-		for _, tier := range stats.TierStats {
-			rows = append(rows, []string{clean(tier.Tier), strconv.FormatBool(tier.Enabled), clean(tier.Backend), strconv.FormatInt(tier.FileCount, 10), strconv.FormatInt(tier.TotalSizeMB, 10)})
+		names := make([]string, 0, len(stats.TierStats))
+		for name := range stats.TierStats {
+			names = append(names, name)
 		}
-		if err := output.Table(w, []string{"TIER", "ENABLED", "BACKEND", "FILES", "SIZE MB"}, rows); err != nil {
+		sort.Strings(names)
+		for _, name := range names {
+			tier := stats.TierStats[name]
+			rows = append(rows, []string{clean(name), strconv.FormatInt(tier.FileCount, 10), strconv.FormatInt(tier.TotalSizeMB, 10)})
+		}
+		if err := output.Table(w, []string{"TIER", "FILES", "SIZE MB"}, rows); err != nil {
 			return err
 		}
 	}
@@ -708,4 +739,28 @@ func valueOrDash(s string) string {
 		return "-"
 	}
 	return clean(s)
+}
+
+// Render structured diagnostic details without dumping JSON into tables.
+func renderTieringDetails(w io.Writer, label string, raw json.RawMessage) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil && fields != nil {
+		keys := make([]string, 0, len(fields))
+		for key := range fields {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			renderTieringDetails(w, label+" "+strings.ReplaceAll(key, "_", " "), fields[key])
+		}
+		return
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		text = string(raw)
+	}
+	fmt.Fprintf(w, "%s: %s\n", clean(label), clean(text))
 }

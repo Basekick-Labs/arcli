@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -172,6 +173,11 @@ func JSONToMsgPack(r io.Reader) ([]byte, MsgPackDocSummary, error) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, sum, fmt.Errorf("invalid JSON: trailing content after the document")
 	}
+	// LimitReader also reports EOF after consuming its bound. Count
+	// trailing whitespace so that EOF cannot hide oversize input.
+	if cr.n > JSONDocMaxBytes {
+		return nil, sum, tooBig()
+	}
 	converted, err := convertTop(root, &sum)
 	if err != nil {
 		return nil, sum, err
@@ -250,6 +256,9 @@ func convertItem(m map[string]any, where string, sum *MsgPackDocSummary) (any, e
 		outCols := make(map[string]any, len(cm))
 		n := -1
 		for col, v := range cm {
+			if col != "time" && strings.EqualFold(col, "time") {
+				return nil, fmt.Errorf(`%s: column name %q is reserved for the timestamp; use "time"`, where, col)
+			}
 			arr, ok := v.([]any)
 			if !ok {
 				return nil, fmt.Errorf("%s: column %q must be an array (the server would drop it)", where, col)
@@ -284,6 +293,9 @@ func convertItem(m map[string]any, where string, sum *MsgPackDocSummary) (any, e
 	}
 	outFields := make(map[string]any, len(fields))
 	for k, v := range fields {
+		if strings.EqualFold(k, "time") {
+			return nil, fmt.Errorf(`%s: field name %q is reserved for the timestamp; use "t" for row timestamps`, where, k)
+		}
 		cv, err := convertScalar(v, fmt.Sprintf("%s: field %q", where, k), false)
 		if err != nil {
 			return nil, err
@@ -315,6 +327,9 @@ func convertItem(m map[string]any, where string, sum *MsgPackDocSummary) (any, e
 		}
 		outTags := make(map[string]any, len(tm))
 		for k, v := range tm {
+			if strings.EqualFold(k, "time") {
+				return nil, fmt.Errorf(`%s: tag name %q is reserved for the timestamp`, where, k)
+			}
 			switch tv := v.(type) {
 			case string:
 				outTags[k] = tv
@@ -395,10 +410,12 @@ func convertColumn(col string, arr []any, where string) ([]any, error) {
 	if !isTime && hasInt && hasFloat {
 		for i, v := range out {
 			if iv, ok := v.(int64); ok {
-				if iv > 1<<53 || iv < -(1<<53) {
+				f := float64(iv)
+				// MaxInt64 rounds to 2^63; reject that before converting back.
+				if f >= 1<<63 || int64(f) != iv {
 					return nil, fmt.Errorf("%s: column %q mixes integers and floats and %d cannot be represented exactly as a float", where, col, iv)
 				}
-				out[i] = float64(iv)
+				out[i] = f
 			}
 		}
 	}
@@ -442,20 +459,58 @@ func convertScalar(v any, where string, isTime bool) (any, error) {
 			}
 			return i, nil
 		}
+		if isTime {
+			i, ok := parseIntegerEpoch(s)
+			if !ok {
+				return nil, fmt.Errorf("%s: timestamp %s is not an integer epoch", where, s)
+			}
+			return i, nil
+		}
 		f, err := x.Float64()
 		if err != nil {
 			return nil, fmt.Errorf("%s: invalid number %s", where, s)
-		}
-		if isTime {
-			if f != math.Trunc(f) || math.Abs(f) >= 1<<63 {
-				return nil, fmt.Errorf("%s: timestamp %s is not an integer epoch", where, s)
-			}
-			return int64(f), nil
 		}
 		return f, nil
 	default:
 		return nil, fmt.Errorf("%s: nested objects and arrays are not valid values", where)
 	}
+}
+
+// parseIntegerEpoch converts a valid JSON number to int64 without rounding
+// or expanding large powers of ten.
+func parseIntegerEpoch(s string) (int64, bool) {
+	mantissa, exponentText := s, "0"
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mantissa, exponentText = s[:i], s[i+1:]
+	}
+	negative := strings.HasPrefix(mantissa, "-")
+	digits := strings.TrimPrefix(mantissa, "-")
+	fractionDigits := 0
+	if i := strings.IndexByte(digits, '.'); i >= 0 {
+		fractionDigits = len(digits) - i - 1
+		digits = digits[:i] + digits[i+1:]
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return 0, true
+	}
+	exponent, err := strconv.ParseInt(exponentText, 10, 64)
+	// A larger exponent cannot yield an int64 from this many input digits.
+	// Bound it before arithmetic and before allocating any zero padding.
+	if err != nil || exponent > int64(len(s))+19 || exponent < -int64(len(s)) {
+		return 0, false
+	}
+	significant := strings.TrimRight(digits, "0")
+	scale := exponent - int64(fractionDigits) + int64(len(digits)-len(significant))
+	if scale < 0 || int64(len(significant))+scale > 19 {
+		return 0, false
+	}
+	integer := significant + strings.Repeat("0", int(scale))
+	if negative {
+		integer = "-" + integer
+	}
+	n, err := strconv.ParseInt(integer, 10, 64)
+	return n, err == nil
 }
 
 // MsgPackFirstByteOK reports whether b can begin a document the server

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTieringFilesFormatsAndFilters(t *testing.T) {
@@ -63,7 +64,7 @@ func TestTieringObjectCommandsRenderEndpointResponses(t *testing.T) {
 		case "/api/v1/tiering/status":
 			_, _ = w.Write([]byte(`{"enabled":true,"license_valid":true,"quarantined_files":1,"tiers":{"hot":{"tier":"hot","enabled":true,"backend":"local","file_count":4,"total_size_mb":2}},"last_scan":{"files_scanned":4,"truncated":false},"future":true}`))
 		case "/api/v1/tiering/stats":
-			_, _ = w.Write([]byte(`{"tier_stats":[{"tier":"cold","enabled":true,"backend":"s3","file_count":2,"total_size_mb":9}],"recent_migrations":[{"id":3,"file_path":"metrics/cpu/a.parquet","database":"metrics","from_tier":"hot","to_tier":"cold","size_bytes":2048,"started_at":"2026-10-31T00:00:00Z"}]}`))
+			_, _ = w.Write([]byte(`{"tier_stats":{"cold":{"tier":"cold","enabled":true,"backend":"s3","file_count":2,"total_size_mb":9}},"recent_migrations":[{"id":3,"file_path":"metrics/cpu/a.parquet","database":"metrics","from_tier":"hot","to_tier":"cold","size_bytes":2048,"started_at":"2026-10-31T00:00:00Z"}]}`))
 		case "/api/v1/tiering/migrate":
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -329,5 +330,95 @@ func TestTieringFileZeroTimestamps(t *testing.T) {
 	out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "file")
 	if err != nil || strings.Contains(out, "0001") || strings.Count(out, " - ") < 5 {
 		t.Fatalf("table=%q err=%v", out, err)
+	}
+}
+
+func TestTieringReviewSafeOutputAndSortedStats(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/tiering/stats":
+			_, _ = w.Write([]byte(`{"tier_stats":{"hot":{"file_count":2},"cold":{"file_count":1}},"recent_migrations":[{"error":"https://h/p?sig=SECRET"}]}`))
+		case "/api/v1/tiering/files":
+			_, _ = w.Write([]byte(`{"files":[{"path":"p","quarantine_reason":"AccountKey=SECRET"}],"count":1}`))
+		case "/api/v1/tiering/scan":
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"error":"scan failed sig=SECRET","result":{"files_scanned":7,"errors":1}}`))
+		case "/api/v1/tiering/status":
+			_, _ = w.Write([]byte(`{"cold_metadata":{"complete":true},"cold_missing_objects":3}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, format := range []string{"table", "json", "csv"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "file", "-o", format)
+		if err != nil || strings.Contains(out, "SECRET") || !strings.Contains(out, "REDACTED") {
+			t.Fatalf("file %s: %s %v", format, out, err)
+		}
+	}
+	for _, format := range []string{"table", "json"} {
+		out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "stats", "-o", format)
+		if err != nil || strings.Contains(out, "SECRET") {
+			t.Fatalf("stats: %s %v", out, err)
+		}
+		if format == "table" && (strings.Contains(out, "ENABLED") || strings.Contains(out, "BACKEND") || strings.Index(out, "cold") > strings.Index(out, "hot")) {
+			t.Fatalf("stats columns/order: %s", out)
+		}
+		out, _, err = execCmd(t, NewRoot(BuildInfo{}), "tiering", "scan", "-o", format)
+		if err == nil || strings.Contains(out+err.Error(), "SECRET") || !strings.Contains(out, "7") {
+			t.Fatalf("partial scan: %s %v", out, err)
+		}
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "status")
+	if err != nil || !strings.Contains(out, "cold metadata complete") || !strings.Contains(out, "cold missing objects") {
+		t.Fatalf("status: %s %v", out, err)
+	}
+}
+
+func TestTieringReviewPolicySetRequiresExplicitFlags(t *testing.T) {
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics")
+	if err == nil || !strings.Contains(err.Error(), "omitted policy fields are reset") {
+		t.Fatalf("%s %v", out, err)
+	}
+	c := newTieringPolicySetCmd()
+	if !strings.Contains(c.Long, "resets to false") {
+		t.Fatal("replacement semantics absent from help")
+	}
+}
+
+func TestTieringReviewTimeoutGuidance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	for _, op := range []string{"migrate", "scan"} {
+		_, stderr, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", op, "--timeout", "1ms")
+		if err == nil || !strings.Contains(stderr, "continues server-side") {
+			t.Fatalf("%s: stderr=%s err=%v", op, stderr, err)
+		}
+	}
+}
+
+func TestTieringReviewPolicyHelpAndColdFilesNote(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":"No custom policy found"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"message":"updated","cold_files":{"note":"Existing cold files remain cold"}}`))
+	}))
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	_, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "show", "metrics")
+	if err == nil || !strings.Contains(err.Error(), "policy effective metrics") {
+		t.Fatalf("missing effective guidance: %v", err)
+	}
+	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics", "--hot-only")
+	if err != nil || !strings.Contains(out, "cold files note: Existing cold files remain cold") || strings.Contains(out, `{"note"`) {
+		t.Fatalf("cold files: %s %v", out, err)
 	}
 }
