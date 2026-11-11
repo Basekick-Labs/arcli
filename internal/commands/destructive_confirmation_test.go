@@ -178,95 +178,101 @@ func TestDestructiveCommandConfirmation(t *testing.T) {
 	}
 }
 
-// A real tiering migration moves files to cold storage, so it follows the
-// same gate as the commands above; --dry-run never prompts.
+// Every tiering migrate form prompts: Arc 26.09 and earlier ignore --dry-run
+// and the filters and run a real, full migration, so even a preview can move
+// files.
 func TestTieringMigrateConfirmation(t *testing.T) {
 	const nonInteractive = "confirmation required but stdin is not a terminal; pass --yes"
-	const question = "Move eligible files from hot to cold storage (database \"metrics\")? Arc 26.09 and earlier ignore these filters and migrate every eligible file. [y/N] "
-	for _, tc := range []struct {
-		input   string
-		yes     bool
-		dryRun  bool
-		wantErr string
+	const legacyNote = " On Arc 26.09 and earlier this runs a real, full, unfiltered migration."
+	forms := []struct {
+		name     string
+		args     []string
+		dryRun   bool
+		database string
+		question string
 	}{
-		{input: "decline", wantErr: "aborted"},
-		{input: "eof", wantErr: "aborted"},
-		{input: "pipe", wantErr: nonInteractive},
-		{input: "file", wantErr: nonInteractive},
-		{input: "null", wantErr: nonInteractive},
-		{input: "accept"},
-		{input: "decline", yes: true},
-		{input: "pipe", yes: true},
-		{input: "file", yes: true},
-		{input: "null", yes: true},
-		{input: "pipe", dryRun: true},
-		{input: "null", dryRun: true},
-	} {
-		name := tc.input
-		if tc.yes {
-			name += "/--yes"
-		}
-		if tc.dryRun {
-			name += "/--dry-run"
-		}
-		t.Run(name, func(t *testing.T) {
-			var requests atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tiering/migrate" {
-					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
-				}
-				var req map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Errorf("decode request: %v", err)
-				}
-				if req["database"] != "metrics" || (req["dry_run"] == true) != tc.dryRun {
-					t.Errorf("request = %v", req)
-				}
-				if tc.dryRun {
-					_, _ = w.Write([]byte(`{"status":"dry_run","would_migrate":3,"total_bytes":3018,"from_tier":"hot","to_tier":"cold"}`))
-					return
-				}
-				_, _ = w.Write([]byte(`{"message":"Migration completed successfully","status":"completed","migrated":3,"errors":0}`))
-			}))
-			defer srv.Close()
-			writeTestConfig(t, srv.URL, "tok")
-			args := []string{"tiering", "migrate", "--database", "metrics", "-o", "json"}
+		{"filtered", []string{"--database", "metrics"}, false, "metrics", "Move eligible files from hot to cold storage (database \"metrics\")?" + legacyNote},
+		{"dry-run", []string{"--dry-run"}, true, "", "Preview a hot-to-cold migration (every database, dry run)?" + legacyNote},
+		{"dry-run-filtered", []string{"--database", "metrics", "--measurement", "cpu", "--dry-run"}, true, "metrics", "Preview a hot-to-cold migration (database \"metrics\", measurement \"cpu\", dry run)?" + legacyNote},
+		{"unfiltered", nil, false, "", "Move eligible files from hot to cold storage (every database)?"},
+	}
+	for _, form := range forms {
+		for _, tc := range []struct {
+			input   string
+			yes     bool
+			wantErr string
+		}{
+			{input: "decline", wantErr: "aborted"},
+			{input: "eof", wantErr: "aborted"},
+			{input: "pipe", wantErr: nonInteractive},
+			{input: "file", wantErr: nonInteractive},
+			{input: "null", wantErr: nonInteractive},
+			{input: "accept"},
+			{input: "decline", yes: true},
+			{input: "pipe", yes: true},
+			{input: "file", yes: true},
+			{input: "null", yes: true},
+		} {
+			name := form.name + "/" + tc.input
 			if tc.yes {
-				args = append(args, "--yes")
+				name += "/--yes"
 			}
-			if tc.dryRun {
-				args = append(args, "--dry-run")
-			}
-			root := NewRoot(BuildInfo{Version: "test"})
-			root.SetIn(confirmationInput(t, tc.input))
-			out, errOut, err := execCmd(t, root, args...)
-			if tc.wantErr != "" {
-				if err == nil || err.Error() != tc.wantErr {
-					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			t.Run(name, func(t *testing.T) {
+				var requests atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tiering/migrate" {
+						t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					}
+					var req map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Errorf("decode request: %v", err)
+					}
+					if (req["database"] != nil || form.database != "") && req["database"] != form.database || (req["dry_run"] == true) != form.dryRun {
+						t.Errorf("request = %v", req)
+					}
+					if form.dryRun {
+						_, _ = w.Write([]byte(`{"status":"dry_run","would_migrate":3,"total_bytes":3018,"from_tier":"hot","to_tier":"cold"}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"message":"Migration completed successfully","status":"completed","migrated":3,"errors":0}`))
+				}))
+				defer srv.Close()
+				writeTestConfig(t, srv.URL, "tok")
+				args := append([]string{"tiering", "migrate", "-o", "json"}, form.args...)
+				if tc.yes {
+					args = append(args, "--yes")
 				}
-				if out != "" {
-					t.Errorf("stdout = %q, want empty", out)
+				root := NewRoot(BuildInfo{Version: "test"})
+				root.SetIn(confirmationInput(t, tc.input))
+				out, errOut, err := execCmd(t, root, args...)
+				if tc.wantErr != "" {
+					if err == nil || err.Error() != tc.wantErr {
+						t.Fatalf("error = %v, want %q", err, tc.wantErr)
+					}
+					if out != "" {
+						t.Errorf("stdout = %q, want empty", out)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				} else if !strings.Contains(out, `"status": "`) {
+					t.Errorf("stdout = %q", out)
 				}
-			} else if err != nil {
-				t.Fatal(err)
-			} else if !strings.Contains(out, `"status": "`) {
-				t.Errorf("stdout = %q", out)
-			}
-			wantPrompt := ""
-			if !tc.yes && !tc.dryRun && (tc.input == "decline" || tc.input == "eof" || tc.input == "accept") {
-				wantPrompt = question
-			}
-			if errOut != wantPrompt {
-				t.Errorf("stderr = %q, want %q", errOut, wantPrompt)
-			}
-			wantRequests := int32(0)
-			if tc.wantErr == "" {
-				wantRequests = 1
-			}
-			if got := requests.Load(); got != wantRequests {
-				t.Errorf("requests = %d, want %d", got, wantRequests)
-			}
-		})
+				wantPrompt := ""
+				if !tc.yes && (tc.input == "decline" || tc.input == "eof" || tc.input == "accept") {
+					wantPrompt = form.question + " [y/N] "
+				}
+				if errOut != wantPrompt {
+					t.Errorf("stderr = %q, want %q", errOut, wantPrompt)
+				}
+				wantRequests := int32(0)
+				if tc.wantErr == "" {
+					wantRequests = 1
+				}
+				if got := requests.Load(); got != wantRequests {
+					t.Errorf("requests = %d, want %d", got, wantRequests)
+				}
+			})
+		}
 	}
 }

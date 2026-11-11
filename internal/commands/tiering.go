@@ -188,13 +188,13 @@ Arc currently supports hot-to-cold migration. Use --dry-run to preview the
 number of files and bytes before starting a migration. Database and
 measurement filters limit the cycle to one target.
 
-A migration (without --dry-run) asks for confirmation; --yes skips the
+Every form asks for confirmation, including --dry-run; --yes skips the
 prompt and is required when stdin is not a terminal.
 
 Arc 26.09 and earlier ignore --dry-run, --database and --measurement: the
-request runs a real migration cycle over every eligible file. arcli cannot
-detect the server version beforehand; it warns afterwards when the response
-shows that this happened.`,
+request runs a real, full, unfiltered migration cycle over every eligible
+file. arcli cannot detect the server version beforehand. When the response
+shows that this happened, it prints a warning and exits non-zero.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if f.timeout <= 0 {
@@ -210,10 +210,8 @@ shows that this happened.`,
 			if err := client.ValidateTieringMigrationRequest(req); err != nil {
 				return err
 			}
-			if !dryRun {
-				if err := confirmOrAbort(cmd, tieringMigrateQuestion(database, measurement), yes); err != nil {
-					return err
-				}
+			if err := confirmOrAbort(cmd, tieringMigrateQuestion(database, measurement, dryRun), yes); err != nil {
+				return err
 			}
 			cli, _, err := f.client(cmd)
 			if err != nil {
@@ -228,11 +226,16 @@ shows that this happened.`,
 				}
 				return err
 			}
-			warnTieringMigrationIgnored(cmd.ErrOrStderr(), req, result)
+			ignored := tieringMigrationIgnored(cmd.ErrOrStderr(), req, result)
 			if outputFormat == output.FormatJSON {
-				return writeRawJSON(cmd.OutOrStdout(), result.Raw)
+				err = writeRawJSON(cmd.OutOrStdout(), result.Raw)
+			} else {
+				err = renderTieringMigration(cmd.OutOrStdout(), result)
 			}
-			return renderTieringMigration(cmd.OutOrStdout(), result)
+			if err != nil {
+				return err
+			}
+			return ignored
 		},
 	}
 	f.addWithTimeout(c, 2*time.Hour)
@@ -246,7 +249,7 @@ shows that this happened.`,
 	return c
 }
 
-func tieringMigrateQuestion(database, measurement string) string {
+func tieringMigrateQuestion(database, measurement string, dryRun bool) string {
 	scope := "every database"
 	if database != "" {
 		scope = fmt.Sprintf("database %q", clean(database))
@@ -255,23 +258,29 @@ func tieringMigrateQuestion(database, measurement string) string {
 		scope += fmt.Sprintf(", measurement %q", clean(measurement))
 	}
 	q := "Move eligible files from hot to cold storage (" + scope + ")?"
-	if database != "" || measurement != "" {
-		q += " Arc 26.09 and earlier ignore these filters and migrate every eligible file."
+	if dryRun {
+		q = "Preview a hot-to-cold migration (" + scope + ", dry run)?"
+	}
+	if dryRun || database != "" || measurement != "" {
+		q += " On Arc 26.09 and earlier this runs a real, full, unfiltered migration."
 	}
 	return q
 }
 
-// warnTieringMigrationIgnored reports a response showing the server ignored
+// tieringMigrationIgnored reports a response showing the server ignored
 // --dry-run or the filters (Arc 26.09 and earlier run a full cycle and
-// answer only a message and status).
-func warnTieringMigrationIgnored(w io.Writer, req client.TieringMigrationRequest, result *client.TieringMigrationResult) {
+// answer only a message and status): a warning on stderr, and an error so
+// the command exits non-zero.
+func tieringMigrationIgnored(w io.Writer, req client.TieringMigrationRequest, result *client.TieringMigrationResult) error {
 	if req.DryRun && result.Status != "dry_run" {
 		fmt.Fprintln(w, "warning: this Arc ignored --dry-run and ran a real migration cycle (Arc 26.09 and earlier do not support --dry-run).")
-		return
+		return errors.New("Arc ran a real, unfiltered migration cycle instead of the requested dry run; check arcli tiering stats")
 	}
 	if !req.DryRun && (req.Database != "" || req.Measurement != "") && result.Migrated == nil {
 		fmt.Fprintln(w, "warning: this Arc does not report filtered migrations; Arc 26.09 and earlier ignore --database and --measurement and migrate every eligible file.")
+		return errors.New("Arc ran an unfiltered migration cycle; --database and --measurement were not applied; check arcli tiering stats")
 	}
+	return nil
 }
 
 func newTieringScanCmd() *cobra.Command {

@@ -97,8 +97,8 @@ func TestTieringObjectCommandsRenderEndpointResponses(t *testing.T) {
 		{[]string{"tiering", "status"}, "quarantined files"},
 		{[]string{"tiering", "status", "--output", "json"}, `"future": true`},
 		{[]string{"tiering", "stats"}, "metrics/cpu/a.parquet"},
-		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run"}, "would migrate"},
-		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run", "--output", "json"}, `"would_migrate": 2`},
+		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run", "--yes"}, "would migrate"},
+		{[]string{"tiering", "migrate", "--database", "metrics", "--measurement", "cpu", "--dry-run", "--yes", "--output", "json"}, `"would_migrate": 2`},
 		{[]string{"tiering", "scan"}, "files scanned"},
 		{[]string{"tiering", "policy", "list", "--output", "csv"}, "database,hot_only,hot_max_age_days"},
 		{[]string{"tiering", "policy", "list", "--output", "json"}, `"count": 1`},
@@ -426,30 +426,36 @@ func TestTieringReviewPolicyHelpAndColdFilesNote(t *testing.T) {
 }
 
 // Arc 26.09 ignores dry_run and the filters, runs a full cycle and answers
-// {"message","status":"completed"}; arcli must say so on stderr.
+// {"message","status":"completed"}; arcli must say so on stderr, still print
+// the response, and exit non-zero.
 func TestTieringMigrateWarnsWhenServerIgnoresRequest(t *testing.T) {
 	const legacy = `{"message":"Migration completed successfully","status":"completed"}`
 	for _, tc := range []struct {
-		name, body, want string
-		args             []string
+		name, body, wantWarn, wantErr string
+		args                          []string
 	}{
-		{"dry-run ignored", legacy, "ignored --dry-run", []string{"--database", "metrics", "--dry-run"}},
-		{"filters ignored", legacy, "ignore --database and --measurement", []string{"--database", "metrics", "--yes"}},
-		{"current dry run", `{"status":"dry_run","would_migrate":0,"total_bytes":0,"from_tier":"hot","to_tier":"cold"}`, "", []string{"--database", "metrics", "--dry-run"}},
-		{"current filtered", `{"message":"Migration completed successfully","status":"completed","migrated":3,"errors":0}`, "", []string{"--database", "metrics", "--yes"}},
-		{"legacy unfiltered", legacy, "", []string{"--yes"}},
+		{"dry-run ignored", legacy, "ignored --dry-run", "instead of the requested dry run", []string{"--database", "metrics", "--dry-run", "--yes"}},
+		{"filters ignored", legacy, "ignore --database and --measurement", "--database and --measurement were not applied", []string{"--database", "metrics", "--yes"}},
+		{"current dry run", `{"status":"dry_run","would_migrate":0,"total_bytes":0,"from_tier":"hot","to_tier":"cold"}`, "", "", []string{"--database", "metrics", "--dry-run", "--yes"}},
+		{"current filtered", `{"message":"Migration completed successfully","status":"completed","migrated":3,"errors":0}`, "", "", []string{"--database", "metrics", "--yes"}},
+		{"legacy unfiltered", legacy, "", "", []string{"--yes"}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
-			defer srv.Close()
-			writeTestConfig(t, srv.URL, "tok")
-			out, stderr, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "migrate"}, tc.args...)...)
-			if err != nil || !strings.Contains(out, "status") {
-				t.Fatalf("out=%q err=%v", out, err)
-			}
-			if tc.want == "" && stderr != "" || tc.want != "" && !strings.Contains(stderr, tc.want) {
-				t.Fatalf("stderr = %q, want %q", stderr, tc.want)
-			}
-		})
+		for _, format := range []string{"table", "json"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+				defer srv.Close()
+				writeTestConfig(t, srv.URL, "tok")
+				out, stderr, err := execCmd(t, NewRoot(BuildInfo{}), append([]string{"tiering", "migrate", "-o", format}, tc.args...)...)
+				if !strings.Contains(out, "status") {
+					t.Fatalf("response not printed: out=%q", out)
+				}
+				if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				if tc.wantWarn == "" && stderr != "" || tc.wantWarn != "" && !strings.Contains(stderr, tc.wantWarn) {
+					t.Fatalf("stderr = %q, want %q", stderr, tc.wantWarn)
+				}
+			})
+		}
 	}
 }
