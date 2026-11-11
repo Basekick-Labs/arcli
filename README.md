@@ -130,6 +130,7 @@ If a download fails, queued downloads stop and arcli reports the original failur
 arcli db list
 arcli measurement list --database metrics
 arcli auth whoami
+arcli rbac organization list
 arcli license status
 arcli license status -c prod -o json
 arcli cluster files --database metrics
@@ -194,6 +195,8 @@ subscription status is `error`, after displaying the created subscription.
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
+RBAC table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON retains available timestamp precision.
+
 `cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
 
 Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV writes sizes in bytes and string fields verbatim (no control-character cleaning, unlike the table); JSON preserves the original response, including pagination.
@@ -211,6 +214,16 @@ Active, expired, invalid, and configured-but-unlicensed states retain the server
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
 
 MQTT CSV output preserves non-secret values, including whitespace and control characters, separately from terminal sanitization. Subscription credentials remain redacted in every output format. Table and text timestamps use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds, and JSON retains fractional-second precision. Route-missing and server-reported MQTT-disabled 503 errors retain their HTTP status and message, with credentials scrubbed. Unknown subscription IDs return 404 on Arc main; on Arc 26.09.4, show returns 404, start may return 500, and stop may return 409.
+
+`arcli rbac` manages Enterprise organizations, teams, roles, measurement permissions, and token team memberships. List commands support table, JSON, and CSV output; destructive operations prompt for confirmation and accept `--yes` for scripts. Token references accept a numeric id or an exact name. Arc registers the RBAC routes only when `auth.enabled` is true; a missing route reports the server's HTTP 404 error followed by a hint to check `auth.enabled`, the license, the server log, and the Arc version.
+
+RBAC access safety:
+
+- Measurement permissions restrict a role to the permitted measurement patterns. Deleting a role's last measurement permission restores its access to every measurement matching its database pattern; `rbac measurement delete` always warns about this, because Arc has no route that maps a permission id to its role.
+- A token with no teams falls back to its coarse token permissions, which can widen access to every database. `rbac token team remove` warns when the team is the token's last one and the token has coarse permissions other than `admin` (an admin token bypasses RBAC either way). `rbac team delete` and `rbac organization delete` always warn, because Arc has no route that lists a team's tokens. Warnings are printed with `--yes` too.
+- Arc refuses an organization or team delete with HTTP 409 when the cascade exceeds `cluster.rbac.max_cascade_descendants` (default 50000).
+- An organization's `--enabled=false` does not revoke access (Arc 26.09.4 and current main); disable the team instead. Adding an admin token to a team does not restrict it.
+- A role with `--permission admin` grants read, write and delete on the databases its pattern matches (every database for `*`); it does not grant cluster or token administration. `--permission` accepts repeated or comma-separated values (`--permission read,write`).
 
 ## Output and automation
 
