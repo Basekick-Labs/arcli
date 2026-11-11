@@ -132,7 +132,7 @@ arcli measurement list --database metrics
 arcli auth whoami
 arcli license status
 arcli license status -c prod -o json
-arcli cluster file --database metrics
+arcli cluster files --database metrics
 arcli compaction status
 arcli retention list
 arcli backup create --wait
@@ -146,9 +146,9 @@ arcli audit stats --since 2026-01-01T02:30:00.123456789+02:30
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
-`cluster file` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
+`cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
 
-Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV retains original field values; JSON preserves the original response, including pagination.
+Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV writes sizes in bytes and string fields verbatim (no control-character cleaning, unlike the table); JSON preserves the original response, including pagination.
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
 

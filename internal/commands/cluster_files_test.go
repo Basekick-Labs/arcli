@@ -178,7 +178,7 @@ func TestClusterFilePrecisionRawCSVAndNoHeader(t *testing.T) {
 	for _, nano := range []bool{false, true} {
 		for _, format := range []string{"table", "csv", "json"} {
 			for _, noHeader := range []bool{false, true} {
-				args := []string{"cluster", "file", "-o", format}
+				args := []string{"cluster", "files", "-o", format}
 				if noHeader {
 					args = append(args, "--no-header")
 				}
@@ -226,9 +226,12 @@ func TestClusterFilePrecisionRawCSVAndNoHeader(t *testing.T) {
 			}
 		}
 	}
-	for _, cmd := range newClusterCmd().Commands() {
-		if cmd.Name() == "files" {
-			t.Error("legacy files registered")
+	// The command is "cluster files" (matching the endpoint and issue #32);
+	// "cluster file" stays as an alias.
+	for _, name := range []string{"files", "file"} {
+		cmd, _, err := newClusterCmd().Find([]string{name})
+		if err != nil || cmd.Name() != "files" {
+			t.Errorf("cluster %s resolves to %v (err %v), want files", name, cmd, err)
 		}
 	}
 }
