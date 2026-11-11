@@ -451,10 +451,11 @@ func newBackupListCmd() *cobra.Command {
 		Long: `List backups (GET /api/v1/backup/), newest first.
 
 INCOMPLETE includes unreconciled skipped data files, manifest-only files,
-metadata skips, and unaddressable files. Reconciled skips had left the
-cluster manifest by the end of the run and are no longer missing data.
-Reconciled skips, unregistered local files, and files removed from the
-manifest during backup are shown as information, not missing backup data.
+metadata skips, and unaddressable files. Reconciled skips (files that had
+left the cluster manifest by the end of the run), unregistered local files,
+and files removed from the manifest during backup are not missing backup
+data: they are not counted here, and appear as CSV columns and in
+"backup show".
 "-" means no gaps were reported; "backup show" names sampled files.
 
 Output formats: table (default) | json | csv. The csv output includes the
@@ -809,6 +810,13 @@ the backup is not deleted.`,
 
 // ---- restore ---------------------------------------------------------------
 
+// restoreModeConfirmed reports whether the mode Arc echoed confirms the one
+// requested. Arc before 27.01.1 echoes no mode and always merges, so an
+// unechoed merge is exactly what was asked for; only replace needs the echo.
+func restoreModeConfirmed(requested, reported string) bool {
+	return requested == "" || reported == requested || (requested == "merge" && reported == "")
+}
+
 func newBackupRestoreCmd() *cobra.Command {
 	var (
 		f            connFlags
@@ -849,9 +857,11 @@ choice to the server. Use --mode merge or --mode replace to choose explicitly.
 Explicit restore modes require Arc 27.01.1+ (currently unreleased). Replace
 is available only on clusters and removes the current manifest entries for
 the backup's databases before restoring them. Older servers silently ignore
---mode; arcli exits nonzero when the response does not confirm the requested
-mode, but the accepted restore may still run server-side. Check backup status
-before retrying. Replace is refused before submission for known data gaps.
+--mode and merge, which is what --mode merge asks for. When Arc does not
+confirm --mode replace, arcli warns and exits nonzero, but the accepted
+restore may still run server-side as a merge: check backup status before
+retrying. A backup with known data gaps is refused for replace before the
+prompt.
 
 On a cluster, only the primary writer can restore a backup. A node
 that is not the primary writer returns HTTP 503 after confirmation,
@@ -900,8 +910,10 @@ before the restore starts.`,
 				return fmt.Errorf("backup %s does not contain the server config; drop --with-config", clean(id))
 			}
 			stderr := cmd.ErrOrStderr()
+			// The same gaps Arc refuses a replace for (restore.go replaceDatabases),
+			// checked before the prompt instead of after a 202.
 			if mode == "replace" && (effectiveSkipped(m.SkippedFiles, m.SkippedReconciled) > 0 || m.UnaddressableFiles > 0 || m.ManifestOnlyFiles > 0) {
-				return fmt.Errorf("restore refused: --mode replace requires a complete backup; use --mode merge or take a complete backup first")
+				return fmt.Errorf("restore refused: --mode replace requires a complete backup, and backup %s is incomplete (%s); use --mode merge or take a complete backup first", clean(id), describeRestoreGaps(m))
 			}
 			if gaps := describeRestoreGaps(m); gaps != "" {
 				fmt.Fprintf(stderr, "warning: backup %s is incomplete (%s)\n", clean(id), gaps)
@@ -960,7 +972,7 @@ before the restore starts.`,
 			if err != nil {
 				return err
 			}
-			if mode != "" && res.Mode != mode {
+			if !restoreModeConfirmed(mode, res.Mode) {
 				fmt.Fprintln(stderr, "warning: Arc accepted the restore without confirming the requested mode; it may be running with different semantics. Check `arcli backup status` before retrying.")
 				if outputFormat == output.FormatJSON {
 					if err := writeRawJSON(cmd.OutOrStdout(), res.Raw); err != nil {
@@ -1016,7 +1028,7 @@ before the restore starts.`,
 			if err != nil {
 				return err
 			}
-			if mode != "" && final.Mode != mode {
+			if !restoreModeConfirmed(mode, final.Mode) {
 				fmt.Fprintln(stderr, "warning: final restore status did not confirm the requested mode; inspect `arcli backup status` and verify restored data before retrying.")
 				if outputFormat == output.FormatJSON {
 					if err := writeRawJSON(cmd.OutOrStdout(), raw); err != nil {
