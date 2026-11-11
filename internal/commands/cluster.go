@@ -130,8 +130,9 @@ func newClusterFilesCmd() *cobra.Command {
 		to           timeOutput
 	)
 	c := &cobra.Command{
-		Use:   "file",
-		Short: "Page through the cluster file manifest",
+		Use:     "files",
+		Aliases: []string{"file"},
+		Short:   "Page through the cluster file manifest",
 		Long: `List one bounded page from the cluster file manifest (GET /api/v1/cluster/files).
 
 Each request is paginated; use --cursor with the previous page's next_cursor
@@ -141,10 +142,11 @@ as one page. JSON preserves files, total, and next_cursor. CSV writes the
 page count and continuation cursor to stderr so stdout remains valid CSV.
 Table and CSV timestamps are UTC RFC3339 by default; --time-output
 rfc3339nano shows fractional seconds. JSON keeps the server's values.
-CSV preserves original field values. Use --no-header to omit column headers.`,
-		Example: `  arcli cluster file
-  arcli cluster file --database metrics --limit 500 -o json
-  arcli cluster file --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
+CSV keeps raw values (sizes in bytes, strings unmodified). Use --no-header
+to omit column headers.`,
+		Example: `  arcli cluster files
+  arcli cluster files --database metrics --limit 500 -o json
+  arcli cluster files --cursor 'metrics/cpu/2026/10/27/part.parquet'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
