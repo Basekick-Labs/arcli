@@ -137,6 +137,9 @@ arcli compaction status
 arcli retention list
 arcli backup create --wait
 arcli logs --level warn --since 6h
+arcli audit log --since 2026-01-01T02:30:00.123456789+02:30 --limit 100
+arcli audit log -o csv
+arcli audit stats --since 2026-01-01T02:30:00.123456789+02:30
 ```
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
@@ -146,6 +149,8 @@ arcli logs --level warn --since 6h
 Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV retains original field values; JSON preserves the original response, including pagination.
 
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
+
+`audit log` and `audit stats` query durable Enterprise audit records. They require an Enterprise license with audit logging enabled, and an administrator token when Arc authentication is enabled. Each node keeps its own audit records, so on a cluster a command shows only the records of the node it reaches. Logs support event type, actor, database, time, and pagination filters in table, JSON, or CSV output; stats defaults to the last 24 hours. This is separate from `arcli logs`, which reads the server's in-memory application log buffer. Table and CSV timestamps, including the displayed `audit stats` since value, use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON preserves the original server response. Unavailable routes retain the HTTP error without inferring `audit_log.enabled=false`.
 
 `license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is shown in UTC RFC3339; the table uses whole seconds unless `--time-output rfc3339nano` is given, and JSON keeps the fractional seconds.
 

@@ -14,6 +14,8 @@ import (
 // timeOutputCommands is the exact set of commands that render timestamps in
 // table, CSV or text and therefore take --time-output.
 var timeOutputCommands = []string{
+	"arcli audit log",
+	"arcli audit stats",
 	"arcli auth token list",
 	"arcli auth token show",
 	"arcli auth whoami",
