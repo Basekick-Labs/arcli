@@ -28,8 +28,9 @@ Use `_arm64.deb` on ARM64 systems.
 ### RHEL / Fedora / Rocky
 
 ```bash
+sudo rpm --import https://raw.githubusercontent.com/Basekick-Labs/arcli/main/packaging/RPM-GPG-KEY-basekick
 curl -LO https://github.com/Basekick-Labs/arcli/releases/download/v26.09.4/arcli-26.9.4-1.x86_64.rpm
-sudo rpm -i arcli-26.9.4-1.x86_64.rpm
+sudo dnf install -y ./arcli-26.9.4-1.x86_64.rpm
 ```
 
 Use `.aarch64.rpm` on ARM64 systems.
@@ -84,7 +85,7 @@ arcli config set-active production
 arcli config update production --token-stdin
 ```
 
-Connection profiles live in `~/.arcli/config.toml` with file mode `0600`. For CI and one-off commands, use `ARC_CONNECTION`, `ARC_ENDPOINT`, and `ARC_TOKEN`, or pass `--connection` / `--endpoint` directly.
+Connection profiles live in `~/.arcli/config.toml` with file mode `0600`. Profile names are case-sensitive and may contain dots. For CI and one-off commands, use `ARC_CONNECTION`, `ARC_ENDPOINT`, and `ARC_TOKEN`, or pass `--connection` / `--endpoint` directly.
 
 ### Query and write
 
@@ -132,17 +133,31 @@ arcli auth whoami
 arcli rbac organization list
 arcli license status
 arcli license status -c prod -o json
+arcli cluster files --database metrics
 arcli compaction status
 arcli retention list
 arcli backup create --wait
 arcli logs --level warn --since 6h
+arcli scheduler cq reload
+arcli scheduler retention trigger
+arcli audit log --since 2026-01-01T02:30:00.123456789+02:30 --limit 100
+arcli audit log -o csv
+arcli audit stats --since 2026-01-01T02:30:00.123456789+02:30
 ```
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
 RBAC table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON retains available timestamp precision.
 
+`cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
+
+Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV writes sizes in bytes and string fields verbatim (no control-character cleaning, unlike the table); JSON preserves the original response, including pagination.
+
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
+
+`scheduler cq reload` refreshes all active continuous queries in the scheduler; use `cq execute` to run one query immediately. `scheduler retention trigger` runs every active retention policy and may permanently delete old data, so it prompts for confirmation; pass `--yes` for scripted use. Use `retention execute <id|name>` to run one selected policy. Scheduler errors preserve Arc's status and message; the codes depend on the Arc version. Arc 26.09 and earlier answer 503 `... is not running - enterprise license required` whenever the scheduler is not running, and 500 when a node other than the primary writer is asked to trigger retention, a run is already in progress, or a policy fails. On those versions, if the license lapses after startup, the trigger answers 200 without running anything, so a 200 does not prove a run happened. Newer Arc answers 403 when the license is missing, lacks the feature or was revoked; 503 when the scheduler is disabled or failed to start; 409 for the role or already-running cases; and 500 when a policy fails. Arc runs every policy even when one fails, so an error does not mean nothing was deleted. The retention trigger runs every policy before Arc answers: if arcli stops waiting, the run may still be going server-side (`retention executions <id|name>` shows each policy's result). Each node keeps its own CQ jobs and only the primary writer runs them, so reload the primary writer (and any node that may take over).
+
+`audit log` and `audit stats` query durable Enterprise audit records. They require an Enterprise license with audit logging enabled, and an administrator token when Arc authentication is enabled. Each node keeps its own audit records, so on a cluster a command shows only the records of the node it reaches. Logs support event type, actor, database, time, and pagination filters in table, JSON, or CSV output; stats defaults to the last 24 hours. This is separate from `arcli logs`, which reads the server's in-memory application log buffer. Table and CSV timestamps, including the displayed `audit stats` since value, use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON preserves the original server response. Unavailable routes retain the HTTP error without inferring `audit_log.enabled=false`.
 
 `license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is shown in UTC RFC3339; the table uses whole seconds unless `--time-output rfc3339nano` is given, and JSON keeps the fractional seconds.
 
@@ -211,3 +226,11 @@ gofmt -l .
 ## License
 
 [Apache-2.0](LICENSE)
+
+### RBAC access safety
+
+Measurement permissions restrict a role to the explicitly permitted measurement patterns. Removing the last measurement permission restores the role's access to all measurements matching its database pattern.
+
+Removing a token's last team makes it fall back to its coarse token permissions, which can widen access to every database. Deleting a team or organization can have the same effect. The CLI always warns about these conditional risks, including with `--yes`; it cannot atomically check membership state at deletion time. Cascade prompts identify the organization/team name or role database pattern and mention measurement permissions. A cluster can reject a cascade with HTTP 409 when `cluster.rbac.max_cascade_descendants` is exceeded.
+
+An organization's `--enabled=false` currently does not revoke access; disable the team to revoke its grants. Adding an admin token to a team does not restrict that token. A role's `--permission admin --database-pattern '*'` grants read/write/delete on every database, not cluster administration. Permissions accept comma-separated or repeated flags (`--permission read,write`). Numeric token references resolve as IDs first; add results echo the resolved token name.

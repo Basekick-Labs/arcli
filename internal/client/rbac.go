@@ -1,11 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -123,41 +121,15 @@ const rbacConfigKey = "auth.enabled"
 // neutral hint of classifyFeatureRouteMissing; every other non-2xx is the
 // server's *HTTPError unchanged.
 func (c *Client) rbacJSON(ctx context.Context, method, path string, reqBody any, out any) error {
-	var body io.Reader
-	if reqBody != nil {
-		b, err := json.Marshal(reqBody)
-		if err != nil {
-			return fmt.Errorf("encode request: %w", err)
+	// Decode here to preserve RBAC's successful empty-response behavior.
+	body, err := c.featureJSON(ctx, "RBAC", rbacConfigKey, method, path, reqBody, 16<<20, nil)
+	if err != nil {
+		return err
+	}
+	if out != nil && len(body) > 0 {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
 		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.cfg.Endpoint+path, body)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	if reqBody != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	c.setCrossDBHeaders(req)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return c.classifyFeatureRouteMissing(ctx, decodeWriteError(resp.StatusCode, respBody), "RBAC", rbacConfigKey)
-	}
-	if out == nil || len(respBody) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
 }

@@ -95,6 +95,10 @@ func renderRBACList[T any](cmd *cobra.Command, items []T, resource, jsonField st
 		}
 		if noHeader {
 			headers = nil
+		} else {
+			for i := range headers {
+				headers[i] = strings.ToUpper(strings.ReplaceAll(headers[i], "_", " "))
+			}
 		}
 		for i := range rows {
 			for j := range rows[i] {
@@ -196,7 +200,7 @@ func newRBACOrganizationShowCmd() *cobra.Command {
 	var format string
 	c := &cobra.Command{
 		Use:   "show <organization-id>",
-		Short: "Show one organization and its teams",
+		Short: "Show one organization and its team count",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(format) {
@@ -306,7 +310,7 @@ func newRBACOrganizationUpdateCmd() *cobra.Command {
 	f.add(c)
 	c.Flags().StringVar(&name, "name", "", "new organization name")
 	c.Flags().StringVar(&description, "description", "", "new organization description (empty clears it)")
-	c.Flags().BoolVar(&enabled, "enabled", false, "enable or disable the organization")
+	c.Flags().BoolVar(&enabled, "enabled", false, "set organization status (currently does not affect access; disable the team to revoke its grants)")
 	addRBACObjectOutputFlag(c, &format)
 	return c
 }
@@ -323,15 +327,22 @@ func newRBACOrganizationDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete organization id %d and all its teams, roles, and memberships?", id), yes); err != nil {
-				return err
-			}
 			cli, ctx, cancel, err := rbacClientContext(cmd, &f)
 			if err != nil {
 				return err
 			}
 			defer cancel()
-			if err := cli.DeleteOrganization(ctx, id); err != nil {
+			item, err := cli.GetOrganization(ctx, id)
+			if err != nil {
+				return err
+			}
+			prompt := fmt.Sprintf("Delete organization %q (id %d) and all its teams, roles, measurement permissions, and token memberships?", clean(item.Name), id)
+			if err := confirmRBACDelete(cmd, prompt, rbacCascadeWarning+" "+rbacMembershipWarning, yes); err != nil {
+				return err
+			}
+			deleteCtx, deleteCancel := f.ctx(cmd)
+			defer deleteCancel()
+			if err := cli.DeleteOrganization(deleteCtx, id); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Deleted organization id %d\n", id)
@@ -395,7 +406,7 @@ func newRBACTeamShowCmd() *cobra.Command {
 	var format string
 	c := &cobra.Command{
 		Use:   "show <team-id>",
-		Short: "Show one team and its roles",
+		Short: "Show one team and its role count",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(format) {
@@ -528,15 +539,22 @@ func newRBACTeamDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete team id %d and all its roles and token memberships?", id), yes); err != nil {
-				return err
-			}
 			cli, ctx, cancel, err := rbacClientContext(cmd, &f)
 			if err != nil {
 				return err
 			}
 			defer cancel()
-			if err := cli.DeleteTeam(ctx, id); err != nil {
+			item, err := cli.GetTeam(ctx, id)
+			if err != nil {
+				return err
+			}
+			prompt := fmt.Sprintf("Delete team %q (id %d) and all its roles, measurement permissions, and token memberships?", clean(item.Name), id)
+			if err := confirmRBACDelete(cmd, prompt, rbacCascadeWarning+" "+rbacMembershipWarning, yes); err != nil {
+				return err
+			}
+			deleteCtx, deleteCancel := f.ctx(cmd)
+			defer deleteCancel()
+			if err := cli.DeleteTeam(deleteCtx, id); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Deleted team id %d\n", id)
@@ -600,7 +618,7 @@ func newRBACRoleShowCmd() *cobra.Command {
 	var format string
 	c := &cobra.Command{
 		Use:   "show <role-id>",
-		Short: "Show a role and its measurement permissions",
+		Short: "Show a role and its measurement-permission count",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(format) {
@@ -640,7 +658,7 @@ func newRBACRoleCreateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create <team-id>",
 		Short: "Create a role for a team",
-		Long:  "Create a team role for a database pattern. Repeat --permission for each grant; valid values are read, write, delete, and admin.",
+		Long:  "Create a team role for a database pattern. Repeat --permission or use comma-separated values: read, write, delete, admin. With --database-pattern *, admin grants read/write/delete on every database, not cluster administration.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(format) {
@@ -669,7 +687,7 @@ func newRBACRoleCreateCmd() *cobra.Command {
 	f.add(c)
 	to.add(c)
 	c.Flags().StringVar(&databasePattern, "database-pattern", "", "database name or pattern")
-	c.Flags().StringArrayVar(&permissions, "permission", nil, "permission to grant (repeatable: read, write, delete, admin)")
+	c.Flags().StringSliceVar(&permissions, "permission", nil, "permission to grant (comma-separated or repeatable: read, write, delete, admin)")
 	c.Flags().StringVarP(&format, "output", "o", output.FormatTable, "output format: table|json")
 	_ = c.MarkFlagRequired("database-pattern")
 	_ = c.MarkFlagRequired("permission")
@@ -715,7 +733,7 @@ func newRBACRoleUpdateCmd() *cobra.Command {
 	}
 	f.add(c)
 	c.Flags().StringVar(&databasePattern, "database-pattern", "", "new database name or pattern")
-	c.Flags().StringArrayVar(&permissions, "permission", nil, "replacement permission list (repeatable)")
+	c.Flags().StringSliceVar(&permissions, "permission", nil, "replacement permission list (comma-separated or repeatable)")
 	addRBACObjectOutputFlag(c, &format)
 	return c
 }
@@ -732,15 +750,22 @@ func newRBACRoleDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete role id %d and all its measurement permissions?", id), yes); err != nil {
-				return err
-			}
 			cli, ctx, cancel, err := rbacClientContext(cmd, &f)
 			if err != nil {
 				return err
 			}
 			defer cancel()
-			if err := cli.DeleteRole(ctx, id); err != nil {
+			item, err := cli.GetRole(ctx, id)
+			if err != nil {
+				return err
+			}
+			prompt := fmt.Sprintf("Delete role %q (id %d) and all its measurement permissions?", clean(item.DatabasePattern), id)
+			if err := confirmRBACDelete(cmd, prompt, rbacCascadeWarning, yes); err != nil {
+				return err
+			}
+			deleteCtx, deleteCancel := f.ctx(cmd)
+			defer deleteCancel()
+			if err := cli.DeleteRole(deleteCtx, id); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Deleted role id %d\n", id)
@@ -805,7 +830,7 @@ func newRBACMeasurementCreateCmd() *cobra.Command {
 	var permissions []string
 	c := &cobra.Command{
 		Use:   "create <role-id>",
-		Short: "Add measurement permissions to a role",
+		Short: "Restrict a role to explicitly permitted measurements",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(format) {
@@ -837,7 +862,7 @@ func newRBACMeasurementCreateCmd() *cobra.Command {
 	f.add(c)
 	to.add(c)
 	c.Flags().StringVar(&pattern, "measurement-pattern", "", "measurement name or pattern")
-	c.Flags().StringArrayVar(&permissions, "permission", nil, "permission to grant (repeatable)")
+	c.Flags().StringSliceVar(&permissions, "permission", nil, "permission to grant (comma-separated or repeatable)")
 	c.Flags().StringVarP(&format, "output", "o", output.FormatTable, "output format: table|json")
 	_ = c.MarkFlagRequired("measurement-pattern")
 	_ = c.MarkFlagRequired("permission")
@@ -856,7 +881,7 @@ func newRBACMeasurementDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete measurement permission id %d?", id), yes); err != nil {
+			if err := confirmRBACDelete(cmd, fmt.Sprintf("Delete measurement permission id %d?", id), "If this is the role's last measurement permission, deleting it widens the role to all measurements matching its database pattern.", yes); err != nil {
 				return err
 			}
 			cli, ctx, cancel, err := rbacClientContext(cmd, &f)
@@ -904,16 +929,11 @@ func newRBACTokenTeamsListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			token, err := resolveRBACToken(ctx, cli, args[0])
-			cancel()
-			if err != nil {
-				return err
-			}
-			cli, ctx, cancel, err = rbacClientContext(cmd, &f)
-			if err != nil {
-				return err
-			}
 			defer cancel()
+			token, err := resolveRBACToken(ctx, cli, args[0])
+			if err != nil {
+				return err
+			}
 			items, err := cli.ListTokenTeams(ctx, token.ID)
 			if err != nil {
 				return err
@@ -951,22 +971,26 @@ func newRBACTokenTeamsAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			token, err := resolveRBACToken(ctx, cli, args[0])
-			cancel()
-			if err != nil {
-				return err
-			}
-			cli, ctx, cancel, err = rbacClientContext(cmd, &f)
-			if err != nil {
-				return err
-			}
 			defer cancel()
+			token, err := resolveRBACToken(ctx, cli, args[0])
+			if err != nil {
+				return err
+			}
+			for _, permission := range token.Permissions {
+				if permission == "admin" {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Warning: adding an admin token to a team does not restrict its access.")
+					break
+				}
+			}
 			item, err := cli.AddTokenToTeam(ctx, token.ID, teamID)
 			if err != nil {
 				return err
 			}
-			return renderRBACObject(cmd, item, format, [][2]string{
-				{"id", strconv.FormatInt(item.ID, 10)}, {"token_id", strconv.FormatInt(item.TokenID, 10)},
+			return renderRBACObject(cmd, struct {
+				*client.TokenMembership
+				TokenName string `json:"token_name"`
+			}{item, token.Name}, format, [][2]string{
+				{"id", strconv.FormatInt(item.ID, 10)}, {"token_id", strconv.FormatInt(item.TokenID, 10)}, {"token_name", token.Name},
 				{"team_id", strconv.FormatInt(item.TeamID, 10)}, {"created_at", to.Val(item.CreatedAt, "never")},
 			})
 		},
@@ -993,19 +1017,14 @@ func newRBACTokenTeamsRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			token, err := resolveRBACToken(ctx, cli, args[0])
-			cancel()
-			if err != nil {
-				return err
-			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Remove token %q (id %d) from team id %d?", clean(token.Name), token.ID, teamID), yes); err != nil {
-				return err
-			}
-			cli, ctx, cancel, err = rbacClientContext(cmd, &f)
-			if err != nil {
-				return err
-			}
 			defer cancel()
+			token, err := resolveRBACToken(ctx, cli, args[0])
+			if err != nil {
+				return err
+			}
+			if err := confirmRBACDelete(cmd, fmt.Sprintf("Remove token %q (id %d) from team id %d?", clean(token.Name), token.ID, teamID), rbacMembershipWarning, yes); err != nil {
+				return err
+			}
 			if err := cli.RemoveTokenFromTeam(ctx, token.ID, teamID); err != nil {
 				return err
 			}
@@ -1016,4 +1035,17 @@ func newRBACTokenTeamsRemoveCmd() *cobra.Command {
 	f.add(c)
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return c
+}
+
+// Warn unconditionally: a preflight count cannot guarantee membership state at
+// deletion time, and Arc exposes no atomic check-and-delete API. --yes skips
+// only the interactive prompt, never the access warning.
+const rbacMembershipWarning = "Any token left with no teams falls back to its coarse token permissions, which can widen access to every database."
+const rbacCascadeWarning = "A cluster may reject this deletion with HTTP 409 when cluster.rbac.max_cascade_descendants is exceeded."
+
+func confirmRBACDelete(cmd *cobra.Command, prompt, warning string, yes bool) error {
+	if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+warning); err != nil {
+		return err
+	}
+	return confirmOrAbort(cmd, prompt+" "+warning, yes)
 }

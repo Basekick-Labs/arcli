@@ -140,9 +140,9 @@ func TestRBACDestructiveCommandsNeedConfirmation(t *testing.T) {
 		args             []string
 		wantLookupBefore bool
 	}{
-		{"organization", []string{"rbac", "organization", "delete", "2"}, false},
-		{"team", []string{"rbac", "team", "delete", "3"}, false},
-		{"role", []string{"rbac", "role", "delete", "4"}, false},
+		{"organization", []string{"rbac", "organization", "delete", "2"}, true},
+		{"team", []string{"rbac", "team", "delete", "3"}, true},
+		{"role", []string{"rbac", "role", "delete", "4"}, true},
 		{"measurement permission", []string{"rbac", "measurement", "delete", "5"}, false},
 		{"token membership", []string{"rbac", "token", "team", "remove", "8", "3"}, true},
 	}
@@ -152,6 +152,10 @@ func TestRBACDestructiveCommandsNeedConfirmation(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				assertRBACRequest(t, r)
+				if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/rbac/") {
+					_, _ = w.Write([]byte(`{"organization":{"id":2,"name":"tenant"},"team":{"id":3,"name":"readers"},"role":{"id":4,"database_pattern":"metrics*"}}`))
+					return
+				}
 				if tc.wantLookupBefore && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8" {
 					_, _ = w.Write([]byte(`{"token":{"id":8,"name":"ci","permissions":["read"],"enabled":true,"expires_at":null}}`))
 					return
@@ -196,6 +200,10 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 			var mutations atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assertRBACRequest(t, r)
+				if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/rbac/") {
+					_, _ = w.Write([]byte(`{"organization":{"id":2,"name":"tenant"},"team":{"id":3,"name":"readers"},"role":{"id":4,"database_pattern":"metrics*"}}`))
+					return
+				}
 				if tc.name == "token membership" && r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth/tokens/8" {
 					_, _ = w.Write([]byte(`{"token":{"id":8,"name":"ci","permissions":["read"],"enabled":true,"expires_at":null}}`))
 					return
@@ -215,8 +223,8 @@ func TestRBACDestructiveCommandsAcceptYes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if stderr != "" {
-				t.Errorf("stderr = %q", stderr)
+			if !strings.Contains(stderr, "Warning:") {
+				t.Errorf("missing safety warning: %q", stderr)
 			}
 			if out == "" {
 				t.Error("expected confirmation of the completed action")
