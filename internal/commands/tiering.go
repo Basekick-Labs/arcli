@@ -806,7 +806,12 @@ func renderTieringDetails(w io.Writer, label string, raw json.RawMessage) {
 		return
 	}
 	var text string
-	if json.Unmarshal(raw, &text) != nil {
+	var list []string
+	switch {
+	case json.Unmarshal(raw, &text) == nil:
+	case json.Unmarshal(raw, &list) == nil:
+		text = strings.Join(list, ", ")
+	default:
 		text = string(raw)
 	}
 	fmt.Fprintf(w, "%s: %s\n", clean(label), clean(text))

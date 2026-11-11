@@ -344,7 +344,7 @@ func TestTieringReviewSafeOutputAndSortedStats(t *testing.T) {
 			w.WriteHeader(503)
 			_, _ = w.Write([]byte(`{"error":"scan failed sig=SECRET","result":{"files_scanned":7,"errors":1}}`))
 		case "/api/v1/tiering/status":
-			_, _ = w.Write([]byte(`{"cold_metadata":{"complete":true},"cold_missing_objects":3}`))
+			_, _ = w.Write([]byte(`{"enabled":true,"license_valid":true,"quarantined_files":0,"cold_metadata":{"authoritative":false,"reason":"no cold-tier metadata sync has recorded every cold object against this database yet"},"cold_missing_objects":{"lost":2,"hot_copy":0,"sample":["metrics/cpu/2026/10/02/cpu_20261002_000000_1_daily.parquet","metrics/cpu/2026/10/03/cpu_20261003_000000_1_daily.parquet"],"checked_at":"2026-11-11T22:48:40Z"}}`))
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
@@ -371,7 +371,8 @@ func TestTieringReviewSafeOutputAndSortedStats(t *testing.T) {
 		}
 	}
 	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "status")
-	if err != nil || !strings.Contains(out, "cold metadata complete") || !strings.Contains(out, "cold missing objects") {
+	if err != nil || !strings.Contains(out, "cold metadata authoritative: false") || !strings.Contains(out, "cold missing objects lost: 2") ||
+		!strings.Contains(out, "cold missing objects sample: metrics/cpu/2026/10/02/cpu_20261002_000000_1_daily.parquet, metrics/cpu/2026/10/03/cpu_20261003_000000_1_daily.parquet") || strings.Contains(out, `["`) {
 		t.Fatalf("status: %s %v", out, err)
 	}
 }
@@ -407,10 +408,10 @@ func TestTieringReviewPolicyHelpAndColdFilesNote(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			w.WriteHeader(404)
-			_, _ = w.Write([]byte(`{"error":"No custom policy found"}`))
+			_, _ = w.Write([]byte(`{"error":"No custom policy for this database","message":"Using global defaults"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"message":"updated","cold_files":{"note":"Existing cold files remain cold"}}`))
+		_, _ = w.Write([]byte(`{"message":"Policy updated successfully","database":"metrics","policy":{"id":0,"database":"metrics","hot_only":true,"hot_max_age_days":null,"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"},"cold_files":{"note":"hot_only affects future tiering only; it does not restore existing cold files.","recorded_before_update":3,"scope":"node_local_metadata"}}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
@@ -419,7 +420,7 @@ func TestTieringReviewPolicyHelpAndColdFilesNote(t *testing.T) {
 		t.Fatalf("missing effective guidance: %v", err)
 	}
 	out, _, err := execCmd(t, NewRoot(BuildInfo{}), "tiering", "policy", "set", "metrics", "--hot-only")
-	if err != nil || !strings.Contains(out, "cold files note: Existing cold files remain cold") || strings.Contains(out, `{"note"`) {
+	if err != nil || !strings.Contains(out, "cold files note: hot_only affects future tiering only; it does not restore existing cold files.") || !strings.Contains(out, "cold files recorded before update: 3") || strings.Contains(out, `{"note"`) {
 		t.Fatalf("cold files: %s %v", out, err)
 	}
 }
