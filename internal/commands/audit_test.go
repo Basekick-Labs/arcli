@@ -12,19 +12,19 @@ func TestAuditLogs_TableCSVJSONAndFilters(t *testing.T) {
 		if r.URL.Path != "/api/v1/audit/logs" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("event_type") != "" && (r.URL.Query().Get("event_type") != "auth.login" || r.URL.Query().Get("actor") != "admin" || r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "20") {
+		if r.URL.Query().Get("event_type") != "" && (r.URL.Query().Get("event_type") != "auth.failed" || r.URL.Query().Get("actor") != "admin" || r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "20") {
 			t.Errorf("query = %s", r.URL.RawQuery)
 		}
-		_, _ = w.Write([]byte(`{"success":true,"data":[{"id":3,"timestamp":"2026-10-27T10:00:00Z","event_type":"auth.login","actor":"admin","method":"POST","path":"/login","database":"metrics","measurement":"cpu","status_code":200,"ip_address":"127.0.0.1","user_agent":"agent","duration_ms":8,"detail":"ok"}],"count":1,"extra":"kept"}`))
+		_, _ = w.Write([]byte(`{"success":true,"data":[{"id":3,"timestamp":"2026-10-27T10:00:00Z","event_type":"auth.failed","actor":"admin","method":"POST","path":"/login","database":"metrics","measurement":"cpu","status_code":200,"ip_address":"127.0.0.1","user_agent":"agent","duration_ms":8,"detail":"ok"}],"count":1,"extra":"kept"}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
-	out, _, err := execCmd(t, newAuditLogCmd(), "--event-type", "auth.login", "--actor", "admin", "--limit", "10", "--offset", "20")
-	if err != nil || !strings.Contains(out, "auth.login") || !strings.Contains(out, "admin") || !strings.Contains(out, "metrics") {
+	out, _, err := execCmd(t, newAuditLogCmd(), "--event-type", "auth.failed", "--actor", "admin", "--limit", "10", "--offset", "20")
+	if err != nil || !strings.Contains(out, "auth.failed") || !strings.Contains(out, "admin") || !strings.Contains(out, "metrics") {
 		t.Errorf("table=%q err=%v", out, err)
 	}
 	out, _, err = execCmd(t, newAuditLogCmd(), "-o", "csv", "--no-header")
-	if err != nil || !strings.HasPrefix(out, "3,2026-10-27T10:00:00Z,auth.login,admin,POST") || strings.Contains(out, "id,timestamp") {
+	if err != nil || !strings.HasPrefix(out, "3,2026-10-27T10:00:00Z,auth.failed,admin,POST") || strings.Contains(out, "id,timestamp") {
 		t.Errorf("csv=%q err=%v", out, err)
 	}
 	out, _, err = execCmd(t, newAuditLogCmd(), "-o", "json")
@@ -46,16 +46,16 @@ func TestAuditStats_TableJSONAndLicenseError(t *testing.T) {
 		if r.URL.Query().Get("since") != "2026-10-01T00:00:00Z" {
 			t.Errorf("query = %s", r.URL.RawQuery)
 		}
-		_, _ = w.Write([]byte(`{"success":true,"data":{"query.execute":2,"auth.login":4},"since":"2026-10-01T00:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"success":true,"data":{"data.query":2,"auth.failed":4},"since":"2026-10-01T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")
 	out, _, err := execCmd(t, newAuditStatsCmd(), "--since", "2026-10-01T00:00:00Z")
-	if err != nil || !strings.Contains(out, "since: 2026-10-01T00:00:00Z") || strings.Index(out, "auth.login") > strings.Index(out, "query.execute") {
+	if err != nil || !strings.Contains(out, "since: 2026-10-01T00:00:00Z") || strings.Index(out, "auth.failed") > strings.Index(out, "data.query") {
 		t.Errorf("table=%q err=%v", out, err)
 	}
 	out, _, err = execCmd(t, newAuditStatsCmd(), "-o", "json", "--since", "2026-10-01T00:00:00Z")
-	if err != nil || !strings.Contains(out, `"auth.login": 4`) {
+	if err != nil || !strings.Contains(out, `"auth.failed": 4`) {
 		t.Errorf("json=%q err=%v", out, err)
 	}
 	_, _, err = execCmd(t, newAuditStatsCmd(), "--since", "bad")
@@ -81,10 +81,10 @@ func TestAuditFractionalTimestampOutput(t *testing.T) {
 	const utcSeconds = "2026-10-27T10:04:56Z"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/audit/stats" {
-			_, _ = w.Write([]byte(`{"data":{"auth.login":1},"since":"` + original + `","extra":"kept"}`))
+			_, _ = w.Write([]byte(`{"data":{"auth.failed":1},"since":"` + original + `","extra":"kept"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":[{"id":1,"timestamp":"` + original + `","event_type":"auth.login"}],"count":1,"extra":"kept"}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":1,"timestamp":"` + original + `","event_type":"auth.failed"}],"count":1,"extra":"kept"}`))
 	}))
 	defer srv.Close()
 	writeTestConfig(t, srv.URL, "tok")

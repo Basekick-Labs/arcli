@@ -20,9 +20,11 @@ func newAuditCmd() *cobra.Command {
 		Short: "Query Enterprise audit records",
 		Long: `Query Arc's durable audit records (/api/v1/audit/*).
 
-These endpoints require an administrator token and an Enterprise license
-with audit logging enabled. This is separate from "arcli logs", which reads
-the server's in-memory application log buffer.`,
+These endpoints require an Enterprise license with audit logging enabled,
+and an administrator token when Arc authentication is enabled. Each Arc
+node keeps its own audit records: on a cluster, a command shows only the
+records of the node it reaches. This is separate from "arcli logs", which
+reads the server's in-memory application log buffer.`,
 	}
 	c.AddCommand(newAuditLogCmd(), newAuditStatsCmd())
 	return c
@@ -48,7 +50,7 @@ Table and CSV timestamps use UTC RFC3339 by default; --time-output
 rfc3339nano shows fractional seconds. JSON preserves the original server
 response.`,
 		Example: `  arcli audit log --since 2026-01-01T00:00:00Z --limit 100 --offset 100
-  arcli audit log --event-type auth.login --actor admin -o json`,
+  arcli audit log --event-type auth.failed --since 2026-01-01T00:00:00Z -o json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validListFormat(outputFormat) {
