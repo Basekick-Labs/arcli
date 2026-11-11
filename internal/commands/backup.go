@@ -173,6 +173,10 @@ func describeProgress(w io.Writer, p *client.BackupProgress, to timeOutput) {
 		}
 	}
 	writeSample(w, "unaddressable", p.UnaddressableSample)
+	if p.Operation == "backup" && p.ManifestOnlyFiles > 0 {
+		fmt.Fprintf(w, "  manifest-only: %d files missing from the backup\n", p.ManifestOnlyFiles)
+		writeSample(w, "manifest-only", p.ManifestOnlySample)
+	}
 }
 
 // writeRestoreDetails prints the additional outcomes Arc reports for a
@@ -267,36 +271,15 @@ func describeIncomplete(c incompleteCounts) string {
 	return strings.Join(parts, ", ")
 }
 
-func describeClusterBackupInfo(reconciled, unregistered, leftManifest int64, checked *bool) string {
-	var parts []string
-	if reconciled > 0 {
-		parts = append(parts, fmt.Sprintf("%d skipped reconciled", reconciled))
-	}
-	if unregistered > 0 {
-		parts = append(parts, fmt.Sprintf("%d unregistered", unregistered))
-	}
-	if leftManifest > 0 {
-		parts = append(parts, fmt.Sprintf("%d left manifest during backup", leftManifest))
-	}
-	if checked != nil {
-		if *checked {
-			parts = append(parts, "cluster manifest checked")
-		} else {
-			parts = append(parts, "cluster manifest not checked")
-		}
-	}
-	return strings.Join(parts, ", ")
-}
-
 func backupListIncomplete(b client.BackupSummary) string {
-	// Arc's backup listing carries no skipped_reconciled, so skipped files
-	// are counted as listed; `backup show` reads the manifest and subtracts
-	// them. Information-only counts stay out of this column.
+	// Current Arc listings include skipped_reconciled; older servers omit
+	// it (zero). Match the manifest's calculation without counting informational exclusions.
 	if incomplete := describeIncomplete(incompleteCounts{
-		Skipped:       b.SkippedFiles,
-		Metadata:      b.SkippedMetadataFiles,
-		Unaddressable: b.UnaddressableFiles,
-		ManifestOnly:  b.ManifestOnlyFiles,
+		Skipped:           b.SkippedFiles,
+		SkippedReconciled: b.SkippedReconciled,
+		Metadata:          b.SkippedMetadataFiles,
+		Unaddressable:     b.UnaddressableFiles,
+		ManifestOnly:      b.ManifestOnlyFiles,
 	}); incomplete != "" {
 		return incomplete
 	}
@@ -428,12 +411,16 @@ nodes receive HTTP 503 before the operation starts.`,
 			if final.UnaddressableFiles > 0 {
 				gaps = append(gaps, fmt.Sprintf("%d files could not be listed", final.UnaddressableFiles))
 			}
+			if final.ManifestOnlyFiles > 0 {
+				gaps = append(gaps, fmt.Sprintf("%d files were present only in the cluster manifest", final.ManifestOnlyFiles))
+			}
 			if len(gaps) > 0 {
 				fmt.Fprintf(out, " (%s — the backup is incomplete)", strings.Join(gaps, ", "))
 			}
 			fmt.Fprintln(out)
 			if len(gaps) > 0 {
 				writeSample(out, "skipped", final.SkippedSample)
+				writeSample(out, "manifest-only", final.ManifestOnlySample)
 				fmt.Fprintf(cmd.ErrOrStderr(), "see `arcli backup show %s` for the full breakdown\n", clean(id))
 			}
 			return nil
@@ -463,8 +450,9 @@ func newBackupListCmd() *cobra.Command {
 		Short: "List backups, newest first",
 		Long: `List backups (GET /api/v1/backup/), newest first.
 
-INCOMPLETE includes skipped data files that remain absent from the cluster
-manifest, manifest-only files, metadata skips, and unaddressable files.
+INCOMPLETE includes unreconciled skipped data files, manifest-only files,
+metadata skips, and unaddressable files. Reconciled skips had left the
+cluster manifest by the end of the run and are no longer missing data.
 Reconciled skips, unregistered local files, and files removed from the
 manifest during backup are shown as information, not missing backup data.
 "-" means no gaps were reported; "backup show" names sampled files.
@@ -494,12 +482,12 @@ incompleteness and cluster-manifest counts returned by the server.`,
 			if outputFormat == output.FormatCSV {
 				cw := csv.NewWriter(w)
 				if !noHeader {
-					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files", "unregistered_skipped", "manifest_only_files", "left_manifest_during_run"}); err != nil {
+					if err := cw.Write([]string{"backup_id", "created_at", "backup_type", "database_count", "total_files", "total_size_bytes", "skipped_files", "skipped_metadata_files", "unaddressable_files", "unregistered_skipped", "manifest_only_files", "left_manifest_during_run", "skipped_reconciled"}); err != nil {
 						return err
 					}
 				}
 				for _, b := range list {
-					if err := cw.Write([]string{b.BackupID, to.Val(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10)}); err != nil {
+					if err := cw.Write([]string{b.BackupID, to.Val(b.CreatedAt, ""), b.BackupType, strconv.Itoa(b.DatabaseCount), strconv.FormatInt(b.TotalFiles, 10), strconv.FormatInt(b.TotalBytes, 10), strconv.FormatInt(b.SkippedFiles, 10), strconv.FormatInt(b.SkippedMetadataFiles, 10), strconv.FormatInt(b.UnaddressableFiles, 10), strconv.FormatInt(b.UnregisteredSkipped, 10), strconv.FormatInt(b.ManifestOnlyFiles, 10), strconv.FormatInt(b.LeftManifestDuringRun, 10), strconv.FormatInt(b.SkippedReconciled, 10)}); err != nil {
 						return err
 					}
 				}
@@ -601,20 +589,16 @@ func writeManifest(w io.Writer, m *client.BackupManifest, to timeOutput) error {
 
 func writeManifestClusterInfo(w io.Writer, m *client.BackupManifest) {
 	if m.SkippedReconciled > 0 {
-		fmt.Fprintf(w, "reconciled:   %s later absent from the manifest; not incomplete\n", plural(m.SkippedReconciled, "skipped file was", "skipped files were"))
+		fmt.Fprintf(w, "reconciled:       %s later absent from the manifest; not incomplete\n", plural(m.SkippedReconciled, "skipped file was", "skipped files were"))
 	}
 	if m.UnregisteredSkipped > 0 {
-		fmt.Fprintf(w, "unregistered: %d local data files were not in the cluster manifest and were not backed up\n", m.UnregisteredSkipped)
+		fmt.Fprintf(w, "unregistered:     %d local data files were not in the cluster manifest and were not backed up\n", m.UnregisteredSkipped)
 	}
 	if m.LeftManifestDuringRun > 0 {
-		fmt.Fprintf(w, "left manifest: %d files were copied then removed as the manifest changed during backup\n", m.LeftManifestDuringRun)
+		fmt.Fprintf(w, "left manifest:    %d files were copied then removed as the manifest changed during backup\n", m.LeftManifestDuringRun)
 	}
-	if m.ClusterManifestChecked != nil {
-		if *m.ClusterManifestChecked {
-			fmt.Fprintln(w, "cluster manifest: checked")
-		} else {
-			fmt.Fprintln(w, "cluster manifest: not checked")
-		}
+	if m.ClusterManifestChecked != nil && *m.ClusterManifestChecked {
+		fmt.Fprintln(w, "cluster manifest: checked")
 	}
 }
 
@@ -728,7 +712,28 @@ since it started.`,
 				_, err := fmt.Fprintln(w, "idle (no backup or restore has run since the server started)")
 				return err
 			}
-			describeProgress(w, st.Progress, to)
+			progress := st.Progress
+			var unreconciled int64
+			if progress.Operation == "restore" && progress.BackupSkippedFiles > 0 {
+				// Status does not include skipped_reconciled. Enrich human output
+				// from the source manifest without changing raw JSON or making a
+				// missing/deleted manifest prevent inspection of the operation.
+				display := *progress
+				mctx, mcancel := f.ctx(cmd)
+				manifest, manifestErr := cli.GetBackup(mctx, progress.BackupID)
+				mcancel()
+				if manifestErr == nil {
+					display.BackupSkippedFiles = effectiveSkipped(manifest.SkippedFiles, manifest.SkippedReconciled)
+				} else {
+					unreconciled = progress.BackupSkippedFiles
+					display.BackupSkippedFiles = 0
+				}
+				progress = &display
+			}
+			describeProgress(w, progress, to)
+			if unreconciled > 0 {
+				fmt.Fprintf(w, "backup skipped: %d reported before reconciliation; manifest unavailable, see `arcli backup show %s`\n", unreconciled, clean(progress.BackupID))
+			}
 			return nil
 		},
 	}
@@ -823,8 +828,11 @@ func newBackupRestoreCmd() *cobra.Command {
 
 Data files from the backup are written over the server's storage
 unconditionally; existing files at the same paths are replaced. Run it
-on a quiescent server: stop writers and compaction first. On a cluster,
-Arc registers restored files in the cluster manifest and reports failures.
+on a quiescent server: stop writers first. Arc 27.01.1+ (currently unreleased)
+pauses compaction cluster-wide and registers restored files in the cluster
+manifest. On older clusters, including 26.06–26.09, stop compaction yourself;
+restored files are not registered in the cluster manifest. Stop compaction
+manually on standalone servers too.
 
 By default the metadata store (tokens, policies, continuous queries) is
 restored on a standalone node if the backup contains it, but skipped on a
@@ -838,8 +846,12 @@ to 2h).
 The restore mode is merge by default for a full backup. Arc may default a
 scoped cluster backup to replace; when --mode is omitted, arcli leaves that
 choice to the server. Use --mode merge or --mode replace to choose explicitly.
-Replace is available only on clusters and removes the current manifest entries
-for the backup's databases before restoring them.
+Explicit restore modes require Arc 27.01.1+ (currently unreleased). Replace
+is available only on clusters and removes the current manifest entries for
+the backup's databases before restoring them. Older servers silently ignore
+--mode; arcli exits nonzero when the response does not confirm the requested
+mode, but the accepted restore may still run server-side. Check backup status
+before retrying. Replace is refused before submission for known data gaps.
 
 On a cluster, only the primary writer can restore a backup. A node
 that is not the primary writer returns HTTP 503 after confirmation,
@@ -888,6 +900,9 @@ before the restore starts.`,
 				return fmt.Errorf("backup %s does not contain the server config; drop --with-config", clean(id))
 			}
 			stderr := cmd.ErrOrStderr()
+			if mode == "replace" && (effectiveSkipped(m.SkippedFiles, m.SkippedReconciled) > 0 || m.UnaddressableFiles > 0 || m.ManifestOnlyFiles > 0) {
+				return fmt.Errorf("restore refused: --mode replace requires a complete backup; use --mode merge or take a complete backup first")
+			}
 			if gaps := describeRestoreGaps(m); gaps != "" {
 				fmt.Fprintf(stderr, "warning: backup %s is incomplete (%s)\n", clean(id), gaps)
 			}
@@ -901,7 +916,7 @@ before the restore starts.`,
 			}
 			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), to.Val(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
 			if cmd.Flags().Changed("mode") && mode == "replace" {
-				parts = append(parts, "The current cluster manifest entries for these databases will be removed before restoring.")
+				parts = append(parts, "On Arc 27.01.1+, the current cluster manifest entries for these databases will be removed before restoring. Older Arc versions ignore --mode and merge instead.")
 			}
 			if restoreMeta {
 				parts = append(parts, "The metadata store will be staged and applied at the next server start.")
@@ -944,6 +959,15 @@ before the restore starts.`,
 			cancel()
 			if err != nil {
 				return err
+			}
+			if mode != "" && res.Mode != mode {
+				fmt.Fprintln(stderr, "warning: Arc accepted the restore without confirming the requested mode; it may be running with different semantics. Check `arcli backup status` before retrying.")
+				if outputFormat == output.FormatJSON {
+					if err := writeRawJSON(cmd.OutOrStdout(), res.Raw); err != nil {
+						return err
+					}
+				}
+				return fmt.Errorf("requested restore mode %q was not confirmed by Arc (reported %q); explicit modes require Arc 27.01.1+", mode, clean(res.Mode))
 			}
 			sctx, scancel := f.ctx(cmd)
 			started, err := awaitOperationStart(sctx, cli, want)
@@ -992,6 +1016,20 @@ before the restore starts.`,
 			if err != nil {
 				return err
 			}
+			if mode != "" && final.Mode != mode {
+				fmt.Fprintln(stderr, "warning: final restore status did not confirm the requested mode; inspect `arcli backup status` and verify restored data before retrying.")
+				if outputFormat == output.FormatJSON {
+					if err := writeRawJSON(cmd.OutOrStdout(), raw); err != nil {
+						return err
+					}
+				}
+				return fmt.Errorf("requested restore mode %q was not confirmed by final status (reported %q)", mode, clean(final.Mode))
+			}
+			// Progress lacks skipped_reconciled; the manifest read before prompting
+			// supplies it. Adjust only the display copy, never raw server JSON.
+			display := *final
+			display.BackupSkippedFiles = effectiveSkipped(m.SkippedFiles, m.SkippedReconciled)
+			final = &display
 			if outputFormat == output.FormatJSON {
 				if err := writeRawJSON(cmd.OutOrStdout(), raw); err != nil {
 					return err
@@ -1007,7 +1045,9 @@ before the restore starts.`,
 					fmt.Fprintf(cmd.OutOrStdout(), "Restore of %s completed: %d files, %s written (mode: %s)\n", clean(id), final.ProcessedFiles, humanBytes(final.ProcessedBytes), clean(completedMode))
 				}
 				writeRestoreGaps(cmd.OutOrStdout(), final)
-				writeRestoreDetails(cmd.OutOrStdout(), final)
+				details := *final
+				details.Mode = "" // already printed in the completion line
+				writeRestoreDetails(cmd.OutOrStdout(), &details)
 			} else {
 				describeProgress(cmd.OutOrStdout(), final, to)
 			}

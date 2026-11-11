@@ -135,6 +135,9 @@ type BackupProgress struct {
 	SkippedSample       []string `json:"skipped_sample,omitempty"`
 	UnaddressableFiles  int64    `json:"unaddressable_files,omitempty"`
 	UnaddressableSample []string `json:"unaddressable_sample,omitempty"`
+	// Cluster cross-check counts published during backup creation.
+	ManifestOnlyFiles  int64    `json:"manifest_only_files,omitempty"`
+	ManifestOnlySample []string `json:"manifest_only_sample,omitempty"`
 	// Restore only: what the restored backup already lacked when it was taken,
 	// and warehouse files left out because this node has no outside-root
 	// Iceberg warehouse. Newer Arc versions also report the selected mode,

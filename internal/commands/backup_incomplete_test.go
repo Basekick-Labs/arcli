@@ -19,10 +19,7 @@ func TestBackup_ReconciledSkipsAreNotIncomplete(t *testing.T) {
 	if got := describeIncomplete(incompleteCounts{Skipped: 1, SkippedReconciled: 2}); got != "" {
 		t.Fatalf("reconciled skips counted as incomplete: %q", got)
 	}
-	checked := false
-	if got := describeClusterBackupInfo(0, 0, 0, &checked); got != "cluster manifest not checked" {
-		t.Fatalf("unchecked manifest status = %q", got)
-	}
+
 }
 
 func newIncompleteBackupServer(t *testing.T) *httptest.Server {
@@ -73,7 +70,7 @@ func TestBackup_IncompleteIsVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"INCOMPLETE", "3 skipped, 1 metadata, 2 unaddressable, 2 manifest-only", "│ -"} {
+	for _, want := range []string{"INCOMPLETE", "2 skipped, 1 metadata, 2 unaddressable, 2 manifest-only", "│ -"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list table lacks %q:\n%s", want, out)
 		}
@@ -83,10 +80,10 @@ func TestBackup_IncompleteIsVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 || lines[0] != "backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,unregistered_skipped,manifest_only_files,left_manifest_during_run" {
+	if len(lines) != 4 || lines[0] != "backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,unregistered_skipped,manifest_only_files,left_manifest_during_run,skipped_reconciled" {
 		t.Errorf("csv header = %q (%d lines)", lines[0], len(lines))
 	}
-	if len(lines) == 4 && (!strings.HasSuffix(lines[1], ",21,2086,3,1,2,4,2,3") || !strings.HasSuffix(lines[2], ",20,2000,0,0,0,0,0,0") || !strings.HasSuffix(lines[3], ",20,2000,0,1,0,0,0,0")) {
+	if len(lines) == 4 && (!strings.HasSuffix(lines[1], ",21,2086,3,1,2,4,2,3,1") || !strings.HasSuffix(lines[2], ",20,2000,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[3], ",20,2000,0,1,0,0,0,0,0")) {
 		t.Errorf("csv rows = %q", lines[1:])
 	}
 	out, _, err = execCmd(t, newBackupListCmd(), "-o", "csv", "--no-header")
@@ -120,11 +117,11 @@ func TestBackup_IncompleteIsVisible(t *testing.T) {
 		"  skipped:       mydb/cpu/2026/09/17/00/a.parquet\n",
 		"  skipped:       mydb/cpu/metadata/00003-5f2c.metadata.json\n",
 		"  unaddressable: mydb/cpu/2026/09/17/00/bad key.parquet\n",
-		"reconciled:   1 skipped file was later absent from the manifest; not incomplete\n",
-		"unregistered: 4 local data files were not in the cluster manifest and were not backed up\n",
+		"reconciled:       1 skipped file was later absent from the manifest; not incomplete\n",
+		"unregistered:     4 local data files were not in the cluster manifest and were not backed up\n",
 		"  unregistered:  mydb/cpu/unregistered.parquet\n",
 		"  manifest-only: mydb/cpu/manifest-only.parquet\n",
-		"left manifest: 3 files were copied then removed as the manifest changed during backup\n",
+		"left manifest:    3 files were copied then removed as the manifest changed during backup\n",
 		"  left-manifest: mydb/cpu/left-manifest.parquet\n",
 		"cluster manifest: checked\n",
 	} {

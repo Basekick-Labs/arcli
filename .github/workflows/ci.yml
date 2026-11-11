@@ -69,6 +69,10 @@ jobs:
         with:
           version: "~> v2.18"
           args: release --snapshot --clean --skip=publish,sign,sbom,docker
+        env:
+          # No signing key on PRs: --skip=sign leaves the RPMs unsigned, and
+          # the release workflow refuses to run without the key.
+          RPM_SIGNING_KEY_FILE: ""
 
       - name: Show what a release would ship
         run: |
