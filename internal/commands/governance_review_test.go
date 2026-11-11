@@ -53,11 +53,14 @@ func TestGovernanceOrphanPolicyNumericReference(t *testing.T) {
 					t.Errorf("unexpected request %s", r.URL)
 				}
 			})
-			_, _, showErr := execCmd(t, newGovernancePolicyShowCmd(), "12")
-			_, _, deleteErr := execCmd(t, newGovernancePolicyDeleteCmd(), "12", "--yes")
+			showOut, _, showErr := execCmd(t, newGovernancePolicyShowCmd(), "12")
+			deleteOut, _, deleteErr := execCmd(t, newGovernancePolicyDeleteCmd(), "12", "--yes")
 			if status == http.StatusNotFound {
 				if showErr != nil || deleteErr != nil || deletes != 1 || policyReads != 2 {
 					t.Fatalf("show=%v delete=%v reads=%d deletes=%d", showErr, deleteErr, policyReads, deletes)
+				}
+				if !strings.Contains(showOut, "token:                  - (token not found)\n") || deleteOut != "Deleted governance policy for token id 12 (token not found)\n" {
+					t.Fatalf("show=%q delete=%q", showOut, deleteOut)
 				}
 			} else if showErr == nil || deleteErr == nil || policyReads != 0 || deletes != 0 {
 				t.Fatalf("unexpected fallback show=%v delete=%v reads=%d deletes=%d", showErr, deleteErr, policyReads, deletes)
@@ -131,11 +134,17 @@ func TestGovernanceUsageLimitSemantics(t *testing.T) {
 	}{
 		{"defaults", &client.GovernancePolicy{}, []string{"queries this hour:              n/a", "queries this day:               n/a", "remaining rate limit per minute: unlimited", "remaining rate limit per hour:   unlimited", "server defaults (no token policy)", "policy max scan duration:       unlimited\n"}},
 		{"exhausted", &client.GovernancePolicy{ID: 1, RateLimitPerMinute: 3, RateLimitPerHour: 10, MaxQueriesPerHour: 10, MaxQueriesPerDay: 20, MaxScanDurationSec: 30}, []string{"queries this hour:              0", "queries this day:               0", "remaining rate limit per minute: 0", "remaining rate limit per hour:   0", "policy:                         token policy", "policy max scan duration:       30 sec"}},
-		{"none", nil, []string{"policy:                         unavailable", "queries this hour:              n/a (policy unavailable)", "remaining rate limit per hour:   n/a (policy unavailable)"}},
+		{"none", nil, []string{"policy:                         none (no token policy or server defaults; no limits apply)", "queries this hour:              n/a (no query quota)", "remaining rate limit per minute: unlimited", "remaining rate limit per hour:   unlimited"}},
+		// Arc counts both windows in one tracker once either quota is set.
+		{"hourly quota only", &client.GovernancePolicy{ID: 1, MaxQueriesPerHour: 10}, []string{"queries this hour:              2", "queries this day:               2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			writeGovernanceUsageInfo(&b, &client.GovernanceUsage{TokenID: 12}, tc.policy, timeOutput{})
+			usage := &client.GovernanceUsage{TokenID: 12}
+			if tc.name == "hourly quota only" {
+				usage.QueriesThisHour, usage.QueriesThisDay = 2, 2
+			}
+			writeGovernanceUsageInfo(&b, usage, tc.policy, timeOutput{})
 			for _, want := range tc.want {
 				if !strings.Contains(b.String(), want) {
 					t.Errorf("missing %q in %s", want, b.String())

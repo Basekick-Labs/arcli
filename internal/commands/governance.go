@@ -224,7 +224,8 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 		Long: `Create a per-node policy. Omitted limits are unlimited and override server defaults.
 Pass at least one limit flag, or --unlimited to explicitly disable every limit.`,
 		Example: `  arcli governance policy create batch --rate-limit-per-minute 30 --max-queries-per-day 5000
-  arcli governance policy create 12 --max-rows-per-query 10000 --max-scan-duration-sec 60`,
+  arcli governance policy create 12 --max-rows-per-query 10000 --max-scan-duration-sec 60
+  arcli governance policy create 12 --unlimited`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -292,7 +293,7 @@ func newGovernancePolicyUpdateCmd() *cobra.Command {
 	var limits governanceLimitFlags
 	c := &cobra.Command{
 		Use:   "update <token-id|name>",
-		Short: "Update selected limits on a token's query-governance policy (admin)",
+		Short: "Update selected limits on a token's query-governance policy",
 		Long: `Update one or more policy limits. Arc replaces the complete policy on PUT,
 so arcli reads the current policy and merges only the flags you pass.
 Arc has no PATCH or version check: concurrent updates can lose changes.
@@ -334,7 +335,7 @@ Policies apply only to the contacted node and are not replicated.`,
 			if outputFormat == output.FormatJSON {
 				return writeJSON(cmd.OutOrStdout(), updated)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Updated governance policy for token %q (id %d)\n", clean(token.Name), token.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Updated governance policy for %s\n", governanceTokenLabel(token))
 			writeGovernancePolicyInfo(cmd.OutOrStdout(), updated, to)
 			return nil
 		},
@@ -351,7 +352,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 	var yes bool
 	c := &cobra.Command{
 		Use:   "delete <token-id|name>",
-		Short: "Delete a token's query-governance policy (admin)",
+		Short: "Delete a token's query-governance policy",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cli, _, err := f.client(cmd)
@@ -364,7 +365,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete governance policy for token %q (id %d)?", clean(token.Name), token.ID), yes); err != nil {
+			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete governance policy for %s?", governanceTokenLabel(token)), yes); err != nil {
 				return err
 			}
 			ctx, cancel = f.ctx(cmd)
@@ -372,7 +373,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 			if err := cli.DeleteGovernancePolicy(ctx, token.ID); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Deleted governance policy for token %q (id %d)\n", clean(token.Name), token.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted governance policy for %s\n", governanceTokenLabel(token))
 			return nil
 		},
 	}
@@ -478,7 +479,11 @@ func governanceLimit(value int) string {
 
 func writeGovernancePolicyInfo(w io.Writer, p *client.GovernancePolicy, to timeOutput) {
 	fmt.Fprintf(w, "token id:               %d\n", p.TokenID)
-	fmt.Fprintf(w, "token:                  %s\n", clean(p.TokenName))
+	tokenName := clean(p.TokenName)
+	if tokenName == "" {
+		tokenName = "- (token not found)"
+	}
+	fmt.Fprintf(w, "token:                  %s\n", tokenName)
 	fmt.Fprintf(w, "rate limit per minute:  %s\n", governanceLimit(p.RateLimitPerMinute))
 	fmt.Fprintf(w, "rate limit per hour:    %s\n", governanceLimit(p.RateLimitPerHour))
 	fmt.Fprintf(w, "max queries per hour:   %s\n", governanceLimit(p.MaxQueriesPerHour))
@@ -487,6 +492,15 @@ func writeGovernancePolicyInfo(w io.Writer, p *client.GovernancePolicy, to timeO
 	fmt.Fprintf(w, "max scan duration:      %s\n", governanceDuration(p.MaxScanDurationSec))
 	fmt.Fprintf(w, "created:                %s\n", to.Server(p.CreatedAt, "-"))
 	fmt.Fprintf(w, "updated:                %s\n", to.Server(p.UpdatedAt, "-"))
+}
+
+// governanceTokenLabel names a token in messages. A policy reached by the
+// numeric ID of a deleted token has no name.
+func governanceTokenLabel(token *client.TokenInfo) string {
+	if token.Name == "" {
+		return fmt.Sprintf("token id %d (token not found)", token.ID)
+	}
+	return fmt.Sprintf("token %q (id %d)", clean(token.Name), token.ID)
 }
 
 func governanceDuration(value int) string {
@@ -505,20 +519,22 @@ func governanceUsageValue(value, limit int, absent string) string {
 
 func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy *client.GovernancePolicy, to timeOutput) {
 	fmt.Fprintf(w, "token id:                       %d\n", usage.TokenID)
+	// A nil policy means no token policy and no server defaults: the token is
+	// unrestricted. Arc keeps one quota tracker that counts both the hour and
+	// the day once either quota is set, so both counters are real then.
 	limits := client.GovernancePolicy{}
-	noHour, noDay, noRate := "n/a (policy unavailable)", "n/a (policy unavailable)", "n/a (policy unavailable)"
 	if policy != nil {
 		limits = *policy
-		noHour, noDay, noRate = "n/a (no hourly quota)", "n/a (no daily quota)", "unlimited"
 	}
-	fmt.Fprintf(w, "queries this hour:              %s\n", governanceUsageValue(usage.QueriesThisHour, limits.MaxQueriesPerHour, noHour))
-	fmt.Fprintf(w, "queries this day:               %s\n", governanceUsageValue(usage.QueriesThisDay, limits.MaxQueriesPerDay, noDay))
+	quota := max(limits.MaxQueriesPerHour, limits.MaxQueriesPerDay)
+	fmt.Fprintf(w, "queries this hour:              %s\n", governanceUsageValue(usage.QueriesThisHour, quota, "n/a (no query quota)"))
+	fmt.Fprintf(w, "queries this day:               %s\n", governanceUsageValue(usage.QueriesThisDay, quota, "n/a (no query quota)"))
 	fmt.Fprintf(w, "hour resets:                    %s\n", to.Server(usage.HourResetAt, "-"))
 	fmt.Fprintf(w, "day resets:                     %s\n", to.Server(usage.DayResetAt, "-"))
-	fmt.Fprintf(w, "remaining rate limit per minute: %s\n", governanceUsageValue(usage.RateLimitRemainingPerMin, limits.RateLimitPerMinute, noRate))
-	fmt.Fprintf(w, "remaining rate limit per hour:   %s\n", governanceUsageValue(usage.RateLimitRemainingPerHour, limits.RateLimitPerHour, noRate))
+	fmt.Fprintf(w, "remaining rate limit per minute: %s\n", governanceUsageValue(usage.RateLimitRemainingPerMin, limits.RateLimitPerMinute, "unlimited"))
+	fmt.Fprintf(w, "remaining rate limit per hour:   %s\n", governanceUsageValue(usage.RateLimitRemainingPerHour, limits.RateLimitPerHour, "unlimited"))
 	if policy == nil {
-		fmt.Fprintln(w, "policy:                         unavailable")
+		fmt.Fprintln(w, "policy:                         none (no token policy or server defaults; no limits apply)")
 		return
 	}
 	if policy.ID == 0 {
