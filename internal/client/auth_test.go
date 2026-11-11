@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -173,17 +174,41 @@ func TestCreateToken_ClientSideValidation(t *testing.T) {
 }
 
 func TestParseExpiresIn(t *testing.T) {
-	ok := map[string]time.Duration{"24h": 24 * time.Hour, "90m": 90 * time.Minute, "7d": 7 * 24 * time.Hour, "1d": 24 * time.Hour}
+	ok := map[string]time.Duration{
+		"24h": 24 * time.Hour, "90m": 90 * time.Minute,
+		"7d": 7 * 24 * time.Hour, "1d": 24 * time.Hour,
+		"106751d": 106751 * 24 * time.Hour,
+	}
 	for in, want := range ok {
 		got, err := ParseExpiresIn(in)
 		if err != nil || got != want {
 			t.Errorf("ParseExpiresIn(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "0", "0d", "-1h", "1w", "7 days", "1d12h", "d", "abc"} {
+	for _, in := range []string{"", "0", "0d", "-1h", "1w", "7 days", "1d12h", "d", "abc", "106752d", "213504d", "2147483647d", "9223372036854775807d"} {
 		if _, err := ParseExpiresIn(in); err == nil {
 			t.Errorf("ParseExpiresIn(%q) should fail", in)
 		}
+	}
+}
+
+func TestTokenExpiryOverflow_RejectsBeforeRequest(t *testing.T) {
+	var requests atomic.Int32
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"token":"unused-test-token"}`))
+	})
+	// These wrap to a negative and a positive duration respectively.
+	for _, expiry := range []string{"106752d", "213504d"} {
+		if secret, err := cli.CreateToken(context.Background(), CreateTokenOptions{Name: "ci", ExpiresIn: expiry}); err == nil || !strings.Contains(err.Error(), "maximum") || secret != "" {
+			t.Errorf("create with %s: secret=%q error=%v", expiry, secret, err)
+		}
+		if err := cli.UpdateToken(context.Background(), 7, UpdateTokenOptions{ExpiresIn: &expiry}); err == nil || !strings.Contains(err.Error(), "maximum") {
+			t.Errorf("update with %s: error=%v", expiry, err)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Errorf("sent %d requests with overflowing expiry", got)
 	}
 }
 

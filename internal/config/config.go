@@ -27,7 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/viper"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Connection is one named Arc endpoint + its credentials.
@@ -117,21 +117,17 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
 		return &Config{Connections: map[string]Connection{}}, nil
 	} else if err != nil {
-		return nil, fmt.Errorf("stat config: %w", err)
-	}
-
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetConfigType("toml")
-	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
 	cfg := &Config{Connections: map[string]Connection{}}
-	if err := v.Unmarshal(cfg); err != nil {
+	// Connection names are literal, case-sensitive TOML keys. Viper
+	// lowercases them and treats dots as nested key separators.
+	if err := toml.Unmarshal(body, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if cfg.Connections == nil {
@@ -161,37 +157,32 @@ func (c *Config) Save() error {
 		}
 		c.InstallationID = id
 	}
-	v := viper.New()
-	v.Set("active", c.Active)
-	v.Set("connections", c.Connections)
-	v.Set("installation_id", c.InstallationID)
-	if c.SendInstallationID != nil && !*c.SendInstallationID {
+	saved := *c
+	if saved.SendsInstallationID() {
 		// Only the opt-out is written; the default stays implicit.
-		v.Set("send_installation_id", false)
+		saved.SendInstallationID = nil
+	}
+	body, err := toml.Marshal(saved)
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
 	}
 
 	// Write to a temp file in the same directory then rename atomically,
-	// so we never leave a half-written config behind on a crash. Use a
-	// .toml extension on the temp path because viper.WriteConfigAs infers
-	// format from the extension and rejects unknown suffixes like .tmp.
+	// so we never leave a half-written config behind on a crash.
 	tmp, err := os.CreateTemp(dir, "config.*.toml")
 	if err != nil {
 		return fmt.Errorf("create temp config: %w", err)
 	}
 	tmpPath := tmp.Name()
-	// Close immediately — viper.WriteConfigAs reopens with its own
-	// codec rather than appending to our handle.
-	_ = tmp.Close()
-	if err := v.WriteConfigAs(tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write temp config: %w", err)
 	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("chmod temp config: %w", err)
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename config into place: %w", err)
 	}
 	return nil

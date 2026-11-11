@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,59 @@ func TestSaveAndLoad_Roundtrip(t *testing.T) {
 		}
 		if got.Connections["local"].Endpoint != "http://localhost:8000" {
 			t.Errorf("local endpoint = %q", got.Connections["local"].Endpoint)
+		}
+	})
+}
+
+func TestSaveAndLoad_PreservesConnectionNames(t *testing.T) {
+	withTempConfig(t, func() {
+		clearEnv(t)
+		cfg := &Config{
+			Active: "Prod.EU",
+			Connections: map[string]Connection{
+				"Prod.EU": {Endpoint: "https://prod.example.com", Token: "prod-token", DefaultDatabase: "metrics", InsecureTLS: true},
+				"prod.eu": {Endpoint: "https://staging.example.com", Token: "staging-token"},
+				"LOCAL":   {Endpoint: "http://localhost:8000"},
+			},
+		}
+		if err := cfg.Save(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Connections, cfg.Connections) {
+			t.Errorf("connections = %+v, want %+v", got.Connections, cfg.Connections)
+		}
+		conn, name, err := got.Resolve(ResolveOptions{})
+		if err != nil || name != cfg.Active || conn != cfg.Connections[cfg.Active] {
+			t.Errorf("resolve active: conn=%+v name=%q err=%v", conn, name, err)
+		}
+		for name, want := range cfg.Connections {
+			conn, resolvedName, err := got.Resolve(ResolveOptions{ConnectionName: name})
+			if err != nil || resolvedName != name || conn != want {
+				t.Errorf("resolve %q: conn=%+v name=%q err=%v", name, conn, resolvedName, err)
+			}
+		}
+	})
+}
+
+func TestLoad_PreservesQuotedConnectionNames(t *testing.T) {
+	withTempConfig(t, func() {
+		clearEnv(t)
+		path, _ := ConfigPath()
+		body := "active = 'Prod.EU'\n[connections.'Prod.EU']\nendpoint = 'https://prod.example.com'\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, name, err := cfg.Resolve(ResolveOptions{})
+		if err != nil || name != "Prod.EU" || conn.Endpoint != "https://prod.example.com" {
+			t.Errorf("resolve: conn=%+v name=%q err=%v", conn, name, err)
 		}
 	})
 }

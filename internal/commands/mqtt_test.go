@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,12 @@ func TestMQTTSubscriptionConfigFileMustBePrivateWhenItContainsCredentials(t *tes
 	}
 	args := []string{"mqtt", "subscription", "create", "--config-file", path, "--endpoint", srv.URL, "--token", "tok"}
 	_, _, err := runMQTTCommand(t, "", args...)
+	if runtime.GOOS == "windows" {
+		if err == nil || !strings.Contains(err.Error(), "use --config-stdin") || strings.Contains(err.Error(), "chmod") || calls != 0 {
+			t.Fatalf("Windows file guidance err=%v requests=%d", err, calls)
+		}
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), "chmod 600") || calls != 0 {
 		t.Fatalf("insecure file err=%v requests=%d", err, calls)
 	}
@@ -287,5 +294,90 @@ func TestMQTTStatsTimestamps(t *testing.T) {
 	}
 	if strings.Count(string(data), "2026-10-31T02:03:04.123456789-03:30") != 2 {
 		t.Fatalf("JSON=%s", data)
+	}
+}
+
+func TestMQTTReviewOutputAndExitStatus(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		t.Run(format, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/health") {
+					_, _ = w.Write([]byte(`{"status":"degraded","healthy":false}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"subscription":{"id":"s1","status":"error","broker":"ws://host/mqtt?token=QSsecret123&keep=yes","tls_cert_path":"/cert.pem","tls_key_path":"/key.pem","tls_ca_path":"/ca.pem","topic_mapping":{"a":"simple","b":{"measurement":"temperature"}}}}`))
+			}))
+			defer srv.Close()
+			out, _, err := runMQTTCommand(t, `{}`, "mqtt", "subscription", "create", "--config-stdin", "-o", format, "--endpoint", srv.URL, "--token", "tok")
+			if err == nil {
+				t.Fatal("error-status create must fail")
+			}
+			if strings.Contains(out, "QSsecret123") || !strings.Contains(out, "temperature") || !strings.Contains(out, "/cert.pem") {
+				t.Fatalf("output: %s", out)
+			}
+			out, _, err = runMQTTCommand(t, "", "mqtt", "health", "-o", format, "--endpoint", srv.URL, "--token", "tok")
+			if err == nil || !strings.Contains(out, "degraded") {
+				t.Fatalf("health output=%s err=%v", out, err)
+			}
+		})
+	}
+}
+
+func TestMQTTQueryCredentialsRequirePrivateFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses config-stdin")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"broker":"ws://host/mqtt?token=QSsecret123"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runMQTTCommand(t, "", "mqtt", "subscription", "create", "--config-file", path)
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("permissions: %v", err)
+	}
+}
+
+func TestMQTTObjectMappingPassesThroughCreateAndUpdate(t *testing.T) {
+	for _, action := range []string{"create", "update"} {
+		t.Run(action, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+				}
+				if !strings.Contains(string(req["topic_mapping"]), `"measurement":"temp"`) {
+					t.Errorf("lost mapping: %s", req["topic_mapping"])
+				}
+				_, _ = w.Write([]byte(`{"subscription":{"id":"s1","status":"stopped","topic_mapping":{"a":{"measurement":"temp"}}}}`))
+			}))
+			defer srv.Close()
+			args := []string{"mqtt", "subscription", action}
+			if action == "update" {
+				args = append(args, "s1")
+			}
+			args = append(args, "--config-stdin", "--endpoint", srv.URL, "--token", "tok")
+			out, _, err := runMQTTCommand(t, `{"topic_mapping":{"a":{"measurement":"temp"}}}`, args...)
+			if err != nil || !strings.Contains(out, `{"measurement":"temp"}`) {
+				t.Fatalf("out=%s err=%v", out, err)
+			}
+		})
+	}
+}
+
+func TestMQTTQueryCredentialsRedactedInEveryListFormat(t *testing.T) {
+	for _, format := range []string{"table", "json", "csv"} {
+		t.Run(format, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"subscriptions":[{"id":"s1","broker":"ws://host/mqtt?%74oken=QSsecret123&keep=yes","topic_mapping":{"a":{"measurement":"temp"}}}]}`))
+			}))
+			defer srv.Close()
+			out, _, err := runMQTTCommand(t, "", "mqtt", "subscription", "list", "-o", format, "--endpoint", srv.URL, "--token", "tok")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(out, "QSsecret123") || !strings.Contains(out, "keep=yes") {
+				t.Fatalf("output: %s", out)
+			}
+		})
 	}
 }

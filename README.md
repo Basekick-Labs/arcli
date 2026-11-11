@@ -28,8 +28,9 @@ Use `_arm64.deb` on ARM64 systems.
 ### RHEL / Fedora / Rocky
 
 ```bash
+sudo rpm --import https://raw.githubusercontent.com/Basekick-Labs/arcli/main/packaging/RPM-GPG-KEY-basekick
 curl -LO https://github.com/Basekick-Labs/arcli/releases/download/v26.09.4/arcli-26.9.4-1.x86_64.rpm
-sudo rpm -i arcli-26.9.4-1.x86_64.rpm
+sudo dnf install -y ./arcli-26.9.4-1.x86_64.rpm
 ```
 
 Use `.aarch64.rpm` on ARM64 systems.
@@ -84,7 +85,7 @@ arcli config set-active production
 arcli config update production --token-stdin
 ```
 
-Connection profiles live in `~/.arcli/config.toml` with file mode `0600`. For CI and one-off commands, use `ARC_CONNECTION`, `ARC_ENDPOINT`, and `ARC_TOKEN`, or pass `--connection` / `--endpoint` directly.
+Connection profiles live in `~/.arcli/config.toml` with file mode `0600`. Profile names are case-sensitive and may contain dots. For CI and one-off commands, use `ARC_CONNECTION`, `ARC_ENDPOINT`, and `ARC_TOKEN`, or pass `--connection` / `--endpoint` directly.
 
 ### Query and write
 
@@ -131,12 +132,18 @@ arcli measurement list --database metrics
 arcli auth whoami
 arcli license status
 arcli license status -c prod -o json
+arcli cluster files --database metrics
 arcli compaction status
 arcli retention list
 arcli mqtt health
 arcli mqtt subscription list
 arcli backup create --wait
 arcli logs --level warn --since 6h
+arcli scheduler cq reload
+arcli scheduler retention trigger
+arcli audit log --since 2026-01-01T02:30:00.123456789+02:30 --limit 100
+arcli audit log -o csv
+arcli audit stats --since 2026-01-01T02:30:00.123456789+02:30
 ```
 
 MQTT commands inspect subsystem health and aggregate statistics, then list,
@@ -149,9 +156,31 @@ command-line flags and omits usernames and broker URL userinfo from subscription
 output. Delete, stop, pause, and restart prompt for confirmation; pass `--yes`
 for non-interactive use.
 
+Subscriptions are per node and are not replicated. Pause is effectively stop;
+a stopped subscription with `auto_start: true` starts again when Arc restarts.
+Stop a running subscription before updating (409 otherwise). In update input,
+`"password": ""` clears the password, `"topic_mapping": {}` clears mappings,
+and `"topic_mapping": null` leaves mappings unchanged. Arc ignores `"topics": []`.
+Mapping rules can be strings or objects (measurement/tags, supported by Arc 27.01
+and main). Input accepts writable fields only: `show -o json` includes read-only
+fields such as `id` and cannot be piped directly into update.
+Sensitive broker query parameters (including tokens and signatures) are redacted
+and count as credentials for file permissions. On Windows use `--config-stdin`
+for credentials because Unix permission bits cannot verify Windows ACLs.
+Health exits nonzero when degraded/unhealthy; create exits nonzero if the returned
+subscription status is `error`, after displaying the created subscription.
+
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
 
+`cluster files` returns one bounded manifest page at a time (1,000 files by default; `--limit` accepts 1–10,000). Use `--cursor` with the previous page's `next_cursor` to continue. The command requires an Arc server that supports pagination and errors if `next_cursor` is absent. JSON includes the page and its continuation cursor; table output prints the cursor below the rows, while CSV keeps stdout machine-readable and prints the page count and cursor to stderr.
+
+Cluster file table and CSV timestamps are UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. Use `--no-header` to suppress column headers in table or CSV output. CSV writes sizes in bytes and string fields verbatim (no control-character cleaning, unlike the table); JSON preserves the original response, including pagination.
+
 The command tree also covers API tokens, continuous queries, schedulers, predicate deletes, backups, cluster membership, and compaction. Run `arcli --help` or `arcli <command> --help` for the complete command reference.
+
+`scheduler cq reload` refreshes all active continuous queries in the scheduler; use `cq execute` to run one query immediately. `scheduler retention trigger` runs every active retention policy and may permanently delete old data, so it prompts for confirmation; pass `--yes` for scripted use. Use `retention execute <id|name>` to run one selected policy. Scheduler errors preserve Arc's status and message; the codes depend on the Arc version. Arc 26.09 and earlier answer 503 `... is not running - enterprise license required` whenever the scheduler is not running, and 500 when a node other than the primary writer is asked to trigger retention, a run is already in progress, or a policy fails. On those versions, if the license lapses after startup, the trigger answers 200 without running anything, so a 200 does not prove a run happened. Newer Arc answers 403 when the license is missing, lacks the feature or was revoked; 503 when the scheduler is disabled or failed to start; 409 for the role or already-running cases; and 500 when a policy fails. Arc runs every policy even when one fails, so an error does not mean nothing was deleted. The retention trigger runs every policy before Arc answers: if arcli stops waiting, the run may still be going server-side (`retention executions <id|name>` shows each policy's result). Each node keeps its own CQ jobs and only the primary writer runs them, so reload the primary writer (and any node that may take over).
+
+`audit log` and `audit stats` query durable Enterprise audit records. They require an Enterprise license with audit logging enabled, and an administrator token when Arc authentication is enabled. Each node keeps its own audit records, so on a cluster a command shows only the records of the node it reaches. Logs support event type, actor, database, time, and pagination filters in table, JSON, or CSV output; stats defaults to the last 24 hours. This is separate from `arcli logs`, which reads the server's in-memory application log buffer. Table and CSV timestamps, including the displayed `audit stats` since value, use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds. JSON preserves the original server response. Unavailable routes retain the HTTP error without inferring `audit_log.enabled=false`.
 
 `license status` reads public `/health` without sending a token or checking authentication. It works on standalone and clustered deployments and supports table and JSON output. It reports the server's tier, status, source, and optional expiry, days remaining, and site-license state. Expiry is shown in UTC RFC3339; the table uses whole seconds unless `--time-output rfc3339nano` is given, and JSON keeps the fractional seconds.
 
@@ -159,7 +188,7 @@ Active, expired, invalid, and configured-but-unlicensed states retain the server
 
 `db list`, `db show` and `measurement list` read Arc's database listing endpoints, which need a token carrying read permission. On a server that restricts reads per database, a token scoped to particular databases cannot list them all — Arc refuses rather than returning a filtered list, matching `SHOW DATABASES` — so `db list` reports that the token is scoped and asks you to name a database instead. Pass it to `arcli db show <name>` or `arcli measurement list --database <name>`.
 
-MQTT CSV output preserves non-secret values, including whitespace and control characters, separately from terminal sanitization. Subscription credentials remain redacted in every output format. Table and text timestamps use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds, and JSON retains fractional-second precision. Route-missing 404, subscription-not-found 404, and server-reported MQTT-disabled 503 errors retain their HTTP status and message.
+MQTT CSV output preserves non-secret values, including whitespace and control characters, separately from terminal sanitization. Subscription credentials remain redacted in every output format. Table and text timestamps use UTC RFC3339 by default; `--time-output rfc3339nano` shows fractional seconds, and JSON retains fractional-second precision. Route-missing and server-reported MQTT-disabled 503 errors retain their HTTP status and message, with credentials scrubbed. Unknown subscription IDs return 404 on Arc main; on Arc 26.09.4, show returns 404, start may return 500, and stop may return 409.
 
 ## Output and automation
 

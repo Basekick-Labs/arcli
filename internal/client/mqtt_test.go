@@ -208,3 +208,55 @@ func TestMQTTClientRejectsDotSegmentIDsBeforeRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestMQTTObjectMappingAndCredentialErrors(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"subscriptions":[{"id":"s1","topic_mapping":{"a":"simple","b":{"measurement":"temp","tags":{"site":"factory"}}}}]}`))
+			return
+		}
+		var req map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if !strings.Contains(string(req["topic_mapping"]), `"measurement"`) {
+			t.Errorf("object rule lost: %s", req["topic_mapping"])
+		}
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid broker URL: tcp://u:s3cr%zz@host:1883 password separate-secret"}`))
+	})
+	list, err := cli.ListMQTTSubscriptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !strings.Contains(string(list[0].TopicMapping["b"]), `"measurement"`) {
+		t.Fatalf("mapping: %+v", list)
+	}
+	_, err = cli.CreateMQTTSubscription(context.Background(), MQTTSubscriptionCreateRequest{Broker: "tcp://u:s3cr%zz@host:1883", Password: "separate-secret", TopicMapping: list[0].TopicMapping})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, secret := range []string{"s3cr%zz", "separate-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("secret leaked: %v", err)
+		}
+	}
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != 400 {
+		t.Fatalf("lost HTTP status: %v", err)
+	}
+}
+
+func TestMQTTBrokerQueryCredentials(t *testing.T) {
+	for _, broker := range []string{"ws://host/mqtt?token=QSsecret123&keep=yes", "tcp://u:s3cr%zz@host:1883", "ws://host/mqtt?X-Amz-Signature=QSsecret123", "ws://host/mqtt?password=bad%zz"} {
+		if !MQTTBrokerHasCredentials(broker) {
+			t.Errorf("not detected: %s", broker)
+		}
+		safe := ScrubMQTTBroker(broker)
+		for _, secret := range []string{"QSsecret123", "s3cr%zz", "bad%zz"} {
+			if strings.Contains(safe, secret) {
+				t.Errorf("leaked %s", safe)
+			}
+		}
+	}
+}

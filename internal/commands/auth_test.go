@@ -161,6 +161,20 @@ func TestAuthTokenUpdate_NothingToUpdate(t *testing.T) {
 	}
 }
 
+func TestAuthTokenExpiry_RejectsOverflow(t *testing.T) {
+	t.Setenv("ARCLI_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+	for _, expiry := range []string{"106752d", "213504d"} {
+		out, _, err := execCmd(t, newAuthTokenCreateCmd(), "--name", "ci", "--expires-in", expiry, "--endpoint", unreachable)
+		if err == nil || !strings.Contains(err.Error(), "maximum") || out != "" {
+			t.Errorf("create with %s: stdout=%q error=%v", expiry, out, err)
+		}
+		out, _, err = execCmd(t, newAuthTokenUpdateCmd(), "7", "--expires-in", expiry, "--endpoint", unreachable)
+		if err == nil || !strings.Contains(err.Error(), "maximum") || out != "" {
+			t.Errorf("update with %s: stdout=%q error=%v", expiry, out, err)
+		}
+	}
+}
+
 func TestAuthTokenRotate_SaveRefusedForAdHocConnection(t *testing.T) {
 	t.Setenv("ARCLI_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 	t.Setenv("ARC_CONNECTION", "")

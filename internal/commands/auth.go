@@ -389,7 +389,9 @@ relative to now; expiry cannot be removed later.`,
 					Name  string `json:"name"`
 				}{secret, id, name})
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), secret)
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), secret); err != nil {
+				return fmt.Errorf("created token %q but failed to write its secret: %w", name, err)
+			}
 			if id >= 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Created token %q (id %d). Store the secret securely; it cannot be retrieved again.\n", name, id)
 			} else {
@@ -619,18 +621,19 @@ never authenticate.`,
 			// the old secret is already dead server-side and this write
 			// is the only copy of the new one. The list of updated
 			// profiles therefore goes to stderr, not into the JSON.
+			var outputErr error
 			if outputFormat == output.FormatJSON {
-				if err := writeJSON(cmd.OutOrStdout(), struct {
+				outputErr = writeJSON(cmd.OutOrStdout(), struct {
 					Token string `json:"token"`
 					ID    int64  `json:"id"`
 					Name  string `json:"name"`
-				}{secret, target.ID, target.Name}); err != nil {
-					return err
-				}
+				}{secret, target.ID, target.Name})
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), secret)
+				_, outputErr = fmt.Fprintln(cmd.OutOrStdout(), secret)
 			}
 
+			// If stdout failed, an explicitly requested save can still retain
+			// the new secret. Report the output error after that attempt.
 			var saved []string
 			var saveErr error
 			if save {
@@ -658,8 +661,17 @@ never authenticate.`,
 				}
 			}
 			if saveErr != nil {
+				if outputErr != nil {
+					return fmt.Errorf("rotated token %q but could not write the new secret or save config: %w", target.Name, errors.Join(outputErr, saveErr))
+				}
 				fmt.Fprintf(stderr, "ERROR: config NOT updated (%v). The new secret is printed above; the old secret is now invalid.\n", saveErr)
 				return fmt.Errorf("rotated token %q but failed to save config", target.Name)
+			}
+			if outputErr != nil {
+				if save {
+					return fmt.Errorf("rotated token %q and saved config, but failed to write its new secret: %w", target.Name, outputErr)
+				}
+				return fmt.Errorf("rotated token %q but failed to write its new secret: %w", target.Name, outputErr)
 			}
 			switch {
 			case save:

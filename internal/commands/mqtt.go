@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -58,7 +58,10 @@ func newMQTTHealthCmd() *cobra.Command {
 				return err
 			}
 			if outputFormat == output.FormatJSON {
-				return writeRawJSON(cmd.OutOrStdout(), h.Raw)
+				if err := writeRawJSON(cmd.OutOrStdout(), h.Raw); err != nil {
+					return err
+				}
+				return mqttHealthError(h)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "status:   %s\nhealthy:  %t\n", clean(h.Status), h.Healthy)
 			if h.Error != "" {
@@ -68,7 +71,7 @@ func newMQTTHealthCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "subscriptions: %d total, %d running, %d stopped, %d errors\n",
 					h.Subscriptions.Total, h.Subscriptions.Running, h.Subscriptions.Stopped, h.Subscriptions.Errors)
 			}
-			return nil
+			return mqttHealthError(h)
 		},
 	}
 	f.add(c)
@@ -245,10 +248,13 @@ only by you (chmod 600), or --config-stdin to read from a pipe.`,
 				return err
 			}
 			if outputFormat == output.FormatJSON {
-				return writeJSON(cmd.OutOrStdout(), safeMQTTSubscription(*sub))
+				if err := writeJSON(cmd.OutOrStdout(), safeMQTTSubscription(*sub)); err != nil {
+					return err
+				}
+				return mqttCreatedError(sub)
 			}
 			writeMQTTSubscriptionInfo(cmd.OutOrStdout(), sub, to)
-			return nil
+			return mqttCreatedError(sub)
 		},
 	}
 	f.add(c)
@@ -273,7 +279,11 @@ func newMQTTSubscriptionUpdateCmd() *cobra.Command {
 		Short: "Update an MQTT subscription from a JSON config file or stdin",
 		Long: `Update an MQTT subscription from a partial JSON object. Broker credentials
 belong in the JSON input, not command-line arguments. Use --config-file with a
-file readable only by you (chmod 600), or --config-stdin to read from a pipe.`,
+file readable only by you (chmod 600), or --config-stdin to read from a pipe.
+Stop a running subscription before updating (otherwise Arc returns 409).
+An empty password clears the stored password; topic_mapping {} clears mappings,
+while null leaves them unchanged. Empty topics [] is ignored by Arc.
+Only writable fields are accepted: show -o json cannot be fed directly into update.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !validObjectFormat(outputFormat) {
@@ -321,7 +331,7 @@ func newMQTTSubscriptionDeleteCmd() *cobra.Command {
 		Short: "Delete an MQTT subscription",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete MQTT subscription %s?", args[0]), yes); err != nil {
+			if err := confirmOrAbort(cmd, fmt.Sprintf("Delete MQTT subscription %s?", clean(args[0])), yes); err != nil {
 				return err
 			}
 			cli, _, err := f.client(cmd)
@@ -353,7 +363,7 @@ func newMQTTSubscriptionActionCmd(action, short string, confirm bool) *cobra.Com
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if confirm {
-				if err := confirmOrAbort(cmd, fmt.Sprintf("%s MQTT subscription %s?", strings.ToUpper(action[:1])+action[1:], args[0]), yes); err != nil {
+				if err := confirmOrAbort(cmd, fmt.Sprintf("%s MQTT subscription %s?", strings.ToUpper(action[:1])+action[1:], clean(args[0])), yes); err != nil {
 					return err
 				}
 			}
@@ -460,6 +470,9 @@ func readMQTTConfig(cmd *cobra.Command, path string, fromStdin bool, target any,
 		}
 		return fmt.Errorf("decode subscription config: %w", err)
 	}
+	if !fromStdin && containsCredentials() && runtime.GOOS == "windows" {
+		return fmt.Errorf("credential-bearing config files cannot be checked securely on Windows; use --config-stdin")
+	}
 	if !fromStdin && containsCredentials() && fileMode&0o077 != 0 {
 		return fmt.Errorf("subscription config contains broker credentials but is accessible by group or others; run chmod 600 %q or use --config-stdin", path)
 	}
@@ -558,6 +571,9 @@ func writeMQTTSubscriptionInfo(w io.Writer, sub *client.MQTTSubscription, to tim
 	fmt.Fprintf(w, "topics:                   %s\n", clean(strings.Join(sub.Topics, ", ")))
 	fmt.Fprintf(w, "qos:                      %d\n", sub.QoS)
 	fmt.Fprintf(w, "database:                 %s\n", clean(sub.Database))
+	fmt.Fprintf(w, "tls cert path:            %s\n", clean(sub.TLSCertPath))
+	fmt.Fprintf(w, "tls key path:             %s\n", clean(sub.TLSKeyPath))
+	fmt.Fprintf(w, "tls ca path:              %s\n", clean(sub.TLSCAPath))
 	fmt.Fprintf(w, "tls enabled:              %t\n", sub.TLSEnabled)
 	fmt.Fprintf(w, "tls insecure skip verify: %t\n", sub.TLSInsecureSkipVerify)
 	fmt.Fprintf(w, "auto start:               %t\n", sub.AutoStart)
@@ -572,7 +588,7 @@ func writeMQTTSubscriptionInfo(w io.Writer, sub *client.MQTTSubscription, to tim
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			fmt.Fprintf(w, "topic mapping %s: %s\n", clean(key), clean(sub.TopicMapping[key]))
+			fmt.Fprintf(w, "topic mapping %s: %s\n", clean(key), clean(mqttMappingText(sub.TopicMapping[key])))
 		}
 	}
 	fmt.Fprintf(w, "keep alive:               %ds\n", sub.KeepAliveSeconds)
@@ -597,25 +613,29 @@ func safeMQTTSubscription(sub client.MQTTSubscription) client.MQTTSubscription {
 	return sub
 }
 
-func scrubMQTTBroker(broker string) string {
-	u, err := url.Parse(broker)
-	if err != nil {
-		if strings.Contains(broker, "@") {
-			return "<redacted>"
-		}
-		return broker
+func scrubMQTTBroker(broker string) string        { return client.ScrubMQTTBroker(broker) }
+func mqttBrokerHasCredentials(broker string) bool { return client.MQTTBrokerHasCredentials(broker) }
+func mqttMappingText(rule json.RawMessage) string {
+	var value string
+	if json.Unmarshal(rule, &value) == nil {
+		return value
 	}
-	if u.User == nil {
-		return broker
+	var compact bytes.Buffer
+	if json.Compact(&compact, rule) == nil {
+		return compact.String()
 	}
-	u.User = nil
-	return u.String()
+	return string(rule)
 }
 
-func mqttBrokerHasCredentials(broker string) bool {
-	u, err := url.Parse(broker)
-	if err != nil {
-		return strings.Contains(broker, "@")
+func mqttHealthError(h *client.MQTTHealth) error {
+	if !h.Healthy || strings.EqualFold(h.Status, "degraded") || strings.EqualFold(h.Status, "unhealthy") {
+		return fmt.Errorf("MQTT subsystem is not healthy")
 	}
-	return u.User != nil
+	return nil
+}
+func mqttCreatedError(sub *client.MQTTSubscription) error {
+	if strings.EqualFold(sub.Status, "error") {
+		return fmt.Errorf("MQTT subscription created with error status; inspect subscription show")
+	}
+	return nil
 }

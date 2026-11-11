@@ -502,16 +502,43 @@ var (
 // deadline in either case, give up once the server has sat idle below
 // the expected id for a few polls.
 func waitForCycle(parent context.Context, cli *client.Client, cycleID int64, reqTimeout, waitTimeout time.Duration) (*client.CompactionStats, error) {
-	deadline := time.Now().Add(waitTimeout)
+	// The overall deadline must also bound in-flight requests and poll delays.
+	waitCtx, stopWaiting := context.WithTimeout(parent, waitTimeout)
+	defer stopWaiting()
 	interval := waitPollInterval
 	idleBelow := 0
+	var last *client.CompactionStats // most recent status, nil before the first
+	// timedOut reports the expired --wait-timeout with the messages earlier
+	// releases printed, byte for byte, while still matching
+	// errors.Is(err, context.DeadlineExceeded).
+	timedOut := func() error {
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		var msg string
+		switch {
+		case last == nil:
+			msg = fmt.Sprintf("gave up after %s waiting for cycle %d (no status received in time); it may still run on the server", waitTimeout, cycleID)
+		case last.CycleRunning:
+			msg = fmt.Sprintf("cycle %d still running after %s; it continues on the server", last.CurrentCycleID, waitTimeout)
+		default:
+			msg = fmt.Sprintf("gave up after %s waiting for cycle %d (server at cycle %d, idle)", waitTimeout, cycleID, last.CurrentCycleID)
+		}
+		return &waitTimeoutError{msg: msg, cause: waitCtx.Err()}
+	}
 	for {
-		ctx, cancel := context.WithTimeout(parent, reqTimeout)
+		ctx, cancel := context.WithTimeout(waitCtx, reqTimeout)
 		st, err := cli.CompactionStats(ctx)
 		cancel()
 		if err != nil {
+			// The overall deadline cut this request short: report it as the
+			// wait timing out, not as a failed status request.
+			if waitCtx.Err() != nil {
+				return nil, timedOut()
+			}
 			return nil, fmt.Errorf("while waiting for cycle %d: %w", cycleID, err)
 		}
+		last = st
 		if st.CurrentCycleID >= cycleID && !st.CycleRunning {
 			return st, nil
 		}
@@ -523,15 +550,9 @@ func waitForCycle(parent context.Context, cli *client.Client, cycleID int64, req
 		} else {
 			idleBelow = 0
 		}
-		if time.Now().After(deadline) {
-			if st.CycleRunning {
-				return nil, fmt.Errorf("cycle %d still running after %s; it continues on the server", st.CurrentCycleID, waitTimeout)
-			}
-			return nil, fmt.Errorf("gave up after %s waiting for cycle %d (server at cycle %d, idle)", waitTimeout, cycleID, st.CurrentCycleID)
-		}
 		select {
-		case <-parent.Done():
-			return nil, parent.Err()
+		case <-waitCtx.Done():
+			return nil, timedOut()
 		case <-time.After(interval):
 		}
 		if interval < waitPollMax {
@@ -539,6 +560,16 @@ func waitForCycle(parent context.Context, cli *client.Client, cycleID int64, req
 		}
 	}
 }
+
+// waitTimeoutError is an expired --wait-timeout: Error is the message
+// alone, and Unwrap exposes context.DeadlineExceeded for errors.Is.
+type waitTimeoutError struct {
+	msg   string
+	cause error
+}
+
+func (e *waitTimeoutError) Error() string { return e.msg }
+func (e *waitTimeoutError) Unwrap() error { return e.cause }
 
 // csvInt / csvInt64 render an optional number as an empty CSV cell when
 // absent, otherwise its exact decimal form.

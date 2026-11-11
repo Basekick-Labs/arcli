@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,76 +65,76 @@ type MQTTSubscriptionStats struct {
 // Username and password are intentionally never decoded or serialised by
 // arcli; the server returns only has_password for the stored password.
 type MQTTSubscription struct {
-	ID                    string            `json:"id"`
-	Name                  string            `json:"name"`
-	Broker                string            `json:"broker"`
-	ClientID              string            `json:"client_id"`
-	Topics                []string          `json:"topics"`
-	QoS                   int               `json:"qos"`
-	Database              string            `json:"database"`
-	Username              string            `json:"-"`
-	HasPassword           bool              `json:"has_password"`
-	TLSEnabled            bool              `json:"tls_enabled"`
-	TLSCertPath           string            `json:"tls_cert_path,omitempty"`
-	TLSKeyPath            string            `json:"tls_key_path,omitempty"`
-	TLSCAPath             string            `json:"tls_ca_path,omitempty"`
-	TLSInsecureSkipVerify bool              `json:"tls_insecure_skip_verify"`
-	AutoStart             bool              `json:"auto_start"`
-	Status                string            `json:"status"`
-	ErrorMessage          string            `json:"error_message,omitempty"`
-	TopicMapping          map[string]string `json:"topic_mapping,omitempty"`
-	KeepAliveSeconds      int               `json:"keep_alive_seconds"`
-	ConnectTimeoutSeconds int               `json:"connect_timeout_seconds"`
-	ReconnectMaxSeconds   int               `json:"reconnect_max_seconds"`
-	CleanSession          bool              `json:"clean_session"`
-	CreatedAt             time.Time         `json:"created_at"`
-	UpdatedAt             time.Time         `json:"updated_at"`
+	ID                    string                     `json:"id"`
+	Name                  string                     `json:"name"`
+	Broker                string                     `json:"broker"`
+	ClientID              string                     `json:"client_id"`
+	Topics                []string                   `json:"topics"`
+	QoS                   int                        `json:"qos"`
+	Database              string                     `json:"database"`
+	Username              string                     `json:"-"`
+	HasPassword           bool                       `json:"has_password"`
+	TLSEnabled            bool                       `json:"tls_enabled"`
+	TLSCertPath           string                     `json:"tls_cert_path,omitempty"`
+	TLSKeyPath            string                     `json:"tls_key_path,omitempty"`
+	TLSCAPath             string                     `json:"tls_ca_path,omitempty"`
+	TLSInsecureSkipVerify bool                       `json:"tls_insecure_skip_verify"`
+	AutoStart             bool                       `json:"auto_start"`
+	Status                string                     `json:"status"`
+	ErrorMessage          string                     `json:"error_message,omitempty"`
+	TopicMapping          map[string]json.RawMessage `json:"topic_mapping,omitempty"`
+	KeepAliveSeconds      int                        `json:"keep_alive_seconds"`
+	ConnectTimeoutSeconds int                        `json:"connect_timeout_seconds"`
+	ReconnectMaxSeconds   int                        `json:"reconnect_max_seconds"`
+	CleanSession          bool                       `json:"clean_session"`
+	CreatedAt             time.Time                  `json:"created_at"`
+	UpdatedAt             time.Time                  `json:"updated_at"`
 }
 
 // MQTTSubscriptionCreateRequest is sent to POST /subscriptions/.
 type MQTTSubscriptionCreateRequest struct {
-	Name                  string            `json:"name"`
-	Broker                string            `json:"broker"`
-	ClientID              string            `json:"client_id,omitempty"`
-	Topics                []string          `json:"topics"`
-	QoS                   *int              `json:"qos,omitempty"`
-	Database              string            `json:"database"`
-	Username              string            `json:"username,omitempty"`
-	Password              string            `json:"password,omitempty"`
-	TLSEnabled            bool              `json:"tls_enabled"`
-	TLSCertPath           string            `json:"tls_cert_path,omitempty"`
-	TLSKeyPath            string            `json:"tls_key_path,omitempty"`
-	TLSCAPath             string            `json:"tls_ca_path,omitempty"`
-	TLSInsecureSkipVerify bool              `json:"tls_insecure_skip_verify"`
-	AutoStart             bool              `json:"auto_start"`
-	TopicMapping          map[string]string `json:"topic_mapping,omitempty"`
-	KeepAliveSeconds      int               `json:"keep_alive_seconds,omitempty"`
-	ConnectTimeoutSeconds int               `json:"connect_timeout_seconds,omitempty"`
-	ReconnectMaxSeconds   int               `json:"reconnect_max_seconds,omitempty"`
-	CleanSession          bool              `json:"clean_session"`
+	Name                  string                     `json:"name"`
+	Broker                string                     `json:"broker"`
+	ClientID              string                     `json:"client_id,omitempty"`
+	Topics                []string                   `json:"topics"`
+	QoS                   *int                       `json:"qos,omitempty"`
+	Database              string                     `json:"database"`
+	Username              string                     `json:"username,omitempty"`
+	Password              string                     `json:"password,omitempty"`
+	TLSEnabled            bool                       `json:"tls_enabled"`
+	TLSCertPath           string                     `json:"tls_cert_path,omitempty"`
+	TLSKeyPath            string                     `json:"tls_key_path,omitempty"`
+	TLSCAPath             string                     `json:"tls_ca_path,omitempty"`
+	TLSInsecureSkipVerify bool                       `json:"tls_insecure_skip_verify"`
+	AutoStart             bool                       `json:"auto_start"`
+	TopicMapping          map[string]json.RawMessage `json:"topic_mapping,omitempty"`
+	KeepAliveSeconds      int                        `json:"keep_alive_seconds,omitempty"`
+	ConnectTimeoutSeconds int                        `json:"connect_timeout_seconds,omitempty"`
+	ReconnectMaxSeconds   int                        `json:"reconnect_max_seconds,omitempty"`
+	CleanSession          bool                       `json:"clean_session"`
 }
 
 // MQTTSubscriptionUpdateRequest is sent to PUT /subscriptions/:id.
 type MQTTSubscriptionUpdateRequest struct {
-	Name                  *string            `json:"name,omitempty"`
-	Broker                *string            `json:"broker,omitempty"`
-	ClientID              *string            `json:"client_id,omitempty"`
-	Topics                []string           `json:"topics,omitempty"`
-	QoS                   *int               `json:"qos,omitempty"`
-	Database              *string            `json:"database,omitempty"`
-	Username              *string            `json:"username,omitempty"`
-	Password              *string            `json:"password,omitempty"`
-	TLSEnabled            *bool              `json:"tls_enabled,omitempty"`
-	TLSCertPath           *string            `json:"tls_cert_path,omitempty"`
-	TLSKeyPath            *string            `json:"tls_key_path,omitempty"`
-	TLSCAPath             *string            `json:"tls_ca_path,omitempty"`
-	TLSInsecureSkipVerify *bool              `json:"tls_insecure_skip_verify,omitempty"`
-	AutoStart             *bool              `json:"auto_start,omitempty"`
-	TopicMapping          *map[string]string `json:"topic_mapping,omitempty"`
-	KeepAliveSeconds      *int               `json:"keep_alive_seconds,omitempty"`
-	ConnectTimeoutSeconds *int               `json:"connect_timeout_seconds,omitempty"`
-	ReconnectMaxSeconds   *int               `json:"reconnect_max_seconds,omitempty"`
-	CleanSession          *bool              `json:"clean_session,omitempty"`
+	Name                  *string                     `json:"name,omitempty"`
+	Broker                *string                     `json:"broker,omitempty"`
+	ClientID              *string                     `json:"client_id,omitempty"`
+	Topics                []string                    `json:"topics,omitempty"`
+	QoS                   *int                        `json:"qos,omitempty"`
+	Database              *string                     `json:"database,omitempty"`
+	Username              *string                     `json:"username,omitempty"`
+	Password              *string                     `json:"password,omitempty"`
+	TLSEnabled            *bool                       `json:"tls_enabled,omitempty"`
+	TLSCertPath           *string                     `json:"tls_cert_path,omitempty"`
+	TLSKeyPath            *string                     `json:"tls_key_path,omitempty"`
+	TLSCAPath             *string                     `json:"tls_ca_path,omitempty"`
+	TLSInsecureSkipVerify *bool                       `json:"tls_insecure_skip_verify,omitempty"`
+	AutoStart             *bool                       `json:"auto_start,omitempty"`
+	TopicMapping          *map[string]json.RawMessage `json:"topic_mapping,omitempty"`
+	KeepAliveSeconds      *int                        `json:"keep_alive_seconds,omitempty"`
+	ConnectTimeoutSeconds *int                        `json:"connect_timeout_seconds,omitempty"`
+	ReconnectMaxSeconds   *int                        `json:"reconnect_max_seconds,omitempty"`
+	CleanSession          *bool                       `json:"clean_session,omitempty"`
 }
 
 // mqttJSON passes no config key: Arc registers the MQTT routes whether or
@@ -141,7 +142,35 @@ type MQTTSubscriptionUpdateRequest struct {
 // message), so a route-missing 404 is not explained by mqtt.enabled and the
 // hint must not name it.
 func (c *Client) mqttJSON(ctx context.Context, method, path string, reqBody any, limit int64, out any) ([]byte, error) {
-	return c.featureJSON(ctx, "MQTT", "", method, path, reqBody, limit, out)
+	body, err := c.featureJSON(ctx, "MQTT", "", method, path, reqBody, limit, nil)
+	secrets := mqttRequestSecrets(reqBody)
+	if err != nil {
+		return nil, &mqttSafeError{cause: err, message: scrubMQTTText(err.Error(), secrets)}
+	}
+	if len(body) == 0 && out == nil {
+		return body, nil
+	}
+	// Scrub strings before decoding, including server error_message fields and raw JSON.
+	if !json.Valid(body) {
+		return nil, fmt.Errorf("decode response: invalid JSON")
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	value = scrubMQTTValue(value, secrets)
+	body, err = json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return body, nil
 }
 
 // MQTTHealth calls GET /api/v1/mqtt/health.

@@ -89,6 +89,7 @@ First-time setup:
 		newDeleteCmd(),
 		newBackupCmd(),
 		newLogsCmd(),
+		newAuditCmd(),
 		newSampleCmd(),
 		newMQTTCmd(),
 	)
