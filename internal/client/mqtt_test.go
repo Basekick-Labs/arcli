@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -258,5 +259,116 @@ func TestMQTTBrokerQueryCredentials(t *testing.T) {
 				t.Errorf("leaked %s", safe)
 			}
 		}
+	}
+}
+
+// Brokers whose password contains '/', '#', '?', '"' or an unencoded '@'
+// either fail url.Parse or put part of the password in the host; sensitive
+// query keys are matched by substring. Every one must lose its secret, and an
+// '@' inside a query value must survive.
+func TestMQTTBrokerCredentialEdgeCases(t *testing.T) {
+	cases := []struct {
+		broker, want string
+		secrets      []string
+	}{
+		{"tcp://u:1234/ss@broker.example:1883", "tcp://broker.example:1883", []string{"1234/ss"}},
+		{"tcp://u:HSpa#ss@broker.example:1883", "tcp://broker.example:1883", []string{"HSpa"}},
+		{`tcp://u:QTp"w%zz@broker.example:1883`, "tcp://broker.example:1883", []string{"QTp"}},
+		{"tcp://u:12?ss@broker.example:1883", "tcp://broker.example:1883", []string{"12?ss"}},
+		{"tcp://u:p@ss@broker.example:1883", "tcp://broker.example:1883", []string{"p@ss"}},
+		{"ws://broker.example/mqtt?auth_token=AT1&private_key=PK1&jwt=JW1&auth=AU1&keep=yes",
+			"ws://broker.example/mqtt?auth_token=<redacted>&private_key=<redacted>&jwt=<redacted>&auth=<redacted>&keep=yes",
+			[]string{"AT1", "PK1", "JW1", "AU1"}},
+		{"ws://broker.example/mqtt;to%6Ben=ENC1", "ws://broker.example/mqtt;to%6Ben=<redacted>", []string{"ENC1"}},
+	}
+	for _, tc := range cases {
+		if !MQTTBrokerHasCredentials(tc.broker) {
+			t.Errorf("%q: credentials not detected", tc.broker)
+		}
+		if got := ScrubMQTTBroker(tc.broker); got != tc.want {
+			t.Errorf("ScrubMQTTBroker(%q) = %q, want %q", tc.broker, got, tc.want)
+		}
+	}
+	for _, broker := range []string{"ws://broker.example/mqtt?user=ops@example.com", "tcp://broker.example:1883"} {
+		if MQTTBrokerHasCredentials(broker) {
+			t.Errorf("%q: false credential detection", broker)
+		}
+		if got := ScrubMQTTBroker(broker); got != broker {
+			t.Errorf("ScrubMQTTBroker(%q) = %q, want unchanged", broker, got)
+		}
+	}
+}
+
+// Arc's broker validation error is `invalid broker URL: <url.Parse error>`
+// (arc internal/mqtt/subscription.go validateBrokerURL); the url.Parse reason
+// quotes password fragments (`invalid port ":SLpa" after host`). The fixture
+// builds Arc's exact message from url.Parse itself.
+func TestMQTTBrokerParseErrorWithholdsPasswordFragments(t *testing.T) {
+	for _, tc := range []struct{ broker, fragment string }{
+		{"tcp://u:s3cr%zz@broker.example:1883", "%zz"},
+		{"tcp://u:SLpa/ss@broker.example:1883", "SLpa"},
+		{"tcp://u:HSpa#ss@broker.example:1883", "HSpa"},
+		{`tcp://u:QTp"w%zz@broker.example:1883`, "QTp"},
+		{"ws://bro%zzker.example/mqtt?token=QSsecret123", "QSsecret123"},
+	} {
+		_, parseErr := url.Parse(tc.broker)
+		if parseErr == nil {
+			t.Fatalf("%q: fixture must fail url.Parse", tc.broker)
+		}
+		arcMessage := "validation error: invalid broker URL: " + parseErr.Error()
+		cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": arcMessage})
+		})
+		_, err := cli.CreateMQTTSubscription(context.Background(), MQTTSubscriptionCreateRequest{Name: "pr61", Broker: tc.broker, Topics: []string{"a/b"}, Database: "pr61db"})
+		if err == nil {
+			t.Fatalf("%q: expected error", tc.broker)
+		}
+		if strings.Contains(err.Error(), tc.fragment) || !strings.Contains(err.Error(), "invalid broker URL") {
+			t.Errorf("%q: error %q", tc.broker, err)
+		}
+		var he *HTTPError
+		if !errors.As(err, &he) || he.Status != http.StatusBadRequest {
+			t.Errorf("%q: lost HTTP status: %v", tc.broker, err)
+		}
+	}
+	// A broker URL error that echoes nothing keeps Arc's detail.
+	const scheme = "validation error: invalid broker URL: must start with one of: [tcp:// ssl:// ws:// wss:// mqtt:// mqtts://]"
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": scheme})
+	})
+	_, err := cli.CreateMQTTSubscription(context.Background(), MQTTSubscriptionCreateRequest{Name: "pr61", Broker: "ftp://u:pw@broker.example", Topics: []string{"a/b"}, Database: "pr61db"})
+	if err == nil || !strings.Contains(err.Error(), "must start with one of") {
+		t.Errorf("scheme error lost: %v", err)
+	}
+}
+
+// Only URL-shaped response strings are broker candidates: names and topics
+// with '@', '%' or '?key=' keep their exact value.
+func TestMQTTResponseScrubKeepsNonURLValues(t *testing.T) {
+	cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"count":1,"subscriptions":[{"id":"1d7f2fc8-d62c-4385-a8c3-7b463fb3d78b","name":"pr61/50%/a@b","broker":"tcp://u:1234/ss@broker.example:1883","topics":["pr61/cmd?key=v"],"status":"stopped"}]}`))
+	})
+	list, err := cli.ListMQTTSubscriptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "pr61/50%/a@b" || list[0].Topics[0] != "pr61/cmd?key=v" || list[0].Broker != "tcp://broker.example:1883" {
+		t.Fatalf("list = %+v", list)
+	}
+}
+
+// Without the "invalid broker URL" marker (another Arc message or version),
+// the literal scrub still finds a broker that url.Error echoed with %q.
+func TestMQTTTextScrubFindsQuotedBroker(t *testing.T) {
+	broker := `tcp://u:QTp"w%zz@broker.example:1883`
+	secrets, creds := mqttRequestSecrets(MQTTSubscriptionCreateRequest{Broker: broker})
+	_, parseErr := url.Parse(broker)
+	if !creds || parseErr == nil {
+		t.Fatalf("creds=%t parseErr=%v", creds, parseErr)
+	}
+	if got := scrubMQTTText("dial failed: "+parseErr.Error(), secrets); strings.Contains(got, "QTp") {
+		t.Fatalf("leaked: %s", got)
 	}
 }

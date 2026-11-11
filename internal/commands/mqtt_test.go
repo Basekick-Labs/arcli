@@ -263,7 +263,7 @@ func TestMQTTBrokerRedactionDoesNotSanitizeNonSecrets(t *testing.T) {
 			t.Errorf("broker=%q got=%q", broker, got)
 		}
 	}
-	if got := scrubMQTTBroker("mqtt://user:secret@host/\n"); got != "<redacted>" {
+	if got := scrubMQTTBroker("mqtt://user:secret@host/\n"); got != "mqtt://host/\n" {
 		t.Errorf("malformed credential URL=%q", got)
 	}
 }
@@ -379,5 +379,69 @@ func TestMQTTQueryCredentialsRedactedInEveryListFormat(t *testing.T) {
 				t.Fatalf("output: %s", out)
 			}
 		})
+	}
+}
+
+// Arc answers 200 {"status":"disabled","healthy":false} when MQTT is off and
+// calls that a steady state (arc internal/api/mqtt.go handleHealth): exit 0.
+// Arc's "unhealthy" (no subscription running) still exits nonzero.
+func TestMQTTHealthDisabledExitsZero(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		wantErr bool
+	}{
+		{`{"status":"disabled","healthy":false}`, false},
+		{`{"status":"unhealthy","healthy":false,"subscriptions":{"total":2,"running":0,"stopped":2,"errors":0}}`, true},
+	} {
+		for _, format := range []string{"table", "json"} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			out, _, err := runMQTTCommand(t, "", "mqtt", "health", "-o", format, "--endpoint", srv.URL, "--token", "tok")
+			srv.Close()
+			if (err != nil) != tc.wantErr || out == "" {
+				t.Errorf("%s %s: out=%q err=%v, wantErr=%t", tc.body, format, out, err, tc.wantErr)
+			}
+		}
+	}
+}
+
+// An explicit "topics": [] reaches Arc, which rejects it ("at least one
+// topic is required"), instead of being dropped and reported as success.
+func TestMQTTUpdateSendsEmptyTopics(t *testing.T) {
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"validation error: at least one topic is required","success":false}`))
+	}))
+	defer srv.Close()
+	_, _, err := runMQTTCommand(t, `{"topics":[]}`, "mqtt", "subscription", "update", "1d7f2fc8-d62c-4385-a8c3-7b463fb3d78b", "--config-stdin", "--endpoint", srv.URL, "--token", "tok")
+	if err == nil || !strings.Contains(err.Error(), "at least one topic is required") || string(body["topics"]) != "[]" {
+		t.Fatalf("err=%v body=%s", err, body["topics"])
+	}
+}
+
+// Confirmation prompts echo the user-supplied ID through clean(), so a
+// pasted ID carrying terminal controls cannot repaint the prompt.
+func TestMQTTPromptsCleanSubscriptionID(t *testing.T) {
+	for _, action := range []string{"delete", "stop", "pause", "restart"} {
+		_, stderr, err := runMQTTCommand(t, "n\n", "mqtt", "subscription", action, "s1\x1b[2J", "--endpoint", "http://127.0.0.1:1", "--token", "tok")
+		if err == nil || strings.Contains(stderr, "\x1b") || !strings.Contains(stderr, "s1") {
+			t.Errorf("%s: stderr=%q err=%v", action, stderr, err)
+		}
+	}
+}
+
+// A string (database-only) rule prints as its plain value; an object rule
+// prints as compact JSON.
+func TestMQTTShowRendersMappingRules(t *testing.T) {
+	var out bytes.Buffer
+	writeMQTTSubscriptionInfo(&out, &client.MQTTSubscription{ID: "1d7f2fc8-d62c-4385-a8c3-7b463fb3d78b", TopicMapping: map[string]json.RawMessage{
+		"plain/topic":    json.RawMessage(`"plainmeas"`),
+		"factory/+/temp": json.RawMessage(`{ "measurement": "temperature" }`),
+	}}, timeOutput{})
+	if !strings.Contains(out.String(), "topic mapping plain/topic: plainmeas\n") || !strings.Contains(out.String(), `topic mapping factory/+/temp: {"measurement":"temperature"}`) {
+		t.Fatalf("show:\n%s", out.String())
 	}
 }

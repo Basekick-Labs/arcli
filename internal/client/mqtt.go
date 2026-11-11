@@ -119,7 +119,7 @@ type MQTTSubscriptionUpdateRequest struct {
 	Name                  *string                     `json:"name,omitempty"`
 	Broker                *string                     `json:"broker,omitempty"`
 	ClientID              *string                     `json:"client_id,omitempty"`
-	Topics                []string                    `json:"topics,omitempty"`
+	Topics                *[]string                   `json:"topics,omitempty"`
 	QoS                   *int                        `json:"qos,omitempty"`
 	Database              *string                     `json:"database,omitempty"`
 	Username              *string                     `json:"username,omitempty"`
@@ -143,9 +143,13 @@ type MQTTSubscriptionUpdateRequest struct {
 // hint must not name it.
 func (c *Client) mqttJSON(ctx context.Context, method, path string, reqBody any, limit int64, out any) ([]byte, error) {
 	body, err := c.featureJSON(ctx, "MQTT", "", method, path, reqBody, limit, nil)
-	secrets := mqttRequestSecrets(reqBody)
+	secrets, brokerCreds := mqttRequestSecrets(reqBody)
 	if err != nil {
-		return nil, &mqttSafeError{cause: err, message: scrubMQTTText(err.Error(), secrets)}
+		message := scrubMQTTText(err.Error(), secrets)
+		if brokerCreds {
+			message = withholdMQTTBrokerParseDetail(message)
+		}
+		return nil, &mqttSafeError{cause: err, message: message}
 	}
 	if len(body) == 0 && out == nil {
 		return body, nil
@@ -161,10 +165,15 @@ func (c *Client) mqttJSON(ctx context.Context, method, path string, reqBody any,
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	value = scrubMQTTValue(value, secrets)
-	body, err = json.Marshal(value)
-	if err != nil {
+	// Re-encode without HTML escaping so "<redacted>" and "&" in a raw
+	// -o json response read as the server's own JSON would.
+	var encoded bytes.Buffer
+	enc := json.NewEncoder(&encoded)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
 		return nil, err
 	}
+	body = bytes.TrimRight(encoded.Bytes(), "\n")
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)

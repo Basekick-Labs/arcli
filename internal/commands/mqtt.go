@@ -282,7 +282,7 @@ belong in the JSON input, not command-line arguments. Use --config-file with a
 file readable only by you (chmod 600), or --config-stdin to read from a pipe.
 Stop a running subscription before updating (otherwise Arc returns 409).
 An empty password clears the stored password; topic_mapping {} clears mappings,
-while null leaves them unchanged. Empty topics [] is ignored by Arc.
+while null leaves them unchanged. Arc rejects an empty topics list ([]).
 Only writable fields are accepted: show -o json cannot be fed directly into update.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -628,6 +628,12 @@ func mqttMappingText(rule json.RawMessage) string {
 }
 
 func mqttHealthError(h *client.MQTTHealth) error {
+	// Arc answers 200 {"status":"disabled","healthy":false} when MQTT is
+	// configured off and documents that as a steady state, not a fault
+	// (arc internal/api/mqtt.go handleHealth), so it exits 0.
+	if strings.EqualFold(h.Status, "disabled") {
+		return nil
+	}
 	if !h.Healthy || strings.EqualFold(h.Status, "degraded") || strings.EqualFold(h.Status, "unhealthy") {
 		return fmt.Errorf("MQTT subsystem is not healthy")
 	}

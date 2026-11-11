@@ -160,14 +160,19 @@ Subscriptions are per node and are not replicated. Pause is effectively stop;
 a stopped subscription with `auto_start: true` starts again when Arc restarts.
 Stop a running subscription before updating (409 otherwise). In update input,
 `"password": ""` clears the password, `"topic_mapping": {}` clears mappings,
-and `"topic_mapping": null` leaves mappings unchanged. Arc ignores `"topics": []`.
+and `"topic_mapping": null` leaves mappings unchanged. Arc rejects `"topics": []`
+(at least one topic is required).
 Mapping rules can be strings or objects (measurement/tags, supported by Arc 27.01
 and main). Input accepts writable fields only: `show -o json` includes read-only
 fields such as `id` and cannot be piped directly into update.
-Sensitive broker query parameters (including tokens and signatures) are redacted
-and count as credentials for file permissions. On Windows use `--config-stdin`
+Broker userinfo and sensitive query parameters (any name containing `token`,
+`pass`, `pwd`, `secret`, `key`, `sig`, `auth`, `cred`, `jwt` or `session`) are
+redacted and count as credentials for file permissions. When Arc cannot parse a
+credential-bearing broker URL, arcli withholds the parse detail, which can quote
+pieces of the password. On Windows use `--config-stdin`
 for credentials because Unix permission bits cannot verify Windows ACLs.
-Health exits nonzero when degraded/unhealthy; create exits nonzero if the returned
+Health exits nonzero when degraded/unhealthy (a disabled MQTT subsystem, which
+Arc reports with HTTP 200, exits 0); create exits nonzero if the returned
 subscription status is `error`, after displaying the created subscription.
 
 `backup restore` is destructive and leaves metadata restoration to Arc's defaults: enabled on standalone nodes when present in the backup, skipped on cluster nodes. Use `--with-metadata` to request it explicitly (clusters refuse it), `--data-only` to explicitly skip metadata and config, or `--with-config` to also request config restoration. Stop writers and compaction before restoring. When the server reports staged metadata or a required restart, wait for the restore to complete before restarting.
