@@ -25,6 +25,7 @@ var timeOutputCommands = []string{
 	"arcli backup restore",
 	"arcli backup show",
 	"arcli backup status",
+	"arcli cluster file",
 	"arcli cluster node show",
 	"arcli cluster nodes",
 	"arcli cluster status",
