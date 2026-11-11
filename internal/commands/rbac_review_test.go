@@ -202,13 +202,13 @@ func TestRBACTokenTeamRemoveWarnsOnlyWhenAccessWidens(t *testing.T) {
 				case "GET /api/v1/auth/tokens/8/teams":
 					if tc.teams == "" {
 						w.WriteHeader(http.StatusInternalServerError)
-						w.Write([]byte(`{"success":false,"error":"Failed to get token teams"}`))
+						w.Write([]byte(`{"success":false,"error":"Failed to get token teams: failed to get token teams: database is locked"}`))
 						return
 					}
 					w.Write([]byte(`{"success":true,"teams":` + tc.teams + `,"count":1}`))
 				case "DELETE /api/v1/auth/tokens/8/teams/3":
 					deletes++
-					w.Write([]byte(`{"success":true,"message":"Token removed from team"}`))
+					w.Write([]byte(`{"success":true,"message":"Token removed from team successfully"}`))
 				default:
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 				}
