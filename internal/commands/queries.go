@@ -59,7 +59,7 @@ func newQueriesActiveCmd() *cobra.Command {
 
 Output includes the query id, status, token, client address, start time,
 duration, SQL, and forwarded-to node (Arc 26.09.4 does not report the
-forwarded-to node for active queries; history and show do). Target the node
+forwarded-to node, so that column stays empty). Target the node
 that runs the query. Rows are sorted by start time, oldest first. Arc itself
 cuts active-query SQL to 200 bytes; the table shortens it further to 120
 characters, while CSV and JSON keep it as Arc returns it ("arcli admin query
