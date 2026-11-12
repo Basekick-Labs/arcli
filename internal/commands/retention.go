@@ -45,8 +45,9 @@ func strPtr(p *string, none string) string {
 }
 
 // rawPtr is strPtr for CSV: the same placeholder for nil or empty, the
-// server's text verbatim otherwise. CSV quotes newlines and other control
-// characters, so stripping them only corrupts the value (#94).
+// server's text verbatim otherwise. CSV output is a data export written
+// verbatim by contract, not sanitized for terminals; stripping here
+// corrupted multi-line errors (#94).
 func rawPtr(p *string, none string) string {
 	if p == nil || *p == "" {
 		return none

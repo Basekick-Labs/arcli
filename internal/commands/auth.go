@@ -854,8 +854,10 @@ func normalisePermissions(in []string) []string {
 // clean strips control characters from server-supplied text before it
 // reaches a terminal (table mode and prompts). A token name is chosen by
 // whoever holds an admin token; it must not be able to emit terminal
-// escape sequences into another operator's session. JSON and CSV paths
-// go through encoders and need no help.
+// escape sequences into another operator's session. JSON goes through an
+// encoder. CSV is a data export, written verbatim by contract (README:
+// "no control-character cleaning, unlike the table"); it is NOT made safe
+// for a terminal: encoding/csv does not escape ESC, C1 or bidi characters.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
 		if isTerminalUnsafe(r) || r == '\n' || r == '\t' {
