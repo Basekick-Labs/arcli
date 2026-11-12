@@ -473,7 +473,18 @@ func TestFetchPreservesDownloadError(t *testing.T) {
 			// Repeated public Fetch calls exercise sibling result ordering;
 			// the initiating failure must survive every ordering.
 			for i := 0; i < 100; i++ {
+				// A fresh transport per attempt. Observed (arcli#85): with
+				// the shared http.DefaultTransport, an attempt's first
+				// request occasionally failed with context.Canceled while
+				// this Fetch's ctx was live, consistent with the previous
+				// attempt's cancellations leaking through the pool; one
+				// transport per subtest with CloseIdleConnections between
+				// attempts still failed. Production runs one Fetch per
+				// process, so it never reuses a transport across calls.
+				tr := &http.Transport{}
+				client.httpClient.Transport = tr
 				paths, err := client.Fetch(context.Background(), dir, parts, 4, nil)
+				tr.CloseIdleConnections()
 				if err == nil || !strings.Contains(err.Error(), tc.want) || errors.Is(err, context.Canceled) {
 					t.Fatalf("attempt %d: expected %s, got paths %v, error %v", i, tc.want, paths, err)
 				}

@@ -80,10 +80,10 @@ func TestBackup_IncompleteIsVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 || lines[0] != "backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,unregistered_skipped,manifest_only_files,left_manifest_during_run,skipped_reconciled" {
+	if len(lines) != 4 || lines[0] != "backup_id,created_at,backup_type,database_count,total_files,total_size_bytes,skipped_files,skipped_metadata_files,unaddressable_files,unregistered_skipped,manifest_only_files,left_manifest_during_run,skipped_reconciled,scope" {
 		t.Errorf("csv header = %q (%d lines)", lines[0], len(lines))
 	}
-	if len(lines) == 4 && (!strings.HasSuffix(lines[1], ",21,2086,3,1,2,4,2,3,1") || !strings.HasSuffix(lines[2], ",20,2000,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[3], ",20,2000,0,1,0,0,0,0,0")) {
+	if len(lines) == 4 && (!strings.HasSuffix(lines[1], ",21,2086,3,1,2,4,2,3,1,") || !strings.HasSuffix(lines[2], ",20,2000,0,0,0,0,0,0,0,") || !strings.HasSuffix(lines[3], ",20,2000,0,1,0,0,0,0,0,")) {
 		t.Errorf("csv rows = %q", lines[1:])
 	}
 	out, _, err = execCmd(t, newBackupListCmd(), "-o", "csv", "--no-header")

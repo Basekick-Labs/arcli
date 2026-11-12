@@ -50,6 +50,7 @@ type BackupSummary struct {
 	TotalFiles             int64     `json:"total_files"`
 	TotalBytes             int64     `json:"total_size_bytes"`
 	DatabaseCount          int       `json:"database_count"`
+	Scope                  []string  `json:"scope,omitempty"`
 	SkippedFiles           int64     `json:"skipped_files,omitempty"`
 	SkippedMetadataFiles   int64     `json:"skipped_metadata_files,omitempty"`
 	UnaddressableFiles     int64     `json:"unaddressable_files,omitempty"`
@@ -89,9 +90,11 @@ type BackupManifest struct {
 	BackupID               string                  `json:"backup_id"`
 	CreatedAt              time.Time               `json:"created_at"`
 	BackupType             string                  `json:"backup_type"`
+	Scope                  []string                `json:"scope,omitempty"`
 	Databases              []BackupDatabase        `json:"databases"`
 	TotalFiles             int64                   `json:"total_files"`
 	TotalSizeBytes         int64                   `json:"total_size_bytes"`
+	AuxiliaryFiles         int64                   `json:"auxiliary_files,omitempty"`
 	SkippedFiles           int64                   `json:"skipped_files,omitempty"`
 	SkippedMetadataFiles   int64                   `json:"skipped_metadata_files,omitempty"`
 	SkippedSample          []string                `json:"skipped_sample,omitempty"`
