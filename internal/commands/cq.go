@@ -564,7 +564,13 @@ server caps it at 10 minutes; --timeout defaults to 10m here.`,
 				return writeRawJSON(cmd.OutOrStdout(), res.Raw)
 			}
 			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "status:       %s (%s)\n", clean(res.Status), clean(res.ExecutionID))
+			if res.ExecutionID != "" {
+				fmt.Fprintf(w, "status:       %s (%s)\n", clean(res.Status), clean(res.ExecutionID))
+			} else {
+				// Arc 27.01.1+ answers a re-run with nothing new to process with
+				// an empty execution_id: no run was recorded (arc#1628).
+				fmt.Fprintf(w, "status:       %s (nothing new to process; no run recorded)\n", clean(res.Status))
+			}
 			fmt.Fprintf(w, "window:       %s → %s\n", to.Server(res.StartTime, "-"), to.Server(res.EndTime, "-"))
 			fmt.Fprintf(w, "destination:  %s\n", clean(res.DestinationMeasurement))
 			fmt.Fprintf(w, "written:      %d records\n", res.RecordsWritten)
