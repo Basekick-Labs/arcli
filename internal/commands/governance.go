@@ -28,8 +28,8 @@ enabled, and an admin token when authentication is enabled. A limit of 0 means u
 Policies and counters are per-node and are not replicated. Configure each node
 separately; behind a load balancer, aggregate quotas can be N times the limit.
 On a cluster running Arc 27.01.1 or later, once the cluster has adopted the
-policies, a policy written on any node applies on every node; rate limits,
-quotas and server defaults stay per node. "policy show" and "usage" print the
+policies, a policy written on any node for a cluster token applies on every
+node; rate limits, quotas and server defaults stay per node. "policy show" and "usage" print the
 scope the server reports.
 Displayed timestamps use UTC RFC3339 by default; --time-output rfc3339nano
 shows fractional seconds. JSON retains the available timestamp precision. Unavailable routes retain
@@ -577,7 +577,10 @@ func governanceScopeText(policy *client.GovernancePolicy, scope string) string {
 		}
 		return "cluster-wide (rate limits and quotas are counted per node)"
 	default:
-		return clean(scope)
+		if c := clean(scope); c != "" {
+			return c
+		}
+		return "unknown"
 	}
 }
 
