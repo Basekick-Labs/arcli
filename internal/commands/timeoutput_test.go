@@ -314,3 +314,17 @@ func TestTimeOutputCompletion(t *testing.T) {
 		t.Errorf("completion = %q", out)
 	}
 }
+
+// Arc 27.01.1+ answers a re-run with nothing new to process with an empty
+// execution_id (arc#1628); the status line must not print "()".
+func TestCQExecuteEmptyExecutionID(t *testing.T) {
+	resp := `{"query_id":1,"query_name":"cq-frac","execution_id":"","status":"completed","start_time":"2026-09-07T19:00:00Z","end_time":"2026-09-07T19:00:00Z","records_written":0,"execution_time_seconds":0,"destination_measurement":"cpu_1m","dry_run":false,"executed_at":"2026-09-07T19:00:00Z"}`
+	tc := goldenCase{name: "empty id", args: []string{"cq", "execute", "1"}, overrides: map[string][]string{"POST /api/v1/continuous_queries/1/execute": {resp}}}
+	got, _ := runGoldenCase(t, tc)
+	if strings.Contains(got, "()") {
+		t.Errorf("output prints empty parentheses:\n%s", got)
+	}
+	if !strings.Contains(got, "status:       completed (nothing new to process; no run recorded)\n") {
+		t.Errorf("missing empty-run status line:\n%s", got)
+	}
+}
