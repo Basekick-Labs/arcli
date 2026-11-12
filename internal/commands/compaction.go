@@ -624,10 +624,14 @@ func renderJobTable(w io.Writer, jobs []client.CompactionJob, noHeader, asCSV bo
 		}
 		return fmt.Sprintf("%.1f%%", *p*100)
 	}
+	// CSV keeps the server's error verbatim (csv quotes it); the table
+	// strips terminal control characters (#94).
 	result := func(j client.CompactionJob) string {
 		switch {
 		case j.Success == nil && j.Error == "":
 			return "-"
+		case j.Error != "" && asCSV:
+			return "failed: " + j.Error
 		case j.Error != "":
 			return "failed: " + clean(j.Error)
 		case *j.Success:

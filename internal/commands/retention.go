@@ -44,6 +44,16 @@ func strPtr(p *string, none string) string {
 	return clean(*p)
 }
 
+// rawPtr is strPtr for CSV: the same placeholder for nil or empty, the
+// server's text verbatim otherwise. CSV quotes newlines and other control
+// characters, so stripping them only corrupts the value (#94).
+func rawPtr(p *string, none string) string {
+	if p == nil || *p == "" {
+		return none
+	}
+	return *p
+}
+
 func int64Ptr(p *int64, none string) string {
 	if p == nil {
 		return none
@@ -603,16 +613,21 @@ func newRetentionExecutionsCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(w, raw)
 			}
+			asCSV := outputFormat == output.FormatCSV
 			rows := make([][]string, 0, len(ex))
 			for _, e := range ex {
+				errText := strPtr(e.ErrorMessage, "-")
+				if asCSV {
+					errText = rawPtr(e.ErrorMessage, "-")
+				}
 				rows = append(rows, []string{
 					to.Server(e.ExecutionTime, "-"), clean(e.Status), strconv.FormatInt(e.DeletedCount, 10),
 					to.ServerPtr(e.CutoffDate, "-"), (time.Duration(e.ExecutionDurationMs * float64(time.Millisecond))).Round(time.Millisecond).String(),
-					strPtr(e.ErrorMessage, "-"),
+					errText,
 				})
 			}
 			headers := []string{"TIME", "STATUS", "DELETED", "CUTOFF", "DURATION", "ERROR"}
-			if outputFormat == output.FormatCSV {
+			if asCSV {
 				cw := csv.NewWriter(w)
 				if !noHeader {
 					if err := cw.Write([]string{"execution_time", "status", "deleted_count", "cutoff_date", "duration", "error"}); err != nil {

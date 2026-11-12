@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -493,12 +494,53 @@ func leaderHint(ctx context.Context, cli *client.Client) string {
 	if u, perr := url.Parse(cli.Endpoint()); perr == nil && u.Scheme != "" {
 		scheme = u.Scheme
 	}
+	return leaderHintFor(st, scheme)
+}
+
+// leaderHintFor is leaderHint once the status is in hand and the leader is
+// known; scheme is the one of the connection's endpoint.
+func leaderHintFor(st *client.ClusterStatus, scheme string) string {
 	for _, n := range st.Nodes {
-		if n.ID == st.Raft.LeaderID && n.APIAddress != "" {
-			return fmt.Sprintf("re-run against the leader %q at %s://%s — verify that address against your inventory, then use a connection profile for it (`arcli config create`) or ARC_ENDPOINT/ARC_TOKEN", clean(n.ID), scheme, clean(n.APIAddress))
+		if n.ID != st.Raft.LeaderID {
+			continue
 		}
+		addr, derived := leaderAPIAddress(n)
+		if addr == "" {
+			break
+		}
+		from := ""
+		if derived {
+			from = " (host taken from the node's cluster address)"
+		}
+		return fmt.Sprintf("re-run against the leader %q at %s://%s%s — verify that address against your inventory, then use a connection profile for it (`arcli config create`) or ARC_ENDPOINT/ARC_TOKEN", clean(n.ID), scheme, clean(addr), from)
 	}
 	return fmt.Sprintf("the leader is node %q; find its API address with `arcli cluster nodes`", clean(st.Raft.LeaderID))
+}
+
+// leaderAPIAddress is where to reach n's HTTP API, following Arc's
+// cluster.APIHostPort: a node that binds every interface publishes its API
+// address without a usable host (":8000", "0.0.0.0:8000", "[::]:8000"),
+// and the host then comes from its coordinator address, keeping the API
+// port (derived is true). An explicit or unparseable API address is
+// returned unchanged. It returns "" when there is no API address, or the
+// coordinator address has no usable host either (#94).
+func leaderAPIAddress(n client.ClusterNode) (addr string, derived bool) {
+	if n.APIAddress == "" {
+		return "", false
+	}
+	host, port, err := net.SplitHostPort(n.APIAddress)
+	if err != nil || !hostlessAddr(host) {
+		return n.APIAddress, false
+	}
+	if ch, _, err := net.SplitHostPort(n.Address); err == nil && !hostlessAddr(ch) {
+		return net.JoinHostPort(ch, port), true
+	}
+	return "", false
+}
+
+// hostlessAddr reports a listen host that names no reachable machine.
+func hostlessAddr(host string) bool {
+	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
 // ---- health ----------------------------------------------------------------
