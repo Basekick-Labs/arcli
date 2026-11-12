@@ -89,6 +89,7 @@ type BackupManifest struct {
 	BackupID               string                  `json:"backup_id"`
 	CreatedAt              time.Time               `json:"created_at"`
 	BackupType             string                  `json:"backup_type"`
+	Scope                  []string                `json:"scope,omitempty"`
 	Databases              []BackupDatabase        `json:"databases"`
 	TotalFiles             int64                   `json:"total_files"`
 	TotalSizeBytes         int64                   `json:"total_size_bytes"`

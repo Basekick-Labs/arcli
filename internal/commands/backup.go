@@ -1,7 +1,7 @@
 // backup subcommand: full backups and restores over /api/v1/backup/*.
 //
-// Backups are always full (every database) and written to the server's
-// backup.local_path. Create and restore are asynchronous on the server
+// arcli creates full backups (every database) written to the server's
+// backup.local_path; it shows and restores scoped ones made elsewhere. Create and restore are asynchronous on the server
 // and share one slot; progress is published by the worker goroutine
 // and stays visible (sticky) after completion, so the CLI snapshots the
 // status before starting an operation and waits for it to change.
@@ -31,10 +31,13 @@ func newBackupCmd() *cobra.Command {
 		Long: `Create, inspect, delete, and restore full backups (/api/v1/backup/*).
 Every subcommand requires an admin token.
 
-A backup contains every database plus, by default, the metadata store
-(tokens, policies, continuous queries) and the server config. It is
-written to the server's backup.local_path; there is no remote
-destination and no incremental mode. Backups are unavailable when the
+A backup created by arcli contains every database plus, by default, the
+metadata store (tokens, policies, continuous queries) and the server
+config. It is written to the server's backup.local_path. Arc 27.01.1+
+(currently unreleased) can also scope a backup to some databases and
+route databases to remote targets configured on the server; arcli does
+not create scoped backups, but shows and restores them. There is no
+incremental mode. Backups are unavailable when the
 server runs with backup.enabled=false, or when its backup manager fails
 to initialize (the server log says why).`,
 	}
@@ -570,6 +573,13 @@ func writeManifest(w io.Writer, m *client.BackupManifest, to timeOutput) error {
 	fmt.Fprintf(w, "backup id:   %s\n", clean(m.BackupID))
 	fmt.Fprintf(w, "created:     %s\n", to.Val(m.CreatedAt, "-"))
 	fmt.Fprintf(w, "type:        %s (server %s)\n", clean(m.BackupType), clean(m.Version))
+	if len(m.Scope) > 0 {
+		scope := make([]string, 0, len(m.Scope))
+		for _, db := range m.Scope {
+			scope = append(scope, clean(db))
+		}
+		fmt.Fprintf(w, "scope:       %s\n", strings.Join(scope, ", "))
+	}
 	fmt.Fprintf(w, "contents:    %d files, %s, metadata %t, config %t\n", m.TotalFiles, humanBytes(m.TotalSizeBytes), m.HasMetadata, m.HasConfig)
 	if line := describeManifestIncomplete(m); line != "" {
 		fmt.Fprintf(w, "INCOMPLETE:  %s\n", line)
@@ -822,6 +832,14 @@ the backup is not deleted.`,
 // restoreModeConfirmed reports whether the mode Arc echoed confirms the one
 // requested. Arc before 27.01.1 echoes no mode and always merges, so an
 // unechoed merge is exactly what was asked for; only replace needs the echo.
+// replaceRefusedGaps reports the manifest gaps Arc refuses a replace for
+// (restore.go replaceDatabases). Arc also refuses on files missing from the
+// backup storage and on a high unregistered-skip ratio; neither is in the
+// manifest arcli reads, so those refusals arrive only after the 202.
+func replaceRefusedGaps(m *client.BackupManifest) bool {
+	return effectiveSkipped(m.SkippedFiles, m.SkippedReconciled) > 0 || m.UnaddressableFiles > 0 || m.ManifestOnlyFiles > 0
+}
+
 func restoreModeConfirmed(requested, reported string) bool {
 	return requested == "" || reported == requested || (requested == "merge" && reported == "")
 }
@@ -831,7 +849,7 @@ func newBackupRestoreCmd() *cobra.Command {
 		f            connFlags
 		to           timeOutput
 		outputFormat string
-		mode         string
+		modeFlag     string
 		dataOnly     bool
 		withMetadata bool
 		withConfig   bool
@@ -861,17 +879,25 @@ the background; --wait polls until it finishes and reports compaction-pause
 observed state changes on a cluster; polling may miss intermediate states
 (--wait-timeout defaults to 2h).
 
-The restore mode is merge by default for a full backup. Arc may default a
-scoped cluster backup to replace; when --mode is omitted, arcli leaves that
-choice to the server. Use --mode merge or --mode replace to choose explicitly.
-Explicit restore modes require Arc 27.01.1+ (currently unreleased). Replace
-is available only on clusters and removes the current manifest entries for
-the backup's databases before restoring them. Older servers silently ignore
---mode and merge, which is what --mode merge asks for. When Arc does not
-confirm --mode replace, arcli warns and exits nonzero, but the accepted
-restore may still run server-side as a merge: check backup status before
-retrying. A backup with known data gaps is refused for replace before the
-prompt.
+The restore mode is merge by default for a full backup. On a cluster,
+Arc 27.01.1+ (currently unreleased) defaults a scoped backup to replace;
+when --mode is omitted, arcli leaves that choice to the server and the
+prompt names the backup's scope. Use --mode merge or --mode replace to
+choose explicitly; --mode is case-insensitive, surrounding spaces are
+ignored, and an empty value is the same as omitting it. Explicit restore
+modes require Arc 27.01.1+. Replace first removes the current hot-tier
+files of each restored database from every node, including data written
+after the backup was taken, then restores the backup's files; cold-tier
+objects are not removed. Arc refuses replace on standalone servers and on
+any cluster node without the cluster file manifest (cluster.raft_data_dir).
+Older servers silently ignore --mode and merge, which is what --mode merge
+asks for. When Arc does not confirm --mode replace, arcli warns and exits
+nonzero, but the accepted restore may still run server-side as a merge:
+check backup status before retrying. A backup whose manifest records data
+gaps is refused for --mode replace before the prompt. When an omitted mode
+resolves to replace, Arc refuses an incomplete backup only after accepting
+the restore, so without --wait arcli reports it as started; use --wait or
+--mode merge.
 
 On a cluster, only the primary writer can restore a backup. A node
 that is not the primary writer returns HTTP 503 after confirmation,
@@ -886,8 +912,12 @@ before the restore starts.`,
 			if waitTimeout <= 0 {
 				return fmt.Errorf("--wait-timeout must be > 0")
 			}
+			// Normalised the way Arc's NormalizeRestoreMode does; an empty
+			// result means the flag was not set, so nothing is sent and Arc
+			// picks the mode. Every later use reads the normalised value.
+			mode := strings.ToLower(strings.TrimSpace(modeFlag))
 			if mode != "" && mode != "merge" && mode != "replace" {
-				return fmt.Errorf("invalid --mode %q (valid: merge, replace)", mode)
+				return fmt.Errorf("invalid --mode %q (valid: merge, replace)", modeFlag)
 			}
 			if dataOnly && withConfig {
 				return fmt.Errorf("--data-only and --with-config are mutually exclusive")
@@ -922,7 +952,7 @@ before the restore starts.`,
 			stderr := cmd.ErrOrStderr()
 			// The same gaps Arc refuses a replace for (restore.go replaceDatabases),
 			// checked before the prompt instead of after a 202.
-			if mode == "replace" && (effectiveSkipped(m.SkippedFiles, m.SkippedReconciled) > 0 || m.UnaddressableFiles > 0 || m.ManifestOnlyFiles > 0) {
+			if mode == "replace" && replaceRefusedGaps(m) {
 				return fmt.Errorf("restore refused: --mode replace requires a complete backup, and backup %s is incomplete (%s); use --mode merge or take a complete backup first", clean(id), describeRestoreGaps(m))
 			}
 			if gaps := describeRestoreGaps(m); gaps != "" {
@@ -936,9 +966,36 @@ before the restore starts.`,
 			if len(dbs) > 0 {
 				scope = "the live storage of database(s) " + strings.Join(dbs, ", ")
 			}
+			// Arc selects the databases a replace removes by the backup's
+			// scope (path segment) when it has one, else by database name.
+			scoped := make([]string, 0, len(m.Scope))
+			for _, db := range m.Scope {
+				scoped = append(scoped, clean(db))
+			}
+			replaced := dbs
+			if len(scoped) > 0 {
+				replaced = scoped
+			}
+			replacedNames := "these databases"
+			if len(replaced) > 0 {
+				replacedNames = "database(s) " + strings.Join(replaced, ", ")
+			}
 			parts := []string{fmt.Sprintf("Restore backup %s (%s, %d files, %s) over %s? Existing files at the same paths are replaced.", clean(id), to.Val(m.CreatedAt, "-"), m.TotalFiles, humanBytes(m.TotalSizeBytes), scope)}
-			if cmd.Flags().Changed("mode") && mode == "replace" {
-				parts = append(parts, "On Arc 27.01.1+, the current cluster manifest entries for these databases will be removed before restoring. Older Arc versions ignore --mode and merge instead.")
+			if mode == "replace" {
+				parts = append(parts, "On a cluster running Arc 27.01.1+, replace first removes the current hot-tier files of "+replacedNames+" on every node, including data written after this backup was taken, then restores the backup's files. Standalone servers refuse replace. Older Arc versions ignore --mode and merge instead.")
+			}
+			// Arc 27.01.1+ resolves an omitted mode to replace for a scoped
+			// backup on a cluster (ResolveRestoreMode). Older manifests have
+			// no scope, so the prompt for them is unchanged.
+			if mode == "" && len(scoped) > 0 {
+				parts = append(parts, "This backup is scoped to database(s) "+strings.Join(scoped, ", ")+". On a cluster running Arc 27.01.1+, a restore without --mode runs as replace: it first removes the current hot-tier files of these databases on every node, including data written after this backup was taken. Pass --mode merge to keep the current files.")
+				if replaceRefusedGaps(m) {
+					parts = append(parts, "This backup is incomplete, so on a cluster Arc refuses that replace, but only after accepting the restore and pausing compaction: without --wait arcli reports it as started and exits 0. Pass --mode merge, or --wait to see the outcome.")
+				} else if !wait {
+					// Files missing from the backup storage are found only by
+					// the restore itself, after the 202.
+					parts = append(parts, "Arc checks the backup's files only after accepting the restore, so without --wait a refused replace is reported as started; use --wait to see the outcome.")
+				}
 			}
 			if restoreMeta {
 				parts = append(parts, "The metadata store will be staged and applied at the next server start.")
@@ -973,7 +1030,7 @@ before the restore starts.`,
 			if restoreCfg {
 				opts.RestoreConfig = &t
 			}
-			if cmd.Flags().Changed("mode") {
+			if mode != "" {
 				opts.Mode = &mode
 			}
 			ctx, cancel = f.ctx(cmd)
@@ -1095,7 +1152,7 @@ before the restore starts.`,
 	f.add(c)
 	to.add(c)
 	c.Flags().StringVarP(&outputFormat, "output", "o", output.FormatTable, "output format: table|json")
-	c.Flags().StringVar(&mode, "mode", "", "restore mode: merge|replace (default: the server's)")
+	c.Flags().StringVar(&modeFlag, "mode", "", "restore mode: merge|replace (default: the server's)")
 	c.Flags().BoolVar(&dataOnly, "data-only", false, "restore data files only (skip metadata and config)")
 	c.Flags().BoolVar(&withMetadata, "with-metadata", false, "also restore the metadata store (staged; unavailable on clusters)")
 	c.Flags().BoolVar(&withConfig, "with-config", false, "also restore the server config file (staged)")
