@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -106,8 +108,9 @@ func TestBackup_RestorePromptForMode(t *testing.T) {
 		}
 	})
 
-	scopedNote := "This backup is scoped to database(s) t85_a. On a cluster running Arc 27.01.1+, a restore without --mode runs as replace"
+	scopedNote := "This backup is scoped to database(s) t85_a. On a cluster running Arc 27.01.1+ (with cluster.raft_data_dir), a restore without --mode runs as replace"
 	incompleteNote := "This backup is incomplete, so on a cluster Arc refuses that replace, but only after accepting the restore"
+	lateCheckNote := "Arc checks the backup's files only after accepting the restore, so without --wait a refused replace is reported as started"
 
 	for _, args := range [][]string{nil, {"--mode", " "}} {
 		t.Run("scoped without mode names the scope "+strings.Join(args, ""), func(t *testing.T) {
@@ -121,19 +124,31 @@ func TestBackup_RestorePromptForMode(t *testing.T) {
 		})
 	}
 
-	t.Run("scoped note names the scope, not the databases held", func(t *testing.T) {
-		manifest := strings.Replace(scopedManifest(false), `"scope":["t85_a"]`, `"scope":["t85_a","t85_b"]`, 1)
-		got := declinedPrompt(t, newFakeBackupServerWith(t, manifest))
-		if !strings.Contains(got, "This backup is scoped to database(s) t85_a, t85_b.") {
-			t.Errorf("prompt = %q, want both scoped databases", got)
+	// Arc's CheckScopedReplace: a scope name with no data files in the
+	// backup makes any replace a synchronous 400.
+	missingScope := strings.Replace(scopedManifest(false), `"scope":["t85_a"]`, `"scope":["t85_a","t85_b"]`, 1)
+	t.Run("explicit replace of a scope without files is refused before the prompt", func(t *testing.T) {
+		f := newFakeBackupServerWith(t, missingScope)
+		_, _, err := execCmd(t, newBackupRestoreCmd(), modeTestID, "--mode", "replace", "--yes")
+		want := `restore refused: Arc refuses --mode replace for backup ` + modeTestID + `: it holds no data files for database "t85_b", so replace would only remove its current files and restore nothing; use --mode merge, or take the backup again once the database has hot files`
+		if err == nil || err.Error() != want {
+			t.Fatalf("err = %v\nwant  %s", err, want)
 		}
-		got = declinedPrompt(t, newFakeBackupServerWith(t, manifest), "--mode", "replace")
-		if !strings.Contains(got, "hot-tier files of database(s) t85_a, t85_b on every node") {
-			t.Errorf("replace prompt = %q, want both scoped databases", got)
+		if len(f.lastRestoreRequest()) != 0 {
+			t.Errorf("refused replace reached the server: %v", f.lastRestoreRequest())
+		}
+	})
+	t.Run("omitted mode on a scope without files warns about the 400", func(t *testing.T) {
+		got := declinedPrompt(t, newFakeBackupServerWith(t, missingScope))
+		want := `This backup is scoped to database(s) t85_a, t85_b but holds no data files for "t85_b". On a cluster running Arc 27.01.1+, a restore without --mode would run as replace, which Arc refuses with HTTP 400 for such a backup; pass --mode merge.`
+		if !strings.Contains(got, want) || strings.Contains(got, "runs as replace") || strings.Contains(got, lateCheckNote) {
+			t.Errorf("prompt = %q, want only the 400 note", got)
+		}
+		if got := declinedPrompt(t, newFakeBackupServerWith(t, missingScope), "--mode", "merge"); strings.Contains(got, "HTTP 400") {
+			t.Errorf("explicit merge prompt warns about the replace 400: %q", got)
 		}
 	})
 
-	lateCheckNote := "Arc checks the backup's files only after accepting the restore, so without --wait a refused replace is reported as started"
 	t.Run("scoped without mode and without wait warns about late checks", func(t *testing.T) {
 		got := declinedPrompt(t, newFakeBackupServerWith(t, scopedManifest(false)))
 		if !strings.Contains(got, lateCheckNote) {
@@ -161,8 +176,19 @@ func TestBackup_RestorePromptForMode(t *testing.T) {
 
 	t.Run("scoped incomplete without mode warns about the late refusal", func(t *testing.T) {
 		got := declinedPrompt(t, newFakeBackupServerWith(t, scopedManifest(true)))
-		if !strings.Contains(got, scopedNote) || !strings.Contains(got, incompleteNote) {
+		if !strings.Contains(got, scopedNote) || !strings.Contains(got, incompleteNote+" and pausing compaction. Without --wait arcli reports it as started and exits 0. Pass --mode merge, or --wait to see the outcome.") {
 			t.Errorf("prompt = %q, want the scoped and incomplete notes", got)
+		}
+		got = declinedPrompt(t, newFakeBackupServerWith(t, scopedManifest(true)), "--wait")
+		if !strings.Contains(got, incompleteNote+" and pausing compaction. Pass --mode merge to restore it.") || strings.Contains(got, "without --wait") || strings.Contains(got, "Without --wait") {
+			t.Errorf("--wait prompt = %q, want the incomplete note without the --wait advice", got)
+		}
+	})
+
+	t.Run("unscoped replace without databases says nothing is removed", func(t *testing.T) {
+		got := declinedPrompt(t, newRestoreDefaultsServer(t, true, false), "--mode", "replace")
+		if !strings.Contains(got, "On a cluster running Arc 27.01.1+, replace removes nothing for this backup, which holds no databases, then restores its files.") || strings.Contains(got, "these databases") {
+			t.Errorf("prompt = %q", got)
 		}
 	})
 
@@ -199,4 +225,95 @@ func newFakeBackupServerWith(t *testing.T, manifest string) *fakeBackupServer {
 	f := newRestoreDefaultsServer(t, true, false)
 	f.backups[modeTestID] = manifest
 	return f
+}
+
+// unregisteredManifest is an unscoped cluster backup whose node listed
+// total-aux+unreg data files, unreg of them missing from its cluster manifest.
+func unregisteredManifest(total, aux, unreg int64, scoped bool) string {
+	scope := ""
+	if scoped {
+		scope = `"scope":["t85_a"],`
+	}
+	return `{"version":"dev","backup_id":"` + modeTestID + `","created_at":"2026-09-07T20:00:00Z","backup_type":"full",` + scope + `"databases":[{"name":"t85_a","measurements":[],"file_count":1,"size_bytes":10}],"total_files":` + itoa(total) + `,"auxiliary_files":` + itoa(aux) + `,"unregistered_skipped":` + itoa(unreg) + `,"total_size_bytes":10,"has_metadata":false,"has_config":false}`
+}
+
+func TestBackup_RestoreMirrorsUnregisteredRatio(t *testing.T) {
+	// Arc restore.go:1642-1643: listed = 19-9+2 = 12, 2 > 1.2 refuses.
+	// Ignoring auxiliary_files (listed 21, 2 > 2.1) would accept it.
+	f := newFakeBackupServerWith(t, unregisteredManifest(19, 9, 2, false))
+	_, _, err := execCmd(t, newBackupRestoreCmd(), modeTestID, "--mode", "replace", "--yes")
+	want := "restore refused: --mode replace requires a backup taken against a caught-up cluster manifest, and 2 of the 12 data files the node that took backup " + modeTestID + " listed were not in its cluster manifest (>10%); use --mode merge, or take the backup again on a caught-up primary"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v\nwant  %s", err, want)
+	}
+	if len(f.lastRestoreRequest()) != 0 {
+		t.Errorf("refused replace reached the server: %v", f.lastRestoreRequest())
+	}
+	// Boundary: listed = 10-1+1 = 10, 1 > 1.0 is false, so Arc accepts.
+	f = newFakeBackupServerWith(t, unregisteredManifest(10, 1, 1, false))
+	if _, stderr, err := execCmd(t, newBackupRestoreCmd(), modeTestID, "--mode", "replace", "--yes"); err != nil {
+		t.Fatalf("restore at the ratio boundary: %v (stderr %q)", err, stderr)
+	}
+	// A scoped backup with no --mode gets the incomplete note for it.
+	got := declinedPrompt(t, newFakeBackupServerWith(t, unregisteredManifest(19, 9, 2, true)))
+	if !strings.Contains(got, "This backup is incomplete, so on a cluster Arc refuses that replace") {
+		t.Errorf("prompt = %q, want the incomplete note", got)
+	}
+}
+
+func TestBackup_RestoreReplaceWarnsAfterAcceptWithoutWait(t *testing.T) {
+	const warning = "warning: Arc checks a replace restore against the backup's files only after accepting it; if it refuses, `arcli backup status` shows the failure. Re-run with --wait to wait for the outcome.\n"
+	newRestoreDefaultsServer(t, true, true)
+	out, stderr, err := execCmd(t, newBackupRestoreCmd(), modeTestID, "--mode", "replace", "--yes")
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !strings.Contains(stderr, warning) {
+		t.Errorf("stderr = %q, want the post-accept warning", stderr)
+	}
+	if out != "Restore of "+modeTestID+" started (mode: replace)\n" {
+		t.Errorf("stdout changed: %q", out)
+	}
+	for _, args := range [][]string{{"--mode", "replace", "--wait"}, {"--mode", "merge"}, {}} {
+		newRestoreDefaultsServer(t, true, true)
+		// The fake's status echoes no mode, so the replace --wait run fails
+		// after waiting; only its stderr before that matters here.
+		_, stderr, err := execCmd(t, newBackupRestoreCmd(), append([]string{modeTestID, "--yes"}, args...)...)
+		if err != nil && !strings.Contains(err.Error(), "not confirmed by final status") {
+			t.Fatalf("restore %v: %v", args, err)
+		}
+		if strings.Contains(stderr, "only after accepting it") {
+			t.Errorf("restore %v printed the post-accept warning: %q", args, stderr)
+		}
+	}
+}
+
+func TestBackup_ListMarksScopedBackups(t *testing.T) {
+	srv := newScopedListServer(t)
+	writeTestConfig(t, srv, "tok")
+	out, _, err := execCmd(t, newBackupListCmd())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(out, "│ full (scoped) │") || !strings.Contains(out, "│ full          │") {
+		t.Errorf("table = %q, want the scoped backup marked and the unscoped one plain", out)
+	}
+	out, _, err = execCmd(t, newBackupListCmd(), "-o", "csv")
+	if err != nil {
+		t.Fatalf("list csv: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], ",skipped_reconciled,scope") || !strings.HasSuffix(lines[1], `,0,"t85_a,t85_b"`) || !strings.HasSuffix(lines[2], ",0,") {
+		t.Errorf("csv = %q", lines)
+	}
+}
+
+// newScopedListServer lists one scoped and one unscoped backup.
+func newScopedListServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"backups":[{"backup_id":"backup-20260907-200002-00000002","created_at":"2026-09-07T20:00:02Z","backup_type":"full","scope":["t85_a","t85_b"],"total_files":2,"total_size_bytes":20,"database_count":2},{"backup_id":"backup-20260907-200001-00000001","created_at":"2026-09-07T20:00:01Z","backup_type":"full","total_files":1,"total_size_bytes":10,"database_count":1}],"count":2}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }

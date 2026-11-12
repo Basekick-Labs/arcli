@@ -23,7 +23,7 @@ func TestBackupClusterCSVTimeOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			rows, err := csv.NewReader(strings.NewReader(out)).ReadAll()
-			if err != nil || len(rows) != 2 || len(rows[0]) != 13 || len(rows[1]) != 13 {
+			if err != nil || len(rows) != 2 || len(rows[0]) != 14 || len(rows[1]) != 14 {
 				t.Fatalf("invalid CSV: %v %s", err, out)
 			}
 			if rows[1][1] != tc.want {
