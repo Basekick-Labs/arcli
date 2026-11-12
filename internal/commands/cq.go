@@ -625,17 +625,22 @@ func newCQExecutionsCmd() *cobra.Command {
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(w, raw)
 			}
+			asCSV := outputFormat == output.FormatCSV
 			rows := make([][]string, 0, len(ex))
 			for _, e := range ex {
+				errText := strPtr(e.ErrorMessage, "-")
+				if asCSV {
+					errText = rawPtr(e.ErrorMessage, "-")
+				}
 				rows = append(rows, []string{
 					to.Server(e.ExecutionTime, "-"), clean(e.Status),
 					to.Server(e.StartTime, "-") + " → " + to.Server(e.EndTime, "-"),
 					strconv.FormatInt(e.RecordsWritten, 10),
 					(time.Duration(e.ExecutionDurationSeconds * float64(time.Second))).Round(time.Millisecond).String(),
-					strPtr(e.ErrorMessage, "-"),
+					errText,
 				})
 			}
-			if outputFormat == output.FormatCSV {
+			if asCSV {
 				cw := csv.NewWriter(w)
 				if !noHeader {
 					if err := cw.Write([]string{"execution_time", "status", "window", "records_written", "duration", "error"}); err != nil {

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -493,12 +494,71 @@ func leaderHint(ctx context.Context, cli *client.Client) string {
 	if u, perr := url.Parse(cli.Endpoint()); perr == nil && u.Scheme != "" {
 		scheme = u.Scheme
 	}
+	return leaderHintFor(st, scheme)
+}
+
+// leaderHintFor is leaderHint once the status is in hand and the leader is
+// known; scheme is the one of the connection's endpoint.
+func leaderHintFor(st *client.ClusterStatus, scheme string) string {
+	// Like the pre-#94 loop, keep scanning past a leader entry that yields
+	// no address (Arc does not send duplicate ids; this keeps it exact).
+	hostlessPort := ""
 	for _, n := range st.Nodes {
-		if n.ID == st.Raft.LeaderID && n.APIAddress != "" {
-			return fmt.Sprintf("re-run against the leader %q at %s://%s — verify that address against your inventory, then use a connection profile for it (`arcli config create`) or ARC_ENDPOINT/ARC_TOKEN", clean(n.ID), scheme, clean(n.APIAddress))
+		if n.ID != st.Raft.LeaderID {
+			continue
 		}
+		addr, derived, port := leaderAPIAddress(n)
+		if addr == "" {
+			if hostlessPort == "" {
+				hostlessPort = port
+			}
+			continue
+		}
+		from := ""
+		if derived {
+			from = " (host taken from the node's cluster address)"
+		}
+		return fmt.Sprintf("re-run against the leader %q at %s://%s%s — verify that address against your inventory, then use a connection profile for it (`arcli config create`) or ARC_ENDPOINT/ARC_TOKEN", clean(n.ID), scheme, clean(addr), from)
+	}
+	if hostlessPort != "" {
+		return fmt.Sprintf("the leader is node %q (API port %s; its host is not published); find its address with `arcli cluster nodes`", clean(st.Raft.LeaderID), clean(hostlessPort))
 	}
 	return fmt.Sprintf("the leader is node %q; find its API address with `arcli cluster nodes`", clean(st.Raft.LeaderID))
+}
+
+// leaderAPIAddress is where to reach n's HTTP API. Like Arc's
+// cluster.APIHostPort, a node that binds every interface publishes its API
+// address without a usable host (":8000", "0.0.0.0:8000", "[::]:8000"),
+// and the host then comes from its coordinator address, keeping the API
+// port (derived is true). Unlike Arc, an unspecified or zoned coordinator
+// host does not count: it is not an address an operator can dial, so addr
+// is "" and port carries the API port for the fallback hint. An explicit
+// or unparseable API address is returned unchanged; no API address at all
+// returns "" with no port (#94).
+func leaderAPIAddress(n client.ClusterNode) (addr string, derived bool, port string) {
+	if n.APIAddress == "" {
+		return "", false, ""
+	}
+	host, port, err := net.SplitHostPort(n.APIAddress)
+	if err != nil || !hostlessAddr(host) {
+		return n.APIAddress, false, ""
+	}
+	// A zone (fe80::1%eth0) names the server's interface, and unescaped in
+	// a URL it is invalid (RFC 6874), so a zoned host falls back.
+	if ch, _, err := net.SplitHostPort(n.Address); err == nil && !hostlessAddr(ch) && !strings.Contains(ch, "%") {
+		return net.JoinHostPort(ch, port), true, port
+	}
+	return "", false, port
+}
+
+// hostlessAddr reports a listen host that names no reachable machine:
+// empty, or an unspecified IP in any spelling (0.0.0.0, ::, ::0, ...).
+func hostlessAddr(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 // ---- health ----------------------------------------------------------------
