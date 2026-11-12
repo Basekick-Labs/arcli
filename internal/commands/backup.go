@@ -1,8 +1,8 @@
 // backup subcommand: full backups and restores over /api/v1/backup/*.
 //
 // arcli creates full backups (every database) written to the server's
-// backup.local_path; it shows and restores scoped ones made elsewhere. Create and restore are asynchronous on the server
-// and share one slot; progress is published by the worker goroutine
+// backup.local_path; it shows and restores scoped ones made elsewhere.
+// Create and restore are asynchronous on the server and share one slot; progress is published by the worker goroutine
 // and stays visible (sticky) after completion, so the CLI snapshots the
 // status before starting an operation and waits for it to change.
 package commands
@@ -829,9 +829,6 @@ the backup is not deleted.`,
 
 // ---- restore ---------------------------------------------------------------
 
-// restoreModeConfirmed reports whether the mode Arc echoed confirms the one
-// requested. Arc before 27.01.1 echoes no mode and always merges, so an
-// unechoed merge is exactly what was asked for; only replace needs the echo.
 // replaceRefusedGaps reports the manifest gaps Arc refuses a replace for
 // (restore.go replaceDatabases). Arc also refuses on files missing from the
 // backup storage and on a high unregistered-skip ratio; neither is in the
@@ -840,6 +837,9 @@ func replaceRefusedGaps(m *client.BackupManifest) bool {
 	return effectiveSkipped(m.SkippedFiles, m.SkippedReconciled) > 0 || m.UnaddressableFiles > 0 || m.ManifestOnlyFiles > 0
 }
 
+// restoreModeConfirmed reports whether the mode Arc echoed confirms the one
+// requested. Arc before 27.01.1 echoes no mode and always merges, so an
+// unechoed merge is exactly what was asked for; only replace needs the echo.
 func restoreModeConfirmed(requested, reported string) bool {
 	return requested == "" || reported == requested || (requested == "merge" && reported == "")
 }
@@ -901,7 +901,8 @@ the restore, so without --wait arcli reports it as started; use --wait or
 
 On a cluster, only the primary writer can restore a backup. A node
 that is not the primary writer returns HTTP 503 after confirmation,
-before the restore starts.`,
+before the restore starts; backups live on the node that took them, so
+a node that does not hold the backup answers HTTP 404 before the prompt.`,
 		Example: `  arcli backup restore backup-20260907-201105-a0f5e600 --data-only --wait
   arcli backup restore backup-20260907-201105-a0f5e600 --yes`,
 		Args: cobra.ExactArgs(1),
