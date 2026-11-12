@@ -144,7 +144,7 @@ func TestGovernanceUsageLimitSemantics(t *testing.T) {
 			if tc.name == "hourly quota only" {
 				usage.QueriesThisHour, usage.QueriesThisDay = 2, 2
 			}
-			writeGovernanceUsageInfo(&b, usage, tc.policy, timeOutput{})
+			writeGovernanceUsageInfo(&b, usage, tc.policy, "", timeOutput{})
 			for _, want := range tc.want {
 				if !strings.Contains(b.String(), want) {
 					t.Errorf("missing %q in %s", want, b.String())

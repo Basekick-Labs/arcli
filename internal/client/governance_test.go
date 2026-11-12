@@ -19,7 +19,7 @@ func TestGovernanceListAndNullNormalization(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"success":true,"policies":null,"count":0}`))
 	})
-	policies, err := cli.ListGovernancePolicies(context.Background())
+	policies, _, err := cli.ListGovernancePolicies(context.Background())
 	if err != nil || policies == nil || len(policies) != 0 {
 		t.Fatalf("policies=%#v err=%v", policies, err)
 	}
@@ -96,7 +96,7 @@ func TestGovernanceGetUpdateDeleteAndUsage(t *testing.T) {
 		}
 	})
 	ctx := context.Background()
-	policy, err := cli.GetGovernancePolicy(ctx, 12)
+	policy, _, err := cli.GetGovernancePolicy(ctx, 12)
 	if err != nil || policy.TokenName != "" {
 		t.Fatalf("policy=%+v err=%v", policy, err)
 	}
@@ -110,7 +110,7 @@ func TestGovernanceGetUpdateDeleteAndUsage(t *testing.T) {
 	if err := cli.DeleteGovernancePolicy(ctx, 12); err != nil {
 		t.Fatal(err)
 	}
-	usage, usagePolicy, err := cli.GetGovernanceUsage(ctx, 12)
+	usage, usagePolicy, _, err := cli.GetGovernanceUsage(ctx, 12)
 	if err != nil || usage.QueriesThisHour != 7 || usage.RateLimitRemainingPerMin != 23 || usagePolicy == nil || usagePolicy.MaxQueriesPerDay != 5000 {
 		t.Fatalf("usage=%+v policy=%+v err=%v", usage, usagePolicy, err)
 	}
@@ -135,7 +135,7 @@ func TestGovernancePreservesLicenseAdminAndNotFoundErrors(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(`{"success":false,"error":"` + tc.message + `"}`))
 			})
-			_, err := cli.GetGovernancePolicy(context.Background(), 12)
+			_, _, err := cli.GetGovernancePolicy(context.Background(), 12)
 			var httpErr *HTTPError
 			if !errors.As(err, &httpErr) || httpErr.Status != tc.status || !strings.Contains(err.Error(), tc.message) {
 				t.Fatalf("error=%v", err)
@@ -156,7 +156,7 @@ func TestGovernanceRouteMissingKeepsHTTPErrorWithHint(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"Cannot ` + r.Method + ` ` + r.URL.Path + `"}`))
 	})
-	_, err := cli.ListGovernancePolicies(context.Background())
+	_, _, err := cli.ListGovernancePolicies(context.Background())
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
 		t.Fatalf("want wrapped *HTTPError 404, got %T: %v", err, err)
@@ -168,5 +168,41 @@ func TestGovernanceRouteMissingKeepsHTTPErrorWithHint(t *testing.T) {
 	const want = "Cannot GET /api/v1/governance/policies (HTTP 404); Arc is reachable but did not register this route; check governance.enabled, the license, the server log, and that this Arc version supports this command"
 	if !strings.HasSuffix(err.Error(), want) {
 		t.Fatalf("err = %q\nwant suffix %q", err.Error(), want)
+	}
+}
+
+// Arc 27.01.1+ reports scope beside the policy, the policies and the usage;
+// older servers send none, which decodes as "".
+func TestGovernanceDecodesScope(t *testing.T) {
+	for _, scope := range []string{"", GovernanceScopeNode, GovernanceScopeCluster} {
+		field := ""
+		if scope != "" {
+			field = `,"scope":"` + scope + `"`
+		}
+		cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v1/governance/policies":
+				_, _ = w.Write([]byte(`{"success":true,"policies":[` + governancePolicyJSON + `],"count":1` + field + `}`))
+			case "/api/v1/governance/policies/12":
+				_, _ = w.Write([]byte(`{"success":true,"policy":` + governancePolicyJSON + field + `}`))
+			case "/api/v1/governance/usage/12":
+				_, _ = w.Write([]byte(`{"success":true,"usage":{"token_id":12},"policy":{"id":0,"token_id":12}` + field + `}`))
+			default:
+				t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			}
+		})
+		ctx := context.Background()
+		policies, got, err := cli.ListGovernancePolicies(ctx)
+		if err != nil || len(policies) != 1 || got != scope {
+			t.Errorf("list: scope=%q want %q err=%v", got, scope, err)
+		}
+		policy, got, err := cli.GetGovernancePolicy(ctx, 12)
+		if err != nil || policy.ID != 4 || got != scope {
+			t.Errorf("get: scope=%q want %q err=%v", got, scope, err)
+		}
+		_, usagePolicy, got, err := cli.GetGovernanceUsage(ctx, 12)
+		if err != nil || usagePolicy == nil || usagePolicy.ID != 0 || got != scope {
+			t.Errorf("usage: scope=%q want %q policy=%+v err=%v", got, scope, usagePolicy, err)
+		}
 	}
 }

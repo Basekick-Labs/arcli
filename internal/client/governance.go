@@ -81,36 +81,48 @@ func ValidateGovernanceLimits(req GovernancePolicyRequest) error {
 	return nil
 }
 
-// ListGovernancePolicies returns every policy. A null policies field is
-// normalised to an empty slice.
-func (c *Client) ListGovernancePolicies(ctx context.Context) ([]GovernancePolicy, error) {
+// Governance scopes Arc 27.01.1+ reports beside a policy answer (list, get
+// and usage): whose policies the answering node enforces. Older servers send
+// none, and "" is returned.
+const (
+	GovernanceScopeCluster = "cluster" // the cluster's policies, on every node
+	GovernanceScopeNode    = "node"    // this node's own policies or defaults
+)
+
+// ListGovernancePolicies returns every policy and the scope the server
+// reports ("" when it reports none). A null policies field is normalised to
+// an empty slice.
+func (c *Client) ListGovernancePolicies(ctx context.Context) ([]GovernancePolicy, string, error) {
 	var out struct {
 		Policies []GovernancePolicy `json:"policies"`
+		Scope    string             `json:"scope"`
 	}
 	if _, err := c.featureJSON(ctx, governanceFeature, governanceConfigKey, http.MethodGet, governanceBase+"/policies", nil, 16<<20, &out); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if out.Policies == nil {
 		out.Policies = []GovernancePolicy{}
 	}
-	return out.Policies, nil
+	return out.Policies, out.Scope, nil
 }
 
-// GetGovernancePolicy calls GET /api/v1/governance/policies/:token_id.
-func (c *Client) GetGovernancePolicy(ctx context.Context, tokenID int64) (*GovernancePolicy, error) {
+// GetGovernancePolicy calls GET /api/v1/governance/policies/:token_id. It
+// returns the scope the server reports, "" when it reports none.
+func (c *Client) GetGovernancePolicy(ctx context.Context, tokenID int64) (*GovernancePolicy, string, error) {
 	if tokenID <= 0 {
-		return nil, fmt.Errorf("token id must be a positive integer")
+		return nil, "", fmt.Errorf("token id must be a positive integer")
 	}
 	var out struct {
 		Policy *GovernancePolicy `json:"policy"`
+		Scope  string            `json:"scope"`
 	}
 	if _, err := c.featureJSON(ctx, governanceFeature, governanceConfigKey, http.MethodGet, governancePolicyPath(tokenID), nil, 1<<20, &out); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if out.Policy == nil {
-		return nil, fmt.Errorf("decode response: policy is missing")
+		return nil, "", fmt.Errorf("decode response: policy is missing")
 	}
-	return out.Policy, nil
+	return out.Policy, out.Scope, nil
 }
 
 // CreateGovernancePolicy creates a policy for one API token.
@@ -161,23 +173,26 @@ func (c *Client) DeleteGovernancePolicy(ctx context.Context, tokenID int64) erro
 	return err
 }
 
-// GetGovernanceUsage returns usage counters and the effective policy, if any.
-func (c *Client) GetGovernanceUsage(ctx context.Context, tokenID int64) (*GovernanceUsage, *GovernancePolicy, error) {
+// GetGovernanceUsage returns usage counters, the effective policy, if any,
+// and the scope the server reports ("" when it reports none). A policy with
+// ID 0 is the server defaults.
+func (c *Client) GetGovernanceUsage(ctx context.Context, tokenID int64) (*GovernanceUsage, *GovernancePolicy, string, error) {
 	if tokenID <= 0 {
-		return nil, nil, fmt.Errorf("token id must be a positive integer")
+		return nil, nil, "", fmt.Errorf("token id must be a positive integer")
 	}
 	var out struct {
 		Usage  *GovernanceUsage  `json:"usage"`
 		Policy *GovernancePolicy `json:"policy"`
+		Scope  string            `json:"scope"`
 	}
 	path := governanceBase + "/usage/" + strconv.FormatInt(tokenID, 10)
 	if _, err := c.featureJSON(ctx, governanceFeature, governanceConfigKey, http.MethodGet, path, nil, 1<<20, &out); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if out.Usage == nil {
-		return nil, nil, fmt.Errorf("decode response: usage is missing")
+		return nil, nil, "", fmt.Errorf("decode response: usage is missing")
 	}
-	return out.Usage, out.Policy, nil
+	return out.Usage, out.Policy, out.Scope, nil
 }
 
 func governancePolicyPath(tokenID int64) string {
