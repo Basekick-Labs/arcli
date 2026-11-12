@@ -511,7 +511,7 @@ func cycleResultLine(id int64, st *client.CompactionStats) string {
 		return fmt.Sprintf("Cycle %d finished; its counts were not reported by the server (last recorded cycle: %d)", id, lc.CycleID)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Cycle %d finished: %d of %d batches compacted, %d failed", id, lc.Succeeded, lc.Discovered, lc.Failed)
+	fmt.Fprintf(&b, "Cycle %d finished: %d of %s compacted, %d failed", id, lc.Succeeded, plural(int64(lc.Discovered), "batch", "batches"), lc.Failed)
 	if lc.Interrupted != 0 {
 		fmt.Fprintf(&b, ", %d interrupted", lc.Interrupted)
 	}
@@ -519,10 +519,10 @@ func cycleResultLine(id int64, st *client.CompactionStats) string {
 		fmt.Fprintf(&b, ", %d unstarted", lc.Unstarted)
 	}
 	if lc.DiscoveryErrors != 0 {
-		fmt.Fprintf(&b, ", %d discovery errors", lc.DiscoveryErrors)
+		fmt.Fprintf(&b, ", %s", plural(int64(lc.DiscoveryErrors), "discovery error", "discovery errors"))
 	}
 	if lc.SkippedTooWide != 0 {
-		fmt.Fprintf(&b, ", %d partitions skipped as too wide", lc.SkippedTooWide)
+		fmt.Fprintf(&b, ", %s skipped as too wide", plural(int64(lc.SkippedTooWide), "partition", "partitions"))
 	}
 	if lc.Status != "" && lc.Status != "completed" {
 		fmt.Fprintf(&b, " (status %s)", clean(lc.Status))
