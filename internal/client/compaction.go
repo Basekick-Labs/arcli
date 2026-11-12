@@ -134,11 +134,14 @@ type CompactionJob struct {
 }
 
 // CompactionCycle is the "last_cycle" object of /compaction/stats: the
-// outcome of the most recent finished cycle on the node answering. Counts
-// are batches, not jobs: the adaptive splitter can make several attempts
-// (jobs) per batch, and total_jobs_* count attempts. Before the first cycle
-// Arc still sends the object, zero-valued with CycleID 0. SkippedTooWide is
-// Arc 27.01.1+ only; older servers omit it (0).
+// outcome of the most recent finished cycle on the node answering. The
+// *_batches counts are batches, not jobs: the adaptive splitter can make
+// several attempts (jobs) per batch, and total_jobs_* count attempts.
+// DiscoveryErrors counts failed discovery steps, and SkippedTooWide counts
+// partitions (not batches) skipped because they are remembered as too wide
+// to compact; SkippedTooWide is Arc 27.01.1+ only, older servers omit it
+// (0). Before the first cycle Arc still sends the object, zero-valued with
+// CycleID 0.
 type CompactionCycle struct {
 	CycleID         int64  `json:"cycle_id"`
 	Status          string `json:"status"`

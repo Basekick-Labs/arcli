@@ -495,7 +495,9 @@ idle below the expected id and tells you to check "compaction stats".`,
 // finished cycle, so it is used only when its id is the waited one; the
 // lifetime totals in the same response are never printed as a cycle's
 // result. Counts are batches (Arc reports neither per-cycle jobs nor
-// per-cycle bytes).
+// per-cycle bytes), except discovery errors and the partitions skipped as
+// too wide. Discovery errors alone make Arc report status "failed", so they
+// are printed to explain it.
 func cycleResultLine(id int64, st *client.CompactionStats) string {
 	lc := st.LastCycle
 	switch {
@@ -516,8 +518,11 @@ func cycleResultLine(id int64, st *client.CompactionStats) string {
 	if lc.Unstarted != 0 {
 		fmt.Fprintf(&b, ", %d unstarted", lc.Unstarted)
 	}
+	if lc.DiscoveryErrors != 0 {
+		fmt.Fprintf(&b, ", %d discovery errors", lc.DiscoveryErrors)
+	}
 	if lc.SkippedTooWide != 0 {
-		fmt.Fprintf(&b, ", %d skipped as too wide", lc.SkippedTooWide)
+		fmt.Fprintf(&b, ", %d partitions skipped as too wide", lc.SkippedTooWide)
 	}
 	if lc.Status != "" && lc.Status != "completed" {
 		fmt.Fprintf(&b, " (status %s)", clean(lc.Status))
