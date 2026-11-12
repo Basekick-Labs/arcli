@@ -32,7 +32,7 @@ func TestGovernanceTimestampOutput(t *testing.T) {
 					t.Fatal(err)
 				}
 			}},
-			{"usage table", func(b *bytes.Buffer) { writeGovernanceUsageInfo(b, &u, &p, mode.to) }},
+			{"usage table", func(b *bytes.Buffer) { writeGovernanceUsageInfo(b, &u, &p, "", mode.to) }},
 		} {
 			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
 				var b bytes.Buffer

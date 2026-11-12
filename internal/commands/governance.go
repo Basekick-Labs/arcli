@@ -27,6 +27,10 @@ The governance endpoints require an Enterprise licence with query governance
 enabled, and an admin token when authentication is enabled. A limit of 0 means unlimited.
 Policies and counters are per-node and are not replicated. Configure each node
 separately; behind a load balancer, aggregate quotas can be N times the limit.
+On a cluster running Arc 27.01.1 or later, once the cluster has adopted the
+policies, a policy written on any node for a cluster token applies on every
+node; rate limits, quotas and server defaults stay per node. "policy show" and "usage" print the
+scope the server reports.
 Displayed timestamps use UTC RFC3339 by default; --time-output rfc3339nano
 shows fractional seconds. JSON retains the available timestamp precision. Unavailable routes retain
 the server HTTP error without inferring configuration or license causes.`,
@@ -41,25 +45,27 @@ func newGovernancePolicyCmd() *cobra.Command {
 	return c
 }
 
-func resolveGovernancePolicyRef(ctx context.Context, cli *client.Client, ref string) (*client.TokenInfo, *client.GovernancePolicy, error) {
+// resolveGovernancePolicyRef also returns the scope the server reports with
+// the policy ("" from servers that report none).
+func resolveGovernancePolicyRef(ctx context.Context, cli *client.Client, ref string) (*client.TokenInfo, *client.GovernancePolicy, string, error) {
 	token, err := resolveTokenRef(ctx, cli, ref)
 	if err != nil {
 		var httpErr *client.HTTPError
 		id, parseErr := strconv.ParseInt(ref, 10, 64)
 		if parseErr != nil || id <= 0 || !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		// Deleted tokens can leave policies behind; a numeric ID remains usable.
 		token = &client.TokenInfo{ID: id}
 	}
-	policy, err := cli.GetGovernancePolicy(ctx, token.ID)
+	policy, scope, err := cli.GetGovernancePolicy(ctx, token.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if policy.TokenName == "" {
 		policy.TokenName = token.Name
 	}
-	return token, policy, nil
+	return token, policy, scope, nil
 }
 
 func newGovernancePolicyListCmd() *cobra.Command {
@@ -81,7 +87,7 @@ func newGovernancePolicyListCmd() *cobra.Command {
 			}
 			ctx, cancel := f.ctx(cmd)
 			defer cancel()
-			policies, err := cli.ListGovernancePolicies(ctx)
+			policies, scope, err := cli.ListGovernancePolicies(ctx)
 			if err != nil {
 				return err
 			}
@@ -102,7 +108,8 @@ func newGovernancePolicyListCmd() *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), struct {
 					Policies []client.GovernancePolicy `json:"policies"`
 					Count    int                       `json:"count"`
-				}{policies, len(policies)})
+					Scope    string                    `json:"scope,omitempty"`
+				}{policies, len(policies), scope})
 			}
 			return renderGovernancePolicyList(cmd.OutOrStdout(), policies, noHeader, outputFormat == output.FormatCSV, to)
 		},
@@ -132,7 +139,7 @@ func newGovernancePolicyShowCmd() *cobra.Command {
 			}
 			ctx, cancel := f.ctx(cmd)
 			defer cancel()
-			_, policy, err := resolveGovernancePolicyRef(ctx, cli, args[0])
+			_, policy, scope, err := resolveGovernancePolicyRef(ctx, cli, args[0])
 			if err != nil {
 				return err
 			}
@@ -140,6 +147,7 @@ func newGovernancePolicyShowCmd() *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), policy)
 			}
 			writeGovernancePolicyInfo(cmd.OutOrStdout(), policy, to)
+			writeGovernancePolicyScope(cmd.OutOrStdout(), policy, scope)
 			return nil
 		},
 	}
@@ -221,8 +229,10 @@ func newGovernancePolicyCreateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "create <token-id|name>",
 		Short: "Create a query-governance policy",
-		Long: `Create a per-node policy. Omitted limits are unlimited and override server defaults.
-Pass at least one limit flag, or --unlimited to explicitly disable every limit.`,
+		Long: `Create a policy. Omitted limits are unlimited and override server defaults.
+Pass at least one limit flag, or --unlimited to explicitly disable every limit.
+The policy applies only to the contacted node, unless the cluster has adopted
+cluster-wide policies (Arc 27.01.1 or later): it then applies on every node.`,
 		Example: `  arcli governance policy create batch --rate-limit-per-minute 30 --max-queries-per-day 5000
   arcli governance policy create 12 --max-rows-per-query 10000 --max-scan-duration-sec 60
   arcli governance policy create 12 --unlimited`,
@@ -253,7 +263,7 @@ Pass at least one limit flag, or --unlimited to explicitly disable every limit.`
 			req := limits.request(token.ID)
 			ctx, cancel = f.ctx(cmd)
 			defer cancel()
-			existing, err := cli.GetGovernancePolicy(ctx, token.ID)
+			existing, _, err := cli.GetGovernancePolicy(ctx, token.ID)
 			if err == nil && existing.ID != 0 {
 				return fmt.Errorf("governance policy already exists for token %q (id %d); use `arcli governance policy update`", clean(token.Name), token.ID)
 			}
@@ -297,7 +307,8 @@ func newGovernancePolicyUpdateCmd() *cobra.Command {
 		Long: `Update one or more policy limits. Arc replaces the complete policy on PUT,
 so arcli reads the current policy and merges only the flags you pass.
 Arc has no PATCH or version check: concurrent updates can lose changes.
-Policies apply only to the contacted node and are not replicated.`,
+Policies apply only to the contacted node and are not replicated, unless the
+cluster has adopted cluster-wide policies (Arc 27.01.1 or later).`,
 		Example: `  arcli governance policy update batch --rate-limit-per-minute 45
   arcli governance policy update 12 --max-rows-per-query 0`,
 		Args: cobra.ExactArgs(1),
@@ -317,7 +328,7 @@ Policies apply only to the contacted node and are not replicated.`,
 				return err
 			}
 			ctx, cancel := f.ctx(cmd)
-			token, policy, err := resolveGovernancePolicyRef(ctx, cli, args[0])
+			token, policy, _, err := resolveGovernancePolicyRef(ctx, cli, args[0])
 			cancel()
 			if err != nil {
 				return err
@@ -360,7 +371,7 @@ func newGovernancePolicyDeleteCmd() *cobra.Command {
 				return err
 			}
 			ctx, cancel := f.ctx(cmd)
-			token, _, err := resolveGovernancePolicyRef(ctx, cli, args[0])
+			token, _, _, err := resolveGovernancePolicyRef(ctx, cli, args[0])
 			cancel()
 			if err != nil {
 				return err
@@ -406,7 +417,7 @@ func newGovernanceUsageCmd() *cobra.Command {
 			}
 			ctx, cancel = f.ctx(cmd)
 			defer cancel()
-			usage, policy, err := cli.GetGovernanceUsage(ctx, token.ID)
+			usage, policy, scope, err := cli.GetGovernanceUsage(ctx, token.ID)
 			if err != nil {
 				return err
 			}
@@ -414,9 +425,10 @@ func newGovernanceUsageCmd() *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), struct {
 					Usage  *client.GovernanceUsage  `json:"usage"`
 					Policy *client.GovernancePolicy `json:"policy"`
-				}{usage, policy})
+					Scope  string                   `json:"scope,omitempty"`
+				}{usage, policy, scope})
 			}
-			writeGovernanceUsageInfo(cmd.OutOrStdout(), usage, policy, to)
+			writeGovernanceUsageInfo(cmd.OutOrStdout(), usage, policy, scope, to)
 			return nil
 		},
 	}
@@ -517,7 +529,7 @@ func governanceUsageValue(value, limit int, absent string) string {
 	return strconv.Itoa(value)
 }
 
-func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy *client.GovernancePolicy, to timeOutput) {
+func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy *client.GovernancePolicy, scope string, to timeOutput) {
 	fmt.Fprintf(w, "token id:                       %d\n", usage.TokenID)
 	// A nil policy means no token policy and no server defaults: the token is
 	// unrestricted. Arc keeps one quota tracker that counts both the hour and
@@ -542,11 +554,41 @@ func writeGovernanceUsageInfo(w io.Writer, usage *client.GovernanceUsage, policy
 	} else {
 		fmt.Fprintln(w, "policy:                         token policy")
 	}
-	fmt.Fprintln(w, "scope:                          this node only (not replicated)")
+	fmt.Fprintln(w, "scope:                          "+governanceScopeText(policy, scope))
 	fmt.Fprintf(w, "policy rate limit per minute:   %s\n", governanceLimit(policy.RateLimitPerMinute))
 	fmt.Fprintf(w, "policy rate limit per hour:     %s\n", governanceLimit(policy.RateLimitPerHour))
 	fmt.Fprintf(w, "policy max queries per hour:    %s\n", governanceLimit(policy.MaxQueriesPerHour))
 	fmt.Fprintf(w, "policy max queries per day:     %s\n", governanceLimit(policy.MaxQueriesPerDay))
 	fmt.Fprintf(w, "policy max rows per query:      %s\n", governanceLimit(policy.MaxRowsPerQuery))
 	fmt.Fprintf(w, "policy max scan duration:       %s\n", governanceDuration(policy.MaxScanDurationSec))
+}
+
+// governanceScopeText describes the scope Arc reports with a policy answer.
+// Without one (Arc before 27.01.1), and for "node", it is the text earlier
+// releases always printed. A policy with ID 0 is the server defaults, which
+// stay per node even when the cluster holds the policies.
+func governanceScopeText(policy *client.GovernancePolicy, scope string) string {
+	switch scope {
+	case "", client.GovernanceScopeNode:
+		return "this node only (not replicated)"
+	case client.GovernanceScopeCluster:
+		if policy != nil && policy.ID == 0 {
+			return "this node's server defaults (the cluster holds no policy for this token)"
+		}
+		return "cluster-wide (rate limits and quotas are counted per node)"
+	default:
+		if c := clean(scope); c != "" {
+			return c
+		}
+		return "unknown"
+	}
+}
+
+// writeGovernancePolicyScope adds the scope line to "policy show" when the
+// server reports a scope; output from older servers is unchanged.
+func writeGovernancePolicyScope(w io.Writer, policy *client.GovernancePolicy, scope string) {
+	if scope == "" {
+		return
+	}
+	fmt.Fprintf(w, "scope:                  %s\n", governanceScopeText(policy, scope))
 }
