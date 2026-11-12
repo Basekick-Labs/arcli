@@ -369,8 +369,11 @@ func newCompactionTriggerCmd() *cobra.Command {
 The cycle runs asynchronously on the server; the response carries the
 cycle id the server expects to assign. With --wait arcli polls
 "compaction stats" until that cycle has finished (bounded by
---wait-timeout, default 30m, the server's own cycle limit). Without
---wait, check progress with "arcli compaction status" or "stats".
+--wait-timeout, default 30m, the server's own cycle limit) and prints the
+cycle's batch counts (Arc 26.09.2+; older servers report none). Counts
+come from the node contacted: on a cluster, trigger the node that runs
+compaction. Without --wait, check progress with "arcli compaction
+status" or "stats".
 
 --tier limits the cycle to hourly and/or daily; a tier that is disabled
 or not configured on the server is skipped silently by the server, so
@@ -474,7 +477,7 @@ idle below the expected id and tells you to check "compaction stats".`,
 			if outputFormat == output.FormatJSON {
 				return writeRawJSON(cmd.OutOrStdout(), final.Raw)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Cycle %d finished: %d jobs completed, %d failed, %s saved in total\n", final.CurrentCycleID, final.TotalJobsCompleted, final.TotalJobsFailed, humanBytes(final.TotalBytesSaved))
+			fmt.Fprintln(cmd.OutOrStdout(), cycleResultLine(res.CycleID, final))
 			return nil
 		},
 	}
@@ -485,6 +488,46 @@ idle below the expected id and tells you to check "compaction stats".`,
 	c.Flags().BoolVar(&wait, "wait", false, "poll until the cycle has finished")
 	c.Flags().DurationVar(&waitTimeout, "wait-timeout", 30*time.Minute, "give up waiting after this long (with --wait)")
 	return c
+}
+
+// cycleResultLine is the --wait result for cycle id, taken from the
+// server's last_cycle record. That record holds only the most recent
+// finished cycle, so it is used only when its id is the waited one; the
+// lifetime totals in the same response are never printed as a cycle's
+// result. Counts are batches (Arc reports neither per-cycle jobs nor
+// per-cycle bytes), except discovery errors and the partitions skipped as
+// too wide. Discovery errors alone make Arc report status "failed", so they
+// are printed to explain it.
+func cycleResultLine(id int64, st *client.CompactionStats) string {
+	lc := st.LastCycle
+	switch {
+	case lc == nil:
+		return fmt.Sprintf("Cycle %d finished; this server does not report per-cycle counts (Arc 26.09.2+ does)", id)
+	case lc.CycleID > id:
+		return fmt.Sprintf("Cycle %d finished; its counts were replaced by a later cycle (last recorded cycle: %d)", id, lc.CycleID)
+	case lc.CycleID == 0:
+		return fmt.Sprintf("Cycle %d finished; its counts were not reported by the server (no cycle recorded yet)", id)
+	case lc.CycleID < id:
+		return fmt.Sprintf("Cycle %d finished; its counts were not reported by the server (last recorded cycle: %d)", id, lc.CycleID)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Cycle %d finished: %d of %s compacted, %d failed", id, lc.Succeeded, plural(int64(lc.Discovered), "batch", "batches"), lc.Failed)
+	if lc.Interrupted != 0 {
+		fmt.Fprintf(&b, ", %d interrupted", lc.Interrupted)
+	}
+	if lc.Unstarted != 0 {
+		fmt.Fprintf(&b, ", %d unstarted", lc.Unstarted)
+	}
+	if lc.DiscoveryErrors != 0 {
+		fmt.Fprintf(&b, ", %s", plural(int64(lc.DiscoveryErrors), "discovery error", "discovery errors"))
+	}
+	if lc.SkippedTooWide != 0 {
+		fmt.Fprintf(&b, ", %s skipped as too wide", plural(int64(lc.SkippedTooWide), "partition", "partitions"))
+	}
+	if lc.Status != "" && lc.Status != "completed" {
+		fmt.Fprintf(&b, " (status %s)", clean(lc.Status))
+	}
+	return b.String()
 }
 
 // waitPollInterval is the first poll delay for --wait; it grows by one

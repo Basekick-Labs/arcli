@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/basekick-labs/arcli/internal/client"
 )
 
 // fakeCompactionServer emulates the compaction routes. Each trigger
@@ -29,11 +31,18 @@ func fakeCompactionServer(t *testing.T, busyPolls int32) (*httptest.Server, *int
 	})
 	mux.HandleFunc("/api/v1/compaction/stats", func(w http.ResponseWriter, r *http.Request) {
 		running := "false"
+		cur := atomic.LoadInt64(&cycle)
+		// last_cycle is the latest FINISHED cycle; its counts deliberately
+		// differ from the lifetime totals (2 jobs, 1 failed, 1.5 MiB), so a
+		// result line built from the totals cannot pass for the cycle's.
+		last := cur
 		if atomic.LoadInt32(&remaining) > 0 {
 			atomic.AddInt32(&remaining, -1)
 			running = "true"
+			last = cur - 1
 		}
-		_, _ = w.Write([]byte(`{"total_jobs_completed":2,"total_jobs_failed":1,"total_files_compacted":30,"total_bytes_saved":1572864,"total_bytes_saved_mb":1.5,"total_manifests_recover":0,"cycle_running":` + running + `,"current_cycle_id":` + itoa(atomic.LoadInt64(&cycle)) + `,
+		lastCycle := `{"cycle_id":` + itoa(last) + `,"status":"completed","discovered_batches":3,"started_batches":3,"succeeded_batches":3,"failed_batches":0,"interrupted_batches":0,"unstarted_batches":0,"discovery_errors":0}`
+		_, _ = w.Write([]byte(`{"last_cycle":` + lastCycle + `,"total_jobs_completed":2,"total_jobs_failed":1,"total_files_compacted":30,"total_bytes_saved":1572864,"total_bytes_saved_mb":1.5,"total_manifests_recover":0,"cycle_running":` + running + `,"current_cycle_id":` + itoa(atomic.LoadInt64(&cycle)) + `,
 		 "recent_jobs":[{"database":"m","measurement":"cpu","partition_path":"m/cpu/2026/09/07/10","tier":"hourly","files_compacted":12,"bytes_before":1048576,"bytes_after":524288,"success":true,"compression_ratio":0.5},{"database":"m","measurement":"mem","partition_path":"m/mem/2026/09/07/10","tier":"hourly","success":false,"error":"disk full"}],
 		 "tiers":[{"tier":"hourly","enabled":true,"min_age_hours":1,"min_files":10,"total_compactions":2,"total_files_compacted":30,"total_bytes_saved":1572864},{"tier":"daily","enabled":false,"min_age_hours":24,"min_files":12}]}`))
 	})
@@ -204,8 +213,13 @@ func TestCompactionTrigger_WaitPollsUntilCycleDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Cycle 1 finished: 2 jobs completed, 1 failed, 1.5 MiB saved") {
+	// The waited cycle's own batch counts, never the lifetime totals the
+	// same response carries (arcli#96).
+	if !strings.Contains(out, "Cycle 1 finished: 3 of 3 batches compacted, 0 failed\n") {
 		t.Errorf("out = %q", out)
+	}
+	if strings.Contains(out, "jobs completed") || strings.Contains(out, "saved") {
+		t.Errorf("lifetime totals printed as the cycle result: %q", out)
 	}
 }
 
@@ -326,5 +340,81 @@ func TestCompactionStats_ShowsClusterWidePause(t *testing.T) {
 		if err != nil || !strings.Contains(out, tc.want) {
 			t.Errorf("paused=%q: err=%v, want %q in:\n%s", tc.paused, err, tc.want, out)
 		}
+	}
+}
+
+// cycleResultLine prints a cycle's counts only from a last_cycle record for
+// that very cycle, names every non-zero bucket that is neither compacted nor
+// failed, and never falls back to the lifetime totals (arcli#96).
+func TestCycleResultLine(t *testing.T) {
+	totals := client.CompactionStats{TotalJobsCompleted: 7, TotalJobsFailed: 5, TotalBytesSaved: 1 << 20}
+	withCycle := func(c client.CompactionCycle) *client.CompactionStats {
+		st := totals
+		st.LastCycle = &c
+		return &st
+	}
+	cases := []struct {
+		name string
+		id   int64
+		st   *client.CompactionStats
+		want string
+	}{
+		{"completed, nothing to do", 4, withCycle(client.CompactionCycle{CycleID: 4, Status: "completed"}),
+			"Cycle 4 finished: 0 of 0 batches compacted, 0 failed"},
+		{"failed batch", 7, withCycle(client.CompactionCycle{CycleID: 7, Status: "failed", Discovered: 6, Started: 6, Succeeded: 5, Failed: 1}),
+			"Cycle 7 finished: 5 of 6 batches compacted, 1 failed (status failed)"},
+		{"timed out", 9, withCycle(client.CompactionCycle{CycleID: 9, Status: "timed_out", Discovered: 6, Started: 4, Succeeded: 3, Interrupted: 1, Unstarted: 2}),
+			"Cycle 9 finished: 3 of 6 batches compacted, 0 failed, 1 interrupted, 2 unstarted (status timed_out)"},
+		{"interrupted only", 2, withCycle(client.CompactionCycle{CycleID: 2, Status: "cancelled", Discovered: 1, Started: 1, Interrupted: 1}),
+			"Cycle 2 finished: 0 of 1 batch compacted, 0 failed, 1 interrupted (status cancelled)"},
+		{"unstarted only", 2, withCycle(client.CompactionCycle{CycleID: 2, Status: "completed", Discovered: 2, Started: 1, Succeeded: 1, Unstarted: 1}),
+			"Cycle 2 finished: 1 of 2 batches compacted, 0 failed, 1 unstarted"},
+		{"skipped too wide", 5, withCycle(client.CompactionCycle{CycleID: 5, Status: "completed", Discovered: 2, Started: 2, Succeeded: 2, SkippedTooWide: 1}),
+			"Cycle 5 finished: 2 of 2 batches compacted, 0 failed, 1 partition skipped as too wide"},
+		{"discovery errors explain a failed status", 6, withCycle(client.CompactionCycle{CycleID: 6, Status: "failed", DiscoveryErrors: 2}),
+			"Cycle 6 finished: 0 of 0 batches compacted, 0 failed, 2 discovery errors (status failed)"},
+		{"every suffix, in order", 8, withCycle(client.CompactionCycle{CycleID: 8, Status: "timed_out", Discovered: 5, Started: 3, Succeeded: 1, Failed: 1, Interrupted: 1, Unstarted: 2, DiscoveryErrors: 1, SkippedTooWide: 3}),
+			"Cycle 8 finished: 1 of 5 batches compacted, 1 failed, 1 interrupted, 2 unstarted, 1 discovery error, 3 partitions skipped as too wide (status timed_out)"},
+		{"status sanitised", 3, withCycle(client.CompactionCycle{CycleID: 3, Status: "fail\x1b[31med"}),
+			"Cycle 3 finished: 0 of 0 batches compacted, 0 failed (status fail[31med)"},
+		{"later cycle overwrote the record", 4, withCycle(client.CompactionCycle{CycleID: 5, Status: "completed", Discovered: 9, Succeeded: 9}),
+			"Cycle 4 finished; its counts were replaced by a later cycle (last recorded cycle: 5)"},
+		{"older record", 4, withCycle(client.CompactionCycle{CycleID: 3, Status: "completed", Discovered: 9, Succeeded: 9}),
+			"Cycle 4 finished; its counts were not reported by the server (last recorded cycle: 3)"},
+		{"zero block", 4, withCycle(client.CompactionCycle{}),
+			"Cycle 4 finished; its counts were not reported by the server (no cycle recorded yet)"},
+		{"no last_cycle (Arc before 26.09.2)", 4, &totals,
+			"Cycle 4 finished; this server does not report per-cycle counts (Arc 26.09.2+ does)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cycleResultLine(tc.id, tc.st); got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A last_cycle record for another cycle (here: one that finished between
+// two polls) must not be printed as the waited cycle's result.
+func TestCompactionTrigger_WaitIgnoresAnotherCyclesRecord(t *testing.T) {
+	fastPolls(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/compaction/trigger", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":"Compaction triggered","status":"running","tiers":["hourly"],"cycle_id":4}`))
+	})
+	mux.HandleFunc("/api/v1/compaction/stats", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"total_jobs_completed":1,"total_jobs_failed":0,"total_bytes_saved":24883,"cycle_running":false,"current_cycle_id":5,"recent_jobs":[],
+		 "last_cycle":{"cycle_id":5,"status":"completed","discovered_batches":2,"started_batches":2,"succeeded_batches":2,"failed_batches":0,"interrupted_batches":0,"unstarted_batches":0,"discovery_errors":0}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	writeTestConfig(t, srv.URL, "tok")
+	out, _, err := execCmd(t, newCompactionTriggerCmd(), "--wait", "--wait-timeout", "30s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Compaction cycle requested (expected cycle id 4) for tiers [hourly] on all databases\nCycle 4 finished; its counts were replaced by a later cycle (last recorded cycle: 5)\n" {
+		t.Errorf("out = %q", out)
 	}
 }
