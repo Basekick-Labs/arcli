@@ -275,3 +275,34 @@ func TestTriggerCompaction_RoleRejection(t *testing.T) {
 		})
 	}
 }
+
+// last_cycle decodes into a pointer so a server that omits it (Arc before
+// 26.09.2) is told apart from the zero-valued block Arc sends before its
+// first cycle (arcli#96).
+func TestCompactionStats_LastCycle(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       *CompactionCycle
+	}{
+		{"absent", `{"current_cycle_id":0,"recent_jobs":[]}`, nil},
+		{"zero block", `{"current_cycle_id":0,"recent_jobs":[],"last_cycle":{"cycle_id":0,"status":"","discovered_batches":0,"started_batches":0,"succeeded_batches":0,"failed_batches":0,"interrupted_batches":0,"unstarted_batches":0,"discovery_errors":0}}`, &CompactionCycle{}},
+		{"main", `{"current_cycle_id":7,"recent_jobs":[],"last_cycle":{"cycle_id":7,"status":"failed","discovered_batches":6,"started_batches":5,"succeeded_batches":3,"failed_batches":1,"interrupted_batches":1,"unstarted_batches":1,"discovery_errors":2,"skipped_too_wide":4}}`,
+			&CompactionCycle{CycleID: 7, Status: "failed", Discovered: 6, Started: 5, Succeeded: 3, Failed: 1, Interrupted: 1, Unstarted: 1, DiscoveryErrors: 2, SkippedTooWide: 4}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cli, _ := newAuthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			})
+			st, err := cli.CompactionStats(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tc.want == nil && st.LastCycle != nil:
+				t.Errorf("LastCycle = %+v, want nil", *st.LastCycle)
+			case tc.want != nil && (st.LastCycle == nil || *st.LastCycle != *tc.want):
+				t.Errorf("LastCycle = %+v, want %+v", st.LastCycle, *tc.want)
+			}
+		})
+	}
+}

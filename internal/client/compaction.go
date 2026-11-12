@@ -133,21 +133,43 @@ type CompactionJob struct {
 	Error            string   `json:"error,omitempty"`
 }
 
+// CompactionCycle is the "last_cycle" object of /compaction/stats: the
+// outcome of the most recent finished cycle on the node answering. Counts
+// are batches, not jobs: the adaptive splitter can make several attempts
+// (jobs) per batch, and total_jobs_* count attempts. Before the first cycle
+// Arc still sends the object, zero-valued with CycleID 0. SkippedTooWide is
+// Arc 27.01.1+ only; older servers omit it (0).
+type CompactionCycle struct {
+	CycleID         int64  `json:"cycle_id"`
+	Status          string `json:"status"`
+	Discovered      int64  `json:"discovered_batches"`
+	Started         int64  `json:"started_batches"`
+	Succeeded       int64  `json:"succeeded_batches"`
+	Failed          int64  `json:"failed_batches"`
+	Interrupted     int64  `json:"interrupted_batches"`
+	Unstarted       int64  `json:"unstarted_batches"`
+	DiscoveryErrors int64  `json:"discovery_errors"`
+	SkippedTooWide  int64  `json:"skipped_too_wide"`
+}
+
 // CompactionStats is GET /api/v1/compaction/stats. Tiers is nil when
 // the server omits the key (no tiers enabled). Paused is the cluster-wide
 // compaction pause a restore holds (Arc 27.01.1+); older servers omit it.
+// LastCycle is nil when the server omits "last_cycle" (Arc before 26.09.2).
+// The Total* counters are the node's lifetime totals, not a cycle's.
 type CompactionStats struct {
-	TotalJobsCompleted    int64           `json:"total_jobs_completed"`
-	TotalJobsFailed       int64           `json:"total_jobs_failed"`
-	TotalFilesCompacted   int64           `json:"total_files_compacted"`
-	TotalBytesSaved       int64           `json:"total_bytes_saved"`
-	TotalManifestsRecover int64           `json:"total_manifests_recover"`
-	CycleRunning          bool            `json:"cycle_running"`
-	CurrentCycleID        int64           `json:"current_cycle_id"`
-	Paused                bool            `json:"paused"`
-	RecentJobs            []CompactionJob `json:"recent_jobs"`
-	Tiers                 []TierStats     `json:"tiers"`
-	Raw                   json.RawMessage `json:"-"`
+	TotalJobsCompleted    int64            `json:"total_jobs_completed"`
+	TotalJobsFailed       int64            `json:"total_jobs_failed"`
+	TotalFilesCompacted   int64            `json:"total_files_compacted"`
+	TotalBytesSaved       int64            `json:"total_bytes_saved"`
+	TotalManifestsRecover int64            `json:"total_manifests_recover"`
+	CycleRunning          bool             `json:"cycle_running"`
+	CurrentCycleID        int64            `json:"current_cycle_id"`
+	Paused                bool             `json:"paused"`
+	RecentJobs            []CompactionJob  `json:"recent_jobs"`
+	Tiers                 []TierStats      `json:"tiers"`
+	LastCycle             *CompactionCycle `json:"last_cycle"`
+	Raw                   json.RawMessage  `json:"-"`
 }
 
 // CompactionCandidate is one entry of /api/v1/compaction/candidates.
