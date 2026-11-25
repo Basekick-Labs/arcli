@@ -24,8 +24,10 @@ func (e *CompactionDisabledError) Error() string {
 }
 
 // CompactionRunningError is the 409 from POST /api/v1/compaction/trigger.
+// BootID is the server process's boot_id (Arc 27.01.1+; empty before).
 type CompactionRunningError struct {
 	CycleID int64
+	BootID  string
 }
 
 func (e *CompactionRunningError) Error() string {
@@ -42,6 +44,33 @@ func (e *CompactionPausedError) Error() string {
 		return "compaction is paused cluster-wide"
 	}
 	return scrubControls(e.Message)
+}
+
+// CompactionStoppingError is Arc's 503 with "stopping": true: the server
+// is shutting down and takes no new cycle (Arc 27.01.1+).
+type CompactionStoppingError struct{}
+
+func (e *CompactionStoppingError) Error() string {
+	return "the server is shutting down and is not taking new compaction cycles; retry once it is back"
+}
+
+// CycleBootMismatchError is Arc's 404 for a cycle lookup whose boot_id is
+// not the answering process's (Arc 27.01.1+): the cycle id was handed out
+// by another process, because the server restarted or the request reached
+// another node. A record with the same number there is another cycle.
+type CycleBootMismatchError struct {
+	CycleID     int64
+	WantBootID  string // the boot_id the lookup sent
+	BootID      string // the answering process's
+	LeaseHolder string // the compactor lease holder, on a cluster
+}
+
+func (e *CycleBootMismatchError) Error() string {
+	msg := fmt.Sprintf("cycle %d was started by another Arc process (boot_id %s; the server now answers as %s): it restarted, or the request reached another node, so the cycle's outcome is not known here", e.CycleID, scrubControls(e.WantBootID), scrubControls(e.BootID))
+	if e.LeaseHolder != "" {
+		msg += fmt.Sprintf("; compactor lease holder is %q", scrubControls(e.LeaseHolder))
+	}
+	return msg
 }
 
 // CompactionNotPermittedError is Arc's 503 response when the current node
@@ -168,6 +197,7 @@ type CompactionStats struct {
 	TotalManifestsRecover int64            `json:"total_manifests_recover"`
 	CycleRunning          bool             `json:"cycle_running"`
 	CurrentCycleID        int64            `json:"current_cycle_id"`
+	BootID                string           `json:"boot_id"`
 	Paused                bool             `json:"paused"`
 	RecentJobs            []CompactionJob  `json:"recent_jobs"`
 	Tiers                 []TierStats      `json:"tiers"`
@@ -192,13 +222,15 @@ type CompactionHistory struct {
 }
 
 // TriggerResult is the 200 body of POST /api/v1/compaction/trigger.
-// CycleID is the server's prediction (current+1) made before the
-// asynchronous cycle starts, not a confirmed job id.
+// CycleID is the id the server claimed for the cycle. BootID identifies
+// the server process (Arc 27.01.1+; empty before): cycle ids restart at 1
+// with each process, so the pair names the cycle.
 type TriggerResult struct {
 	Message  string          `json:"message"`
 	Status   string          `json:"status"`
 	Tiers    []string        `json:"tiers"`
 	CycleID  int64           `json:"cycle_id"`
+	BootID   string          `json:"boot_id"`
 	Database string          `json:"database,omitempty"`
 	Raw      json.RawMessage `json:"-"`
 }
@@ -351,6 +383,7 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 	if resp.StatusCode == http.StatusConflict {
 		var conflict struct {
 			CycleID int64  `json:"cycle_id"`
+			BootID  string `json:"boot_id"`
 			Paused  bool   `json:"paused"`
 			Error   string `json:"error"`
 			Message string `json:"message"`
@@ -368,9 +401,17 @@ func (c *Client) TriggerCompaction(ctx context.Context, tiers []string, database
 			}
 			return nil, &CompactionPausedError{Message: msg}
 		}
-		return nil, &CompactionRunningError{CycleID: conflict.CycleID}
+		return nil, &CompactionRunningError{CycleID: conflict.CycleID, BootID: conflict.BootID}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			var stopping struct {
+				Stopping bool `json:"stopping"`
+			}
+			if json.Unmarshal(body, &stopping) == nil && stopping.Stopping {
+				return nil, &CompactionStoppingError{}
+			}
+		}
 		if err := decodeCompactionNotPermittedError(resp.StatusCode, body); err != nil {
 			return nil, err
 		}
@@ -403,4 +444,55 @@ func decodeCompactionNotPermittedError(status int, body []byte) error {
 		return nil
 	}
 	return &CompactionNotPermittedError{Role: response.Role, LeaseHolder: *response.LeaseHolder}
+}
+
+// CompactionCycleRecord is GET /api/v1/compaction/cycles/{id} (Arc
+// 27.01.1+). Status is "claimed" or "running" until the cycle ends.
+type CompactionCycleRecord struct {
+	CompactionCycle
+	BootID string          `json:"boot_id"`
+	Raw    json.RawMessage `json:"-"`
+}
+
+// Finished reports whether the record is a cycle's final one.
+func (r *CompactionCycleRecord) Finished() bool {
+	return r.Status != "" && r.Status != "running" && r.Status != "claimed"
+}
+
+// CompactionCycleByID calls GET /api/v1/compaction/cycles/{id}?boot_id=
+// (Arc 27.01.1+). bootID, when set, makes the server refuse an id another
+// process handed out: *CycleBootMismatchError. A 404 without that marker
+// (no record retained) is an *HTTPError.
+func (c *Client) CompactionCycleByID(ctx context.Context, id int64, bootID string) (*CompactionCycleRecord, error) {
+	if id < 1 {
+		return nil, fmt.Errorf("cycle id must be >= 1")
+	}
+	path := "/api/v1/compaction/cycles/" + strconv.FormatInt(id, 10)
+	if bootID != "" {
+		path += "?" + url.Values{"boot_id": {bootID}}.Encode()
+	}
+	body, err := c.getRaw(ctx, path, 4<<20)
+	if err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+			var nf struct {
+				Mismatch    bool   `json:"boot_id_mismatch"`
+				BootID      string `json:"boot_id"`
+				LeaseHolder string `json:"lease_holder"`
+			}
+			if json.Unmarshal(he.Body, &nf) == nil && nf.Mismatch {
+				return nil, &CycleBootMismatchError{CycleID: id, WantBootID: bootID, BootID: nf.BootID, LeaseHolder: nf.LeaseHolder}
+			}
+		}
+		// Not classifyRouteMissing: an Arc before 27.01.1 has no /cycles
+		// route but runs compaction. Callers ask only a server that sent a
+		// boot_id, which has the route.
+		return nil, err
+	}
+	var out CompactionCycleRecord
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode compaction cycle: %w", err)
+	}
+	out.Raw = body
+	return &out, nil
 }
