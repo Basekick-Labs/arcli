@@ -163,6 +163,11 @@ units in table mode; -o json carries the server's raw numbers.`,
 				cycle += ", paused cluster-wide by a restore"
 			}
 			fmt.Fprintf(w, "cycle:           %s (current id %d)\n", cycle, st.CurrentCycleID)
+			if st.BootID != "" {
+				// Cycle ids restart at 1 with each process; boot_id says
+				// which process these ids belong to (Arc 27.01.1+).
+				fmt.Fprintf(w, "boot id:         %s\n", clean(st.BootID))
+			}
 			fmt.Fprintln(w)
 			if len(st.Tiers) == 0 {
 				fmt.Fprintln(w, "(no tiers enabled)")
@@ -367,23 +372,31 @@ func newCompactionTriggerCmd() *cobra.Command {
 		Long: `Start a compaction cycle now (POST /api/v1/compaction/trigger).
 
 The cycle runs asynchronously on the server; the response carries the
-cycle id the server expects to assign. With --wait arcli polls
-"compaction stats" until that cycle has finished (bounded by
---wait-timeout, default 30m, the server's own cycle limit) and prints the
-cycle's batch counts (Arc 26.09.2+; older servers report none). Counts
-come from the node contacted: on a cluster, trigger the node that runs
-compaction. Without --wait, check progress with "arcli compaction
+cycle id and, from Arc 27.01.1, the server process's boot_id. With --wait
+arcli polls until that cycle has finished (bounded by --wait-timeout,
+default 30m, the server's own cycle limit) and prints the cycle's batch
+counts. Against Arc 27.01.1+ it polls the cycle itself, by id and boot_id:
+if the server restarts, or a load balancer sends a poll to another node,
+arcli reports that the cycle's outcome is not known instead of reading
+another cycle's record under the same number. Older servers are polled
+through "compaction stats" (Arc 26.09.2+ report counts; older ones none).
+Counts come from the node contacted: on a cluster, trigger the node that
+runs compaction. Without --wait, check progress with "arcli compaction
 status" or "stats".
+
+A server that is shutting down answers that it takes no new cycle (Arc
+27.01.1+); a cycle it stops at shutdown ends with status "stopped".
 
 --tier limits the cycle to hourly and/or daily; a tier that is disabled
 or not configured on the server is skipped silently by the server, so
 arcli warns first. If another cycle is already running the server
 answers 409 and arcli reports its id.
 
-Two server-side races affect --wait: the expected cycle id can be one
-too high, and a scheduled cycle starting at the same instant drops the
-manual trigger. In both cases arcli stops waiting once the server sits
-idle below the expected id and tells you to check "compaction stats".`,
+Against servers older than 27.01.1, two server-side races affect --wait:
+the expected cycle id can be one too high, and a scheduled cycle starting
+at the same instant drops the manual trigger. In both cases arcli stops
+waiting once the server sits idle below the expected id and tells you to
+check "compaction stats".`,
 		Example: `  arcli compaction trigger
   arcli compaction trigger --tier hourly --database metrics --wait`,
 		Args: cobra.NoArgs,
@@ -465,9 +478,24 @@ idle below the expected id and tells you to check "compaction stats".`,
 			if outputFormat == output.FormatJSON {
 				progress = stderr
 			}
-			fmt.Fprintf(progress, "Compaction cycle requested (expected cycle id %d) for tiers [%s] on %s\n", res.CycleID, strings.Join(tierNames, ", "), scope)
+			if res.BootID != "" {
+				fmt.Fprintf(progress, "Compaction cycle %d started (boot_id %s) for tiers [%s] on %s\n", res.CycleID, clean(res.BootID), strings.Join(tierNames, ", "), scope)
+			} else {
+				fmt.Fprintf(progress, "Compaction cycle requested (expected cycle id %d) for tiers [%s] on %s\n", res.CycleID, strings.Join(tierNames, ", "), scope)
+			}
 			if !wait {
 				fmt.Fprintln(stderr, "It runs asynchronously; follow it with `arcli compaction status` or `arcli compaction stats`.")
+				return nil
+			}
+			if res.BootID != "" {
+				rec, err := waitForCycleRecord(cmd.Context(), cli, res.CycleID, res.BootID, f.timeout, waitTimeout)
+				if err != nil {
+					return err
+				}
+				if outputFormat == output.FormatJSON {
+					return writeRawJSON(cmd.OutOrStdout(), rec.Raw)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), cycleCountsLine(res.CycleID, &rec.CompactionCycle))
 				return nil
 			}
 			final, err := waitForCycle(cmd.Context(), cli, res.CycleID, f.timeout, waitTimeout)
@@ -510,6 +538,11 @@ func cycleResultLine(id int64, st *client.CompactionStats) string {
 	case lc.CycleID < id:
 		return fmt.Sprintf("Cycle %d finished; its counts were not reported by the server (last recorded cycle: %d)", id, lc.CycleID)
 	}
+	return cycleCountsLine(id, lc)
+}
+
+// cycleCountsLine is the --wait result line for a cycle's own record.
+func cycleCountsLine(id int64, lc *client.CompactionCycle) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Cycle %d finished: %d of %s compacted, %d failed", id, lc.Succeeded, plural(int64(lc.Discovered), "batch", "batches"), lc.Failed)
 	if lc.Interrupted != 0 {
@@ -595,6 +628,50 @@ func waitForCycle(parent context.Context, cli *client.Client, cycleID int64, req
 			}
 		} else {
 			idleBelow = 0
+		}
+		select {
+		case <-waitCtx.Done():
+			return nil, timedOut()
+		case <-time.After(interval):
+		}
+		if interval < waitPollMax {
+			interval += time.Second
+		}
+	}
+}
+
+// waitForCycleRecord polls GET /compaction/cycles/{id}?boot_id= (Arc
+// 27.01.1+) until the cycle's record is final. The boot_id makes a poll
+// that reaches another process (a restart, another node) fail with
+// *client.CycleBootMismatchError instead of reading another cycle's record.
+func waitForCycleRecord(parent context.Context, cli *client.Client, cycleID int64, bootID string, reqTimeout, waitTimeout time.Duration) (*client.CompactionCycleRecord, error) {
+	waitCtx, stopWaiting := context.WithTimeout(parent, waitTimeout)
+	defer stopWaiting()
+	interval := waitPollInterval
+	var last *client.CompactionCycleRecord
+	timedOut := func() error {
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		msg := fmt.Sprintf("gave up after %s waiting for cycle %d (no status received in time); it may still run on the server", waitTimeout, cycleID)
+		if last != nil {
+			msg = fmt.Sprintf("cycle %d still %s after %s; it continues on the server", cycleID, clean(last.Status), waitTimeout)
+		}
+		return &waitTimeoutError{msg: msg, cause: waitCtx.Err()}
+	}
+	for {
+		ctx, cancel := context.WithTimeout(waitCtx, reqTimeout)
+		rec, err := cli.CompactionCycleByID(ctx, cycleID, bootID)
+		cancel()
+		if err != nil {
+			if waitCtx.Err() != nil {
+				return nil, timedOut()
+			}
+			return nil, fmt.Errorf("while waiting for cycle %d: %w", cycleID, err)
+		}
+		last = rec
+		if rec.Finished() {
+			return rec, nil
 		}
 		select {
 		case <-waitCtx.Done():
